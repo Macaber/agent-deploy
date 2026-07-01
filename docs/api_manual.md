@@ -28,6 +28,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 - **请求路径**：`/api/workspaces`
 - **请求参数 (Query Params)**：
   - `userId` (string, 必填)：要查询的用户 ID，例如 `alice`。
+  - `namespace` (string, 选填)：工作空间所在的 K8s 命名空间，默认为 `"default"`。
 - **返回响应 (HTTP 200 OK)**：
   - **如果工作空间不存在 (尚未创建过)**:
     ```json
@@ -61,6 +62,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   | 参数名 | 数据类型 | 是否必填 | 默认值 | 作用描述 |
   | :--- | :--- | :--- | :--- | :--- |
   | **`userId`** | `string` | **是** | - | 用户唯一标识（决定 workspace 资源名称 `ws-<userId>`）。 |
+  | **`namespace`** | `string` | 否 | `"default"` | 工作空间所在的 K8s 命名空间。 |
   | **`image`** | `string` | 否 | `"smanx/opencode:latest"` | 启动工作空间的容器镜像。 |
   | **`port`** | `int` | 否 | `4096` | 容器监听端口。 |
   | **`cpu`** | `string` | 否 | - | CPU 资源配额限额，例如 `"1"` (1核)、`"500m"`。 |
@@ -79,6 +81,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   ```json
   {
     "userId": "alice",
+    "namespace": "default",
     "image": "smanx/opencode:latest",
     "port": 4096,
     "cpu": "1",
@@ -126,7 +129,8 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 - **请求体示例**：
   ```json
   {
-    "userId": "alice"
+    "userId": "alice",
+    "namespace": "default"
   }
   ```
 - **返回响应 (HTTP 200 OK - 唤醒成功且 Running 后返回)**：
@@ -152,7 +156,8 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 - **请求体示例**：
   ```json
   {
-    "userId": "alice"
+    "userId": "alice",
+    "namespace": "default"
   }
   ```
 - **返回响应 (HTTP 200 OK)**：

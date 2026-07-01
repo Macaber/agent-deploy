@@ -80,7 +80,10 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 
 			ctx := r.Context()
 			wsName := fmt.Sprintf("ws-%s", userID)
-			namespace := "default"
+			namespace := r.URL.Query().Get("namespace")
+			if namespace == "" {
+				namespace = "default"
+			}
 
 			ws := &aiv1alpha1.Workspace{}
 			err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws)
@@ -119,6 +122,7 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 
 		var req struct {
 			UserID          string                   `json:"userId"`
+			Namespace       string                   `json:"namespace,omitempty"`
 			Image           string                   `json:"image,omitempty"`
 			Port            int32                    `json:"port,omitempty"`
 			CPU             string                   `json:"cpu,omitempty"`
@@ -140,7 +144,10 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 
 		ctx := r.Context()
 		wsName := fmt.Sprintf("ws-%s", req.UserID)
-		namespace := "default"
+		namespace := req.Namespace
+		if namespace == "" {
+			namespace = "default"
+		}
 
 		ws := &aiv1alpha1.Workspace{}
 		err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws)
@@ -341,7 +348,8 @@ func stopWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		var req struct {
-			UserID string `json:"userId"`
+			UserID    string `json:"userId"`
+			Namespace string `json:"namespace,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserID == "" {
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -350,7 +358,10 @@ func stopWorkspaceHandler(c client.Client) http.HandlerFunc {
 
 		ctx := r.Context()
 		wsName := fmt.Sprintf("ws-%s", req.UserID)
-		namespace := "default"
+		namespace := req.Namespace
+		if namespace == "" {
+			namespace = "default"
+		}
 
 		ws := &aiv1alpha1.Workspace{}
 		err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws)
@@ -384,7 +395,8 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		var req struct {
-			UserID string `json:"userId"`
+			UserID    string `json:"userId"`
+			Namespace string `json:"namespace,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserID == "" {
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -393,7 +405,10 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 
 		ctx := r.Context()
 		wsName := fmt.Sprintf("ws-%s", req.UserID)
-		namespace := "default"
+		namespace := req.Namespace
+		if namespace == "" {
+			namespace = "default"
+		}
 
 		ws := &aiv1alpha1.Workspace{}
 		err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws)
