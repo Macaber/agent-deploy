@@ -54,7 +54,9 @@ spec:
         - name: PORT
           value: "3000"
         - name: WORKSPACE_DOMAIN
-          value: "bocomcode" # 生产可修改为您的主域名
+          value: "bocomcode"
+        - name: WORKSPACE_BASE_URL
+          value: "http://12.244.107.214/bocomwork/ws" # 生产可修改为您的主域名
 ---
 apiVersion: v1
 kind: Service

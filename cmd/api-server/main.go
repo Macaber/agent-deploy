@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -101,11 +102,7 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 				return
 			}
 
-			domain := os.Getenv("WORKSPACE_DOMAIN")
-			if domain == "" {
-				domain = "localhost"
-			}
-			url := fmt.Sprintf("http://%s.%s", wsName, domain)
+			url := getWorkspaceURL(userID, wsName, ws.Status.Endpoint)
 
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"exists": true,
@@ -318,19 +315,11 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 					// Give Ingress Nginx controller a 2-second buffer to hot-reload config
 					time.Sleep(2 * time.Second)
 
-					// Return endpoint
-					endpoint := currentWs.Status.Endpoint
-					if endpoint == "" {
-						domain := os.Getenv("WORKSPACE_DOMAIN")
-						if domain == "" {
-							domain = "localhost"
-						}
-						endpoint = fmt.Sprintf("%s.%s", wsName, domain)
-					}
+					url := getWorkspaceURL(req.UserID, wsName, currentWs.Status.Endpoint)
 
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(map[string]string{
-						"url":   fmt.Sprintf("http://%s", endpoint),
+						"url":   url,
 						"phase": string(currentWs.Status.Phase),
 					})
 					return
@@ -469,19 +458,11 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 					// Give Ingress Nginx controller a 2-second buffer to hot-reload config
 					time.Sleep(2 * time.Second)
 
-					// Return endpoint
-					endpoint := currentWs.Status.Endpoint
-					if endpoint == "" {
-						domain := os.Getenv("WORKSPACE_DOMAIN")
-						if domain == "" {
-							domain = "localhost"
-						}
-						endpoint = fmt.Sprintf("%s.%s", wsName, domain)
-					}
+					url := getWorkspaceURL(req.UserID, wsName, currentWs.Status.Endpoint)
 
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(map[string]string{
-						"url":   fmt.Sprintf("http://%s", endpoint),
+						"url":   url,
 						"phase": string(currentWs.Status.Phase),
 					})
 					return
@@ -489,6 +470,23 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 			}
 		}
 	}
+}
+
+func getWorkspaceURL(userID string, wsName string, endpoint string) string {
+	baseURL := os.Getenv("WORKSPACE_BASE_URL")
+	if baseURL != "" {
+		baseURL = strings.TrimSuffix(baseURL, "/")
+		return fmt.Sprintf("%s/%s/", baseURL, userID)
+	}
+
+	if endpoint == "" {
+		domain := os.Getenv("WORKSPACE_DOMAIN")
+		if domain == "" {
+			domain = "localhost"
+		}
+		endpoint = fmt.Sprintf("%s.%s", wsName, domain)
+	}
+	return fmt.Sprintf("http://%s", endpoint)
 }
 
 const htmlTemplate = `
