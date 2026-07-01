@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: workspace-unified-api-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      set $target_user "";
+      if ($http_x_user ~* "^[a-z0-9-]+$") {
+        set $target_user $http_x_user;
+        set $proxy_upstream_name "default-ws-$http_x_user-svc-80";
+      }
+      if ($target_user = "") {
+        return 400 '{"error": "Missing or invalid X-User header"}';
+      }
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: api.workspace.localhost
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: ws-syf-svc
+            port:
+              number: 80

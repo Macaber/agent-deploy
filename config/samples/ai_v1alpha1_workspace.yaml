@@ -1,0 +1,25 @@
+apiVersion: ai.example.com/v1alpha1
+kind: Workspace
+metadata:
+  labels:
+    app.kubernetes.io/name: agent-deploy
+    app.kubernetes.io/managed-by: kustomize
+  name: workspace-sample
+spec:
+  owner: u001
+  idleTimeout: 15m
+  ttl: 24h
+  exposeSSH: true
+  repository:
+    url: "https://github.com/example/agent-project.git"
+    branch: "main"
+  runtime:
+    image: "codercom/code-server:latest"
+    cpu: "500m"
+    memory: "1Gi"
+    env:
+      - name: PASSWORD
+        value: "agentpass123"
+  storage:
+    size: "10Gi"
+    storageClass: "standard"
