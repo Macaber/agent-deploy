@@ -8,7 +8,6 @@ metadata:
 spec:
   owner: u001
   idleTimeout: 15m
-  ttl: 24h
   exposeSSH: true
   repository:
     url: "https://github.com/example/agent-project.git"

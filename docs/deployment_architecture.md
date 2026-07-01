@@ -45,7 +45,6 @@ graph TD
   * **资源状态监听**：不断轮询监听 K8s 集群中 Workspace 实例的创建、修改和删除事件。
   * **子资源编排（一键拉起）**：根据 Workspace 的声明规格，自动创建并管理对应的 `PersistentVolumeClaim`（持久化卷）、`Deployment`（计算负载）、`Service`（内网暴露）和 `Ingress`（外部路由），并建立 **Owner Reference（所有者引用）** 确保级联删除。
   * **闲置自动休眠**：在后台监控工作空间的 `Status.LastActiveTime`（最后活跃时间）。一旦闲置时长超过 `idleTimeout`，Operator 会自动将 Deployment 的副本数（Replicas）缩容至 `0`，并释放 CPU 和内存，将状态标为 `Sleeping`。
-  * **硬性过期销毁**：监测工作空间的生命周期是否超过了 `TTL` 限制。一旦到达过期时间，Operator 会向 K8s 发起删除请求，安全回收所有资源。
 
 ### 🌐 (2) Ingress (网关路由层)
 * **组件构成**：`ingress-nginx-controller`（基于 Nginx 的 Kubernetes 官方网关控制器）。

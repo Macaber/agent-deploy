@@ -94,7 +94,6 @@ env:
 | **`pvcName`** | `string` | 绑定到该工作空间的存储卷（PersistentVolumeClaim）名称。 | `"ws-alice-pvc"` |
 | **`endpoint`** | `string` | 工作空间对外的 HTTP 访问链接域名入口。 | `"ws-alice.localhost"`, `"ws-alice.domain.com"` |
 | **`lastActiveTime`**| `datetime` | 最近一次检测到用户活跃（或手动唤醒）的时间戳。用于计算空闲过期时间。 | `"2026-06-25T10:14:01Z"` |
-| **`expiryTime`** | `datetime` | 当前工作空间绝对过期的硬删除时间（如果有 TTL 限制）。 | `"2026-06-26T09:08:25Z"` |
 
 ### 状态阶段 (Status.Phase) 转换定义
 

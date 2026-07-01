@@ -1,10 +1,10 @@
 # agent-deploy (Workspace Operator)
 
-基于 Kubernetes 自定义资源（CRD）的云端 Agent 工作空间管理器。集成 KEDA 实现了按需自动扩缩容（缩容至 0 副本），并内置了 TTL 自动销毁与空闲超时自动休眠控制器，为每个用户/智能体提供安全隔离、按需启动且持久化的工作环境。
+基于 Kubernetes 自定义资源（CRD）的云端 Agent 工作空间管理器。集成 KEDA 实现了按需自动扩缩容（缩容至 0 副本），并内置了空闲超时自动休眠控制器，为每个用户/智能体提供安全隔离、按需启动且持久化的工作环境。
 
 ## 项目描述
 
-`agent-deploy` 项目通过引入自定义资源 `Workspace`，将底层 Pod/Container、PVC、Service、Ingress 以及 KEDA `ScaledObject` 封装起来。平台可以通过声明式 API 直接为用户创建 `Workspace` 实例，剩下的资源调度、Git 仓库拉取、按需唤醒（HTTP 流量触发从 0 到 1 扩容）、空闲自动休眠（缩容至 0 副本）和生命周期硬过期销毁（TTL）都由 Operator 自动处理。
+`agent-deploy` 项目通过引入自定义资源 `Workspace`，将底层 Pod/Container、PVC、Service、Ingress 以及 KEDA `ScaledObject` 封装起来。平台可以通过声明式 API 直接为用户创建 `Workspace` 实例，剩下的资源调度、Git 仓库拉取、按需唤醒（HTTP 流量触发从 0 到 1 扩容）和空闲自动休眠（缩容至 0 副本）都由 Operator 自动处理。
 
 ---
 
