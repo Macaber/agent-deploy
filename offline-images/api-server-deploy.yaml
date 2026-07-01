@@ -5,27 +5,25 @@ metadata:
   namespace: default
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
-  name: api-server-role
-  namespace: default
+  name: api-server-clusterrole
 rules:
 - apiGroups: ["ai.example.com"]
   resources: ["workspaces", "workspaces/status"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
-  name: api-server-rolebinding
-  namespace: default
+  name: api-server-clusterrolebinding
 subjects:
 - kind: ServiceAccount
   name: api-server-sa
   namespace: default
 roleRef:
-  kind: Role
-  name: api-server-role
+  kind: ClusterRole
+  name: api-server-clusterrole
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: apps/v1
