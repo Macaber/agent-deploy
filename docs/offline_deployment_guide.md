@@ -87,19 +87,13 @@ cp -r dist/nfs ./offline-images/
 cd ./offline-images
 
 # 1. 导入镜像到本地 docker 引擎
-docker load -i opencode.tar
-docker load -i ingress-controller.tar
-docker load -i ingress-certgen.tar
-docker load -i nfs-provisioner.tar
-docker load -i workspace-operator.tar
-docker load -i api-server.tar
+ctr -n k8s.io images import opencode.tar
+ctr -n k8s.io images import ingress-controller.tar
+ctr -n k8s.io images import ingress-certgen.tar
+ctr -n k8s.io images import nfs-provisioner.tar
+ctr -n k8s.io images import workspace-operator.tar
+ctr -n k8s.io images import api-server.tar
 
-# 2. 重新打标（Tag）并推送至内网 Harbor 仓库
-# 以内网 Harbor 域名 myharbor.local 为例：
-docker tag smanx/opencode:latest myharbor.local/library/opencode:latest
-docker push myharbor.local/library/opencode:latest
-
-# 对其他镜像依次重新打标推送...
 ```
 
 ---
