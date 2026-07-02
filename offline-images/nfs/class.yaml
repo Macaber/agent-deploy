@@ -9,3 +9,9 @@ volumeBindingMode: WaitForFirstConsumer
 parameters:
   archiveOnDelete: "true" # Retain deleted directories in archive instead of hard deleting
   pathPattern: "workspace/${.PVC.namespace}-${.PVC.name}-${.PV.name}"
+mountOptions:
+  - nfsvers=3
+  - nolock
+  - tcp
+  - noatime
+

@@ -183,7 +183,7 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if ws.Spec.IdleTimeout != "" {
 			idleDuration, err := time.ParseDuration(ws.Spec.IdleTimeout)
 			if err == nil {
-				idleExpiry := ws.Status.LastActiveTime.Time.Add(idleDuration)
+				idleExpiry := ws.Status.LastActiveTime.Add(idleDuration)
 				remainingIdle := time.Until(idleExpiry)
 				if remainingIdle > 0 {
 					if nextRequeue == 0 || remainingIdle < nextRequeue {
@@ -267,7 +267,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		if ws.Spec.IdleTimeout != "" && ws.Status.LastActiveTime != nil {
 			idleDuration, err := time.ParseDuration(ws.Spec.IdleTimeout)
 			if err == nil {
-				idleExpiry := ws.Status.LastActiveTime.Time.Add(idleDuration)
+				idleExpiry := ws.Status.LastActiveTime.Add(idleDuration)
 				if time.Now().After(idleExpiry) {
 					desiredReplicas = 0
 				}
@@ -456,6 +456,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 						Spec: corev1.PodSpec{
 							InitContainers:                initContainers,
 							TerminationGracePeriodSeconds: int64Ptr(2),
+							AutomountServiceAccountToken:  boolPtr(false),
 							Containers: []corev1.Container{
 								{
 									Name:            "runtime",
@@ -502,6 +503,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	deploy.Spec.Template.Spec.Containers[0].Lifecycle = lifecycle
 	deploy.Spec.Template.Spec.Volumes = volumes
 	deploy.Spec.Template.Spec.TerminationGracePeriodSeconds = int64Ptr(2)
+	deploy.Spec.Template.Spec.AutomountServiceAccountToken = boolPtr(false)
 
 	if err := r.Update(ctx, deploy); err != nil {
 		return "", 0, err
@@ -671,8 +673,8 @@ func (r *WorkspaceReconciler) reconcileScaledObject(ctx context.Context, ws *aiv
 	desiredSO.SetName(scaledObjectName)
 	desiredSO.SetNamespace(ws.Namespace)
 
-	desiredSpec := map[string]interface{}{
-		"scaleTargetRef": map[string]interface{}{
+	desiredSpec := map[string]any{
+		"scaleTargetRef": map[string]any{
 			"apiVersion": "apps/v1",
 			"kind":       "Deployment",
 			"name":       deployName,
@@ -680,10 +682,10 @@ func (r *WorkspaceReconciler) reconcileScaledObject(ctx context.Context, ws *aiv
 		"minReplicaCount": int64(0),
 		"maxReplicaCount": int64(1),
 		"cooldownPeriod":  int64(300), // 5 minutes
-		"triggers": []interface{}{
-			map[string]interface{}{
+		"triggers": []any{
+			map[string]any{
 				"type": "http",
-				"metadata": map[string]interface{}{
+				"metadata": map[string]any{
 					"serverAddress": "http://keda-http-add-on-interceptor.keda:8080",
 					"host":          host,
 				},
@@ -706,6 +708,10 @@ func (r *WorkspaceReconciler) reconcileScaledObject(ctx context.Context, ws *aiv
 
 	so.Object["spec"] = desiredSpec
 	return r.Update(ctx, so)
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 func int32Ptr(i int32) *int32 {

@@ -91,7 +91,7 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			if err != nil {
 				if apierrors.IsNotFound(err) {
-					json.NewEncoder(w).Encode(map[string]interface{}{
+					json.NewEncoder(w).Encode(map[string]any{
 						"exists": false,
 						"phase":  "",
 						"url":    "",
@@ -104,7 +104,7 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 
 			url := getWorkspaceURL(userID, wsName, ws.Status.Endpoint)
 
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			json.NewEncoder(w).Encode(map[string]any{
 				"exists": true,
 				"phase":  ws.Status.Phase,
 				"url":    url,
