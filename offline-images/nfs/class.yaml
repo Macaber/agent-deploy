@@ -5,5 +5,7 @@ metadata:
   annotations:
     storageclass.kubernetes.io/is-default-class: "true" # Set as default storage class
 provisioner: k8s-sigs.io/nfs-subdir-external-provisioner # Must match deployment's env PROVISIONER_NAME
+volumeBindingMode: WaitForFirstConsumer
 parameters:
   archiveOnDelete: "true" # Retain deleted directories in archive instead of hard deleting
+  pathPattern: "workspace/${.PVC.namespace}-${.PVC.name}-${.PV.name}"
