@@ -470,6 +470,16 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 									Resources:       resources,
 									VolumeMounts:    volumeMounts,
 									Lifecycle:       lifecycle,
+									ReadinessProbe: &corev1.Probe{
+										ProbeHandler: corev1.ProbeHandler{
+											TCPSocket: &corev1.TCPSocketAction{
+												Port: intstr.FromString("http"),
+											},
+										},
+										InitialDelaySeconds: 1,
+										PeriodSeconds:       1,
+										FailureThreshold:    3,
+									},
 								},
 							},
 							Volumes: volumes,
@@ -501,6 +511,16 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	deploy.Spec.Template.Spec.InitContainers = initContainers
 	deploy.Spec.Template.Spec.Containers[0].VolumeMounts = volumeMounts
 	deploy.Spec.Template.Spec.Containers[0].Lifecycle = lifecycle
+	deploy.Spec.Template.Spec.Containers[0].ReadinessProbe = &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			TCPSocket: &corev1.TCPSocketAction{
+				Port: intstr.FromString("http"),
+			},
+		},
+		InitialDelaySeconds: 1,
+		PeriodSeconds:       1,
+		FailureThreshold:    3,
+	}
 	deploy.Spec.Template.Spec.Volumes = volumes
 	deploy.Spec.Template.Spec.TerminationGracePeriodSeconds = int64Ptr(2)
 	deploy.Spec.Template.Spec.AutomountServiceAccountToken = boolPtr(false)
