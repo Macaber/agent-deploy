@@ -294,7 +294,7 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 
 		// Poll until Workspace status.phase is Running
 		timeout := time.After(90 * time.Second)
-		ticker := time.NewTicker(1 * time.Second)
+		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 
 		for {
@@ -312,11 +312,8 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 				}
 
 				if currentWs.Status.Phase == aiv1alpha1.WorkspaceRunning {
-					// Give Ingress Nginx controller a 2-second buffer to hot-reload config
-					time.Sleep(2 * time.Second)
-
 					url := getWorkspaceURL(req.UserID, wsName, currentWs.Status.Endpoint)
-
+ 
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(map[string]string{
 						"url":   url,
@@ -437,7 +434,7 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 
 		// Poll until Workspace status.phase is Running
 		timeout := time.After(90 * time.Second)
-		ticker := time.NewTicker(1 * time.Second)
+		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 
 		for {
@@ -455,11 +452,8 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 				}
 
 				if currentWs.Status.Phase == aiv1alpha1.WorkspaceRunning {
-					// Give Ingress Nginx controller a 2-second buffer to hot-reload config
-					time.Sleep(2 * time.Second)
-
 					url := getWorkspaceURL(req.UserID, wsName, currentWs.Status.Endpoint)
-
+ 
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(map[string]string{
 						"url":   url,
