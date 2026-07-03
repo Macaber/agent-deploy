@@ -31,9 +31,9 @@ spec:
             - name: NFS_SERVER
               value: 10.3.243.101
             - name: NFS_PATH
-              value: /ifs/kubernetes
+              value: /workspace
       volumes:
         - name: nfs-client-root
           nfs:
             server: 10.3.243.101
-            path: /ifs/kubernetes
+            path: /workspace
