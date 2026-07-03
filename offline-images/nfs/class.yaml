@@ -8,7 +8,7 @@ provisioner: k8s-sigs.io/nfs-subdir-external-provisioner # Must match deployment
 volumeBindingMode: WaitForFirstConsumer
 parameters:
   archiveOnDelete: "true" # Retain deleted directories in archive instead of hard deleting
-  pathPattern: "workspace/${.PVC.namespace}-${.PVC.name}-${.PV.name}"
+  pathPattern: "workspace/${.PVC.namespace}-${.PVC.name}"
 mountOptions:
   - nfsvers=3
   - nolock
