@@ -472,7 +472,8 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 									Lifecycle:       lifecycle,
 									ReadinessProbe: &corev1.Probe{
 										ProbeHandler: corev1.ProbeHandler{
-											TCPSocket: &corev1.TCPSocketAction{
+											HTTPGet: &corev1.HTTPGetAction{
+												Path: "/health",
 												Port: intstr.FromString("http"),
 											},
 										},
@@ -513,7 +514,8 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	deploy.Spec.Template.Spec.Containers[0].Lifecycle = lifecycle
 	deploy.Spec.Template.Spec.Containers[0].ReadinessProbe = &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
-			TCPSocket: &corev1.TCPSocketAction{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/health",
 				Port: intstr.FromString("http"),
 			},
 		},
