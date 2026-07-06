@@ -751,8 +751,9 @@ func getReadinessProbe(ws *aiv1alpha1.Workspace) *corev1.Probe {
 
 	return &corev1.Probe{
 		ProbeHandler:        handler,
-		InitialDelaySeconds: 1,
+		InitialDelaySeconds: 0,
 		PeriodSeconds:       1,
-		FailureThreshold:    3,
+		SuccessThreshold:    1,
+		FailureThreshold:    30,
 	}
 }
