@@ -470,17 +470,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 									Resources:       resources,
 									VolumeMounts:    volumeMounts,
 									Lifecycle:       lifecycle,
-									ReadinessProbe: &corev1.Probe{
-										ProbeHandler: corev1.ProbeHandler{
-											HTTPGet: &corev1.HTTPGetAction{
-												Path: "/health",
-												Port: intstr.FromString("http"),
-											},
-										},
-										InitialDelaySeconds: 1,
-										PeriodSeconds:       1,
-										FailureThreshold:    3,
-									},
+									ReadinessProbe:  getReadinessProbe(ws),
 								},
 							},
 							Volumes: volumes,
@@ -512,17 +502,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	deploy.Spec.Template.Spec.InitContainers = initContainers
 	deploy.Spec.Template.Spec.Containers[0].VolumeMounts = volumeMounts
 	deploy.Spec.Template.Spec.Containers[0].Lifecycle = lifecycle
-	deploy.Spec.Template.Spec.Containers[0].ReadinessProbe = &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{
-				Path: "/health",
-				Port: intstr.FromString("http"),
-			},
-		},
-		InitialDelaySeconds: 1,
-		PeriodSeconds:       1,
-		FailureThreshold:    3,
-	}
+	deploy.Spec.Template.Spec.Containers[0].ReadinessProbe = getReadinessProbe(ws)
 	deploy.Spec.Template.Spec.Volumes = volumes
 	deploy.Spec.Template.Spec.TerminationGracePeriodSeconds = int64Ptr(2)
 	deploy.Spec.Template.Spec.AutomountServiceAccountToken = boolPtr(false)
@@ -750,4 +730,29 @@ func getWorkspaceHost(wsName string) string {
 		domain = "localhost"
 	}
 	return fmt.Sprintf("%s.%s", wsName, domain)
+}
+
+func getReadinessProbe(ws *aiv1alpha1.Workspace) *corev1.Probe {
+	var handler corev1.ProbeHandler
+	if ws.Spec.Runtime.HealthPath != "" {
+		handler = corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: ws.Spec.Runtime.HealthPath,
+				Port: intstr.FromString("http"),
+			},
+		}
+	} else {
+		handler = corev1.ProbeHandler{
+			TCPSocket: &corev1.TCPSocketAction{
+				Port: intstr.FromString("http"),
+			},
+		}
+	}
+
+	return &corev1.Probe{
+		ProbeHandler:        handler,
+		InitialDelaySeconds: 1,
+		PeriodSeconds:       1,
+		FailureThreshold:    3,
+	}
 }

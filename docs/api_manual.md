@@ -76,6 +76,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   | **`args`** | `array` | 否 | - | 自定义容器启动入口命令参数 (对应 `CMD`)，如 `["-g", "daemon off;"]`。 |
   | **`volumeMounts`** | `array` | 否 | - | 自定义持久卷在容器内的挂载路径及卷内子目录映射。如 `[{"mountPath": "/app", "subPath": "app-dir"}]`。 |
   | **`postStartScript`** | `string` | 否 | - | **K8s 原生生命周期钩子**。容器启动后立即在后台异步运行的多行 Shell 脚本。 |
+  | **`healthPath`** | `string` | 否 | - | **自定义就绪探针 HTTP 路径**。若指定（例如 `"/health"`），K8s 将使用 HTTP GET 探测此路径；若不指定或为空，默认回退使用 TCP 协议对暴露端口（`port`）进行存活健康探测。 |
 
 - **完整请求体示例**：
   ```json
@@ -103,7 +104,8 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
         "subPath": "my-project"
       }
     ],
-    "postStartScript": "echo 'Container initialized' && touch /workspace/boot-success"
+    "postStartScript": "echo 'Container initialized' && touch /workspace/boot-success",
+    "healthPath": "/health"
   }
   ```
 - **返回响应 (HTTP 200 OK - 成功运行后返回)**：

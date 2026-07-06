@@ -113,6 +113,10 @@ spec:
                       - value
                       type: object
                     type: array
+                  healthPath:
+                    description: HealthPath is the HTTP path for readiness probe check
+                      (e.g. "/health"). If empty, defaults to TCP socket check.
+                    type: string
                   image:
                     description: Image is the container image to run for the workspace
                     type: string

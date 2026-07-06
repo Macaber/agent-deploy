@@ -133,6 +133,7 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 			Args            []string                 `json:"args,omitempty"`
 			VolumeMounts    []aiv1alpha1.VolumeMount `json:"volumeMounts,omitempty"`
 			PostStartScript string                   `json:"postStartScript,omitempty"`
+			HealthPath      string                   `json:"healthPath,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserID == "" {
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -192,6 +193,7 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 							Args:            req.Args,
 							VolumeMounts:    req.VolumeMounts,
 							PostStartScript: req.PostStartScript,
+							HealthPath:      req.HealthPath,
 						},
 						Storage: aiv1alpha1.StorageSpec{
 							Size:         storageSize,
@@ -255,6 +257,10 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 				ws.Spec.Runtime.PostStartScript = req.PostStartScript
 				needsUpdate = true
 			}
+			if req.HealthPath != "" && ws.Spec.Runtime.HealthPath != req.HealthPath {
+				ws.Spec.Runtime.HealthPath = req.HealthPath
+				needsUpdate = true
+			}
 			if req.StorageSize != "" && ws.Spec.Storage.Size != req.StorageSize {
 				ws.Spec.Storage.Size = req.StorageSize
 				needsUpdate = true
@@ -313,7 +319,7 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 
 				if currentWs.Status.Phase == aiv1alpha1.WorkspaceRunning {
 					url := getWorkspaceURL(req.UserID, wsName, currentWs.Status.Endpoint)
- 
+
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(map[string]string{
 						"url":   url,
@@ -453,7 +459,7 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 
 				if currentWs.Status.Phase == aiv1alpha1.WorkspaceRunning {
 					url := getWorkspaceURL(req.UserID, wsName, currentWs.Status.Endpoint)
- 
+
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(map[string]string{
 						"url":   url,

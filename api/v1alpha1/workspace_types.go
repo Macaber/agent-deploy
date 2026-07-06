@@ -91,6 +91,10 @@ type RuntimeSpec struct {
 	// PostStartScript is a multiline shell script executed as a postStart lifecycle hook immediately after container start
 	// +optional
 	PostStartScript string `json:"postStartScript,omitempty"`
+
+	// HealthPath is the HTTP path for readiness probe check (e.g. "/health"). If empty, defaults to TCP socket check.
+	// +optional
+	HealthPath string `json:"healthPath,omitempty"`
 }
 
 // StorageSpec defines the storage properties for user persistence.
