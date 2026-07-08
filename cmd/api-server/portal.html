@@ -7,18 +7,18 @@
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: #0b0f19;
-            --card-bg: rgba(17, 24, 39, 0.7);
-            --border-color: rgba(55, 65, 81, 0.5);
-            --primary: #0ea5e9;
-            --primary-hover: #38bdf8;
-            --accent: #6366f1;
-            --text-main: #f3f4f6;
-            --text-muted: #9ca3af;
-            --input-bg: #1f2937;
-            --input-border: #374151;
+            --bg-color: #f3f4f6;
+            --card-bg: rgba(255, 255, 255, 0.9);
+            --border-color: rgba(209, 213, 219, 0.8);
+            --primary: #0284c7;
+            --primary-hover: #0369a1;
+            --accent: #4f46e5;
+            --text-main: #1f2937;
+            --text-muted: #6b7280;
+            --input-bg: #ffffff;
+            --input-border: #d1d5db;
             --btn-delete-bg: #ef4444;
-            --btn-delete-hover: #f87171;
+            --btn-delete-hover: #dc2626;
             --success: #10b981;
         }
 
@@ -69,7 +69,7 @@
             border: 1px solid var(--border-color);
             border-radius: 24px;
             padding: 40px;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            box-shadow: 0 20px 40px -10px rgba(15, 23, 42, 0.08);
             width: 100%;
             max-width: 800px;
             z-index: 10;
@@ -115,7 +115,7 @@
 
         /* Banner Status Info */
         .status-banner {
-            background: rgba(31, 41, 55, 0.6);
+            background: rgba(243, 244, 246, 0.8);
             border: 1px solid var(--border-color);
             border-radius: 12px;
             padding: 16px 20px;
@@ -141,11 +141,11 @@
             text-transform: uppercase;
         }
 
-        .status-badge.running { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
-        .status-badge.sleeping { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
-        .status-badge.stopped { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
-        .status-badge.pending { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
-        .status-badge.notexist { background: rgba(156, 163, 175, 0.2); color: #d1d5db; border: 1px solid rgba(156, 163, 175, 0.4); }
+        .status-badge.running { background: rgba(16, 185, 129, 0.1); color: #047857; border: 1px solid rgba(16, 185, 129, 0.2); }
+        .status-badge.sleeping { background: rgba(245, 158, 11, 0.1); color: #b45309; border: 1px solid rgba(245, 158, 11, 0.2); }
+        .status-badge.stopped { background: rgba(239, 68, 68, 0.1); color: #b91c1c; border: 1px solid rgba(239, 68, 68, 0.2); }
+        .status-badge.pending { background: rgba(59, 130, 246, 0.1); color: #1d4ed8; border: 1px solid rgba(59, 130, 246, 0.2); }
+        .status-badge.notexist { background: rgba(107, 114, 128, 0.1); color: #4b5563; border: 1px solid rgba(107, 114, 128, 0.2); }
 
         .btn-quick-connect {
             padding: 8px 16px;
@@ -242,7 +242,7 @@
             display: flex;
             gap: 12px;
             margin-bottom: 16px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            border-bottom: 1px solid rgba(0, 0, 0, 0.06);
             padding-bottom: 4px;
         }
 
@@ -348,7 +348,7 @@
             margin-top: 24px;
             margin-bottom: 16px;
             padding-bottom: 6px;
-            border-bottom: 1px dashed rgba(255, 255, 255, 0.1);
+            border-bottom: 1px dashed rgba(0, 0, 0, 0.1);
         }
 
         .grid-2 {
@@ -460,8 +460,8 @@
             height: 380px;
             font-family: 'Courier New', Courier, monospace;
             font-size: 13px;
-            background-color: #0b0f19;
-            color: #38bdf8;
+            background-color: #f8fafc;
+            color: #0369a1;
             border: 1px solid var(--input-border);
             border-radius: 8px;
             padding: 16px;
@@ -473,7 +473,7 @@
 
         .json-textarea:focus {
             border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.15);
+            box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
         }
 
         .json-error-info {
@@ -586,7 +586,7 @@
         .footer-credit {
             margin-top: 32px;
             font-size: 11px;
-            color: rgba(255, 255, 255, 0.2);
+            color: rgba(0, 0, 0, 0.25);
             letter-spacing: 1px;
             text-transform: uppercase;
             text-align: center;
@@ -923,9 +923,9 @@
             table.style.display = 'table';
             
             try {
-                const res = await fetch('/api/workspaces?namespace=' + encodeURIComponent(namespace));
+                const res = await fetch(getApiUrl('api/workspaces?namespace=' + encodeURIComponent(namespace)));
                 if (!res.ok) {
-                    throw new Error("获取工作空间列表失败: " + await res.text());
+                    throw new Error(await getCleanErrorMsg(res, "获取工作空间列表失败"));
                 }
                 const items = await res.json();
                 tbody.innerHTML = '';
@@ -947,19 +947,19 @@
                     if (phase === 'Running') {
                         actionButtons = 
                             '<a class="btn-inline-action btn-connect" href="' + escapeHtml(item.url) + '" target="_blank">进入</a>' +
-                            '<button class="btn-inline-action btn-stop" onclick="inlineStopWorkspace(\'' + escapeHtml(item.userID) + '\')">停止</button>';
+                            '<button class="btn-inline-action btn-stop" onclick="inlineStopWorkspace(\'' + escapeHtml(item.userId) + '\')">停止</button>';
                     } else if (phase === 'Sleeping' || phase === 'Stopped') {
                         actionButtons = 
-                            '<button class="btn-inline-action btn-wakeup" onclick="inlineWakeupWorkspace(\'' + escapeHtml(item.userID) + '\')">唤醒</button>';
+                            '<button class="btn-inline-action btn-wakeup" onclick="inlineWakeupWorkspace(\'' + escapeHtml(item.userId) + '\')">唤醒</button>';
                     } else {
                         actionButtons = '<span style="color: var(--text-muted); font-size: 11px; padding: 0 4px;">调度中...</span>';
                     }
                     
                     // Modify button
-                    actionButtons += '<button class="btn-inline-action btn-load" onclick="loadWorkspaceToForm(\'' + escapeHtml(item.userID) + '\', \'' + escapeHtml(item.image) + '\', \'' + escapeHtml(item.cpu) + '\', \'' + escapeHtml(item.memory) + '\')">载入修改</button>';
+                    actionButtons += '<button class="btn-inline-action btn-load" onclick="loadWorkspaceToForm(\'' + escapeHtml(item.userId) + '\', \'' + escapeHtml(item.image) + '\', \'' + escapeHtml(item.cpu) + '\', \'' + escapeHtml(item.memory) + '\')">载入修改</button>';
                     
                     tr.innerHTML = 
-                        '<td>' + escapeHtml(item.userID) + '</td>' +
+                        '<td>' + escapeHtml(item.userId) + '</td>' +
                         '<td>' + escapeHtml(item.name) + '</td>' +
                         '<td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="' + escapeHtml(item.image) + '">' + escapeHtml(item.image) + '</td>' +
                         '<td>CPU: ' + escapeHtml(item.cpu || '-') + ' / 内存: ' + escapeHtml(item.memory || '-') + '</td>' +
@@ -985,13 +985,13 @@
             
             try {
                 setStatus("正在停止工作空间...", "正在停止工作空间容器，请稍候...");
-                const res = await fetch('/api/workspaces/stop', {
+                const res = await fetch(getApiUrl('api/workspaces/stop'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ userId, namespace })
                 });
                 if (!res.ok) {
-                    throw new Error("停止失败: " + await res.text());
+                    throw new Error(await getCleanErrorMsg(res, "停止失败"));
                 }
                 setStatus("停止成功！", "工作空间已停止");
                 setTimeout(() => {
@@ -1016,13 +1016,13 @@
             
             try {
                 setStatus("正在激活工作空间...", "正在唤醒工作空间容器并配置解析，请稍候...");
-                const res = await fetch('/api/workspaces/wakeup', {
+                const res = await fetch(getApiUrl('api/workspaces/wakeup'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ userId, namespace })
                 });
                 if (!res.ok) {
-                    throw new Error("唤醒失败: " + await res.text());
+                    throw new Error(await getCleanErrorMsg(res, "唤醒失败"));
                 }
                 const data = await res.json();
                 setStatus("唤醒就绪！", "工作空间已就绪，正在跳转进入...");
@@ -1214,7 +1214,7 @@
             }
 
             try {
-                const statusRes = await fetch('/api/workspaces?userId=' + encodeURIComponent(userId) + '&namespace=' + encodeURIComponent(namespace));
+                const statusRes = await fetch(getApiUrl('api/workspaces?userId=' + encodeURIComponent(userId) + '&namespace=' + encodeURIComponent(namespace)));
                 if (statusRes.ok) {
                     const statusData = await statusRes.json();
                     banner.style.display = 'flex';
@@ -1274,14 +1274,14 @@
 
             try {
                 setStatus("正在停止工作空间...", "正在向集群发送停止指令，请稍候...");
-                const response = await fetch('/api/workspaces/stop', {
+                const response = await fetch(getApiUrl('api/workspaces/stop'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ userId, namespace })
                 });
 
                 if (!response.ok) {
-                    throw new Error("停止工作空间失败: " + await response.text());
+                    throw new Error(await getCleanErrorMsg(response, "停止工作空间失败"));
                 }
 
                 setStatus("停止成功！", "工作空间已成功停止运行");
@@ -1317,14 +1317,14 @@
 
             try {
                 setStatus("正在唤醒工作空间...", "正在激活工作空间容器并调度资源，请稍候...");
-                const response = await fetch('/api/workspaces/wakeup', {
+                const response = await fetch(getApiUrl('api/workspaces/wakeup'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ userId, namespace })
                 });
 
                 if (!response.ok) {
-                    throw new Error("唤醒工作空间失败: " + await response.text());
+                    throw new Error(await getCleanErrorMsg(response, "唤醒工作空间失败"));
                 }
 
                 const data = await response.json();
@@ -1376,14 +1376,14 @@
             try {
                 setStatus("配置应用中...", "正在提交您的定制规格，请稍候...");
                 
-                const response = await fetch('/api/workspaces', {
+                const response = await fetch(getApiUrl('api/workspaces'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
 
                 if (!response.ok) {
-                    throw new Error("工作空间部署失败: " + await response.text());
+                    throw new Error(await getCleanErrorMsg(response, "工作空间部署失败"));
                 }
 
                 const data = await response.json();
@@ -1404,6 +1404,53 @@
         function setStatus(title, desc) {
             document.getElementById('statusTitle').innerText = title;
             document.getElementById('statusDesc').innerText = desc;
+        }
+
+        // Helper to extract clean error text from potentially HTML responses
+        async function getCleanErrorMsg(response, fallbackPrefix) {
+            try {
+                const text = await response.text();
+                if (text.includes('<html') || text.includes('<HTML')) {
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(text, 'text/html');
+                    const h1 = doc.querySelector('h1');
+                    if (h1 && h1.textContent.trim()) {
+                        return fallbackPrefix + ": " + h1.textContent.trim();
+                    }
+                    const title = doc.querySelector('title');
+                    if (title && title.textContent.trim()) {
+                        return fallbackPrefix + ": " + title.textContent.trim();
+                    }
+                    if (doc.body && doc.body.textContent.trim()) {
+                        return fallbackPrefix + ": " + doc.body.textContent.trim().substring(0, 150).replace(/\s+/g, " ");
+                    }
+                }
+                return fallbackPrefix + ": " + (text.trim() || response.statusText);
+            } catch (e) {
+                return fallbackPrefix + ": " + response.statusText;
+            }
+        }
+
+        // Helper to construct context-relative API URLs dynamically
+        function getApiUrl(path) {
+            const pathname = window.location.pathname;
+            const segments = pathname.split('/');
+            let basePath = '/';
+            if (segments.length > 1) {
+                const last = segments[segments.length - 1];
+                if (last.includes('.') || last === '') {
+                    basePath = segments.slice(0, segments.length - 1).join('/') + '/';
+                } else {
+                    basePath = segments.join('/') + '/';
+                }
+            }
+            if (!basePath.startsWith('/')) {
+                basePath = '/' + basePath;
+            }
+            if (!basePath.endsWith('/')) {
+                basePath += '/';
+            }
+            return basePath + path;
         }
 
         // HTML Escape helper
