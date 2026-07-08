@@ -1,0 +1,1438 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>BocomWork Workspace Portal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --card-bg: rgba(17, 24, 39, 0.7);
+            --border-color: rgba(55, 65, 81, 0.5);
+            --primary: #0ea5e9;
+            --primary-hover: #38bdf8;
+            --accent: #6366f1;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --input-bg: #1f2937;
+            --input-border: #374151;
+            --btn-delete-bg: #ef4444;
+            --btn-delete-hover: #f87171;
+            --success: #10b981;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            min-height: 100vh;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            overflow-x: hidden;
+            overflow-y: auto;
+            padding: 40px 20px;
+            box-sizing: border-box;
+        }
+
+        /* Background glows */
+        .ambient-glow-1 {
+            position: absolute;
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(14, 165, 233, 0.15) 0%, rgba(255, 255, 255, 0) 70%);
+            top: -200px;
+            left: -200px;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .ambient-glow-2 {
+            position: absolute;
+            width: 700px;
+            height: 700px;
+            background: radial-gradient(circle, rgba(99, 102, 241, 0.1) 0%, rgba(255, 255, 255, 0) 70%);
+            bottom: -300px;
+            right: -200px;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .card {
+            position: relative;
+            background: var(--card-bg);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid var(--border-color);
+            border-radius: 24px;
+            padding: 40px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            width: 100%;
+            max-width: 800px;
+            z-index: 10;
+            transition: all 0.4s ease;
+        }
+
+        /* Brand & Logo Header */
+        .brand-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            margin-bottom: 30px;
+        }
+
+        .logo-svg {
+            width: 48px;
+            height: 48px;
+            filter: drop-shadow(0 4px 12px rgba(14, 165, 233, 0.35));
+        }
+
+        .brand-text {
+            text-align: left;
+        }
+
+        .brand-name {
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            background: linear-gradient(135deg, #38bdf8 0%, #6366f1 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin: 0;
+        }
+
+        .brand-subtitle {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin: 0;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        /* Banner Status Info */
+        .status-banner {
+            background: rgba(31, 41, 55, 0.6);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 16px 20px;
+            margin-bottom: 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            font-size: 14px;
+        }
+
+        .status-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-badge {
+            padding: 4px 10px;
+            border-radius: 9999px;
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+
+        .status-badge.running { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+        .status-badge.sleeping { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
+        .status-badge.stopped { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
+        .status-badge.pending { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
+        .status-badge.notexist { background: rgba(156, 163, 175, 0.2); color: #d1d5db; border: 1px solid rgba(156, 163, 175, 0.4); }
+
+        .btn-quick-connect {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: none;
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);
+            text-decoration: none;
+            font-size: 13px;
+        }
+
+        .btn-quick-connect:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(16, 185, 129, 0.4);
+        }
+
+        .status-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .btn-status-action {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: none;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 13px;
+        }
+
+        .btn-status-action.btn-stop {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
+        }
+
+        .btn-status-action.btn-stop:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(239, 68, 68, 0.4);
+        }
+
+        .btn-status-action.btn-wakeup {
+            background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
+            box-shadow: 0 4px 12px rgba(14, 165, 233, 0.2);
+        }
+
+        .btn-status-action.btn-wakeup:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(14, 165, 233, 0.4);
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 24px;
+            gap: 16px;
+        }
+
+        .tab-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 15px;
+            font-weight: 600;
+            padding: 12px 16px;
+            cursor: pointer;
+            position: relative;
+            transition: color 0.3s;
+        }
+
+        .tab-btn.active {
+            color: var(--primary);
+        }
+
+        .tab-btn.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background-color: var(--primary);
+        }
+
+        /* Sub-tabs inside Creator */
+        .sub-tabs {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: 4px;
+        }
+
+        .sub-tab-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 13px;
+            font-weight: 600;
+            padding: 8px 12px;
+            cursor: pointer;
+            position: relative;
+            transition: color 0.3s;
+        }
+
+        .sub-tab-btn.active {
+            color: var(--primary);
+        }
+
+        .sub-tab-btn.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background-color: var(--primary);
+        }
+
+        /* Inline Table Action Buttons */
+        .action-btn-group {
+            display: flex;
+            gap: 6px;
+            justify-content: center;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .btn-inline-action {
+            padding: 5px 10px;
+            border-radius: 6px;
+            border: none;
+            color: white;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+        }
+
+        .btn-inline-action.btn-connect {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        }
+
+        .btn-inline-action.btn-connect:hover {
+            transform: translateY(-1px);
+            filter: brightness(1.1);
+        }
+
+        .btn-inline-action.btn-stop {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        }
+
+        .btn-inline-action.btn-stop:hover {
+            transform: translateY(-1px);
+            filter: brightness(1.1);
+        }
+
+        .btn-inline-action.btn-wakeup {
+            background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
+        }
+
+        .btn-inline-action.btn-wakeup:hover {
+            transform: translateY(-1px);
+            filter: brightness(1.1);
+        }
+
+        .btn-inline-action.btn-load {
+            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+        }
+
+        .btn-inline-action.btn-load:hover {
+            transform: translateY(-1px);
+            filter: brightness(1.1);
+        }
+
+        /* Form Layout */
+        .tab-content {
+            display: none;
+            text-align: left;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .section-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--primary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 24px;
+            margin-bottom: 16px;
+            padding-bottom: 6px;
+            border-bottom: 1px dashed rgba(255, 255, 255, 0.1);
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .input-group {
+            margin-bottom: 16px;
+        }
+
+        .input-label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .input-field {
+            width: 100%;
+            padding: 10px 14px;
+            border-radius: 8px;
+            border: 1px solid var(--input-border);
+            background-color: var(--input-bg);
+            color: var(--text-main);
+            font-size: 14px;
+            box-sizing: border-box;
+            outline: none;
+            transition: all 0.3s;
+        }
+
+        .input-field:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.15);
+        }
+
+        /* Dynamic Tables */
+        .table-container {
+            margin-bottom: 16px;
+        }
+
+        .dyn-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .dyn-table th {
+            text-align: left;
+            padding: 8px;
+            color: var(--text-muted);
+            font-weight: 600;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .dyn-table td {
+            padding: 6px 4px;
+            vertical-align: middle;
+        }
+
+        .btn-add-row {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: rgba(14, 165, 233, 0.1);
+            border: 1px solid rgba(14, 165, 233, 0.3);
+            color: var(--primary);
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 8px;
+        }
+
+        .btn-add-row:hover {
+            background: rgba(14, 165, 233, 0.2);
+            border-color: var(--primary);
+        }
+
+        .btn-del-row {
+            padding: 6px 10px;
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #f87171;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 12px;
+        }
+
+        .btn-del-row:hover {
+            background: rgba(239, 68, 68, 0.2);
+            border-color: #ef4444;
+        }
+
+        /* JSON Textarea */
+        .json-editor-container {
+            position: relative;
+        }
+
+        .json-textarea {
+            width: 100%;
+            height: 380px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 13px;
+            background-color: #0b0f19;
+            color: #38bdf8;
+            border: 1px solid var(--input-border);
+            border-radius: 8px;
+            padding: 16px;
+            box-sizing: border-box;
+            outline: none;
+            resize: vertical;
+            line-height: 1.5;
+        }
+
+        .json-textarea:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.15);
+        }
+
+        .json-error-info {
+            color: #ef4444;
+            font-size: 12px;
+            margin-top: 8px;
+            font-weight: 500;
+        }
+
+        /* Submit Area */
+        .submit-container {
+            margin-top: 32px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .btn-submit {
+            width: 100%;
+            padding: 14px;
+            border-radius: 10px;
+            border: none;
+            background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%);
+            color: #ffffff;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(14, 165, 233, 0.3);
+            letter-spacing: 0.5px;
+        }
+
+        .btn-submit:hover {
+            background: linear-gradient(135deg, #38bdf8 0%, #4f46e5 100%);
+            box-shadow: 0 6px 20px rgba(14, 165, 233, 0.45);
+            transform: translateY(-1px);
+        }
+
+        .btn-submit:active {
+            transform: translateY(1px);
+        }
+
+        /* Views management */
+        #loadingView {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 0;
+        }
+
+        /* Tech Circle Loader */
+        .loader-container {
+            position: relative;
+            width: 80px;
+            height: 80px;
+            margin-bottom: 24px;
+        }
+
+        .loader-ring {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 3px solid rgba(14, 165, 233, 0.1);
+            border-radius: 50%;
+        }
+
+        .loader-spinner {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 3px solid transparent;
+            border-top: 3px solid var(--primary);
+            border-radius: 50%;
+            animation: spin 1s cubic-bezier(0.5, 0.1, 0.4, 0.9) infinite;
+        }
+
+        .loader-glow {
+            position: absolute;
+            width: 6px;
+            height: 6px;
+            background-color: var(--primary);
+            border-radius: 50%;
+            top: 6px;
+            left: 50%;
+            transform: translateX(-50%);
+            box-shadow: 0 0 8px var(--primary);
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .status-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: var(--text-main);
+        }
+
+        .status-desc {
+            font-size: 14px;
+            color: var(--text-muted);
+            text-align: center;
+            min-height: 20px;
+        }
+
+        /* Footer credits */
+        .footer-credit {
+            margin-top: 32px;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.2);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            text-align: center;
+        }
+
+        .error-message {
+            color: #ef4444;
+            font-size: 13px;
+            margin-top: 12px;
+            min-height: 18px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="ambient-glow-1"></div>
+    <div class="ambient-glow-2"></div>
+
+    <div class="card" id="cardContainer">
+        <!-- Brand Header -->
+        <div class="brand-container">
+            <svg class="logo-svg" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M32 2L60 18V50L32 62L4 50V18L32 2Z" stroke="url(#logoGrad)" stroke-width="3" stroke-linejoin="round"/>
+                <path d="M32 12L51 23V41L32 52L13 41V23L32 12Z" fill="url(#logoFillGrad)" opacity="0.85"/>
+                <circle cx="32" cy="32" r="6" fill="#0284c7" />
+                <defs>
+                    <linearGradient id="logoGrad" x1="4" y1="2" x2="60" y2="62" gradientUnits="userSpaceOnUse">
+                        <stop stop-color="#0ea5e9"/>
+                        <stop offset="1" stop-color="#6366f1"/>
+                    </linearGradient>
+                    <linearGradient id="logoFillGrad" x1="13" y1="12" x2="51" y2="52" gradientUnits="userSpaceOnUse">
+                        <stop stop-color="rgba(14, 165, 233, 0.15)"/>
+                        <stop offset="1" stop-color="rgba(99, 102, 241, 0.15)"/>
+                    </linearGradient>
+                </defs>
+            </svg>
+            <div class="brand-text">
+                <h2 class="brand-name">BOCOMWORK</h2>
+                <div class="brand-subtitle">Cloud Workspace Provisioner</div>
+            </div>
+        </div>
+
+        <!-- Banner for status check -->
+        <div class="status-banner" id="statusBanner" style="display:none;">
+            <div class="status-info">
+                <span>当前工作空间状态:</span>
+                <span class="status-badge" id="bannerStatusBadge">Not Created</span>
+            </div>
+            <div class="status-actions" id="statusActions">
+                <a class="btn-quick-connect" id="bannerQuickConnect" href="#" target="_blank" style="display:none;">直接进入</a>
+                <button class="btn-status-action btn-stop" id="bannerStopBtn" onclick="handleStopWorkspace()" style="display:none;">停止运行</button>
+                <button class="btn-status-action btn-wakeup" id="bannerWakeupBtn" onclick="handleWakeupWorkspace()" style="display:none;">激活唤醒</button>
+            </div>
+        </div>
+
+        <!-- Main Portal Container -->
+        <div id="portalContainer">
+            <!-- Main Tabs -->
+            <div class="tabs">
+                <button class="tab-btn active" id="tabCreatorBtn" onclick="switchMainTab('creator')">创建与配置 (Create Workspace)</button>
+                <button class="tab-btn" id="tabDirectoryBtn" onclick="switchMainTab('directory')">工作空间管理 (Workspace Directory)</button>
+            </div>
+
+            <!-- Main Tab View 1: Creator Panel -->
+            <div id="creatorView">
+                <!-- Sub-tabs for form / JSON editor sync -->
+                <div class="sub-tabs">
+                    <button class="sub-tab-btn active" id="subFormBtn" onclick="switchSubTab('form')">可视化设计器 (Visual Form)</button>
+                    <button class="sub-tab-btn" id="subJsonBtn" onclick="switchSubTab('json')">JSON 配置负载 (Payload JSON)</button>
+                </div>
+
+                <!-- View 1.1: Visual Form Designer -->
+                <div id="formTabContent" class="tab-content active">
+                    <!-- Basic Configurations -->
+                    <div class="section-title">基本配置 / Basic Setup</div>
+                    <div class="grid-2">
+                        <div class="input-group">
+                            <label class="input-label" for="userId">用户 ID (userId)</label>
+                            <input class="input-field" type="text" id="userId" placeholder="sss" autocomplete="off" oninput="handleFormInput()">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label" for="namespace">命名空间 (namespace)</label>
+                            <input class="input-field" type="text" id="namespace" placeholder="bocomwork" autocomplete="off" oninput="handleFormInput()">
+                        </div>
+                    </div>
+                    <div class="grid-2">
+                        <div class="input-group">
+                            <label class="input-label" for="image">容器镜像 (image)</label>
+                            <input class="input-field" type="text" id="image" placeholder="docker.io/library/bocom-opencode-work:v1.0.5" autocomplete="off" oninput="handleFormInput()">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label" for="port">端口 (port)</label>
+                            <input class="input-field" type="number" id="port" placeholder="1234" autocomplete="off" oninput="handleFormInput()">
+                        </div>
+                    </div>
+
+                    <!-- Resource allocations -->
+                    <div class="section-title">资源与策略 / Resource & Policies</div>
+                    <div class="grid-2">
+                        <div class="input-group">
+                            <label class="input-label" for="cpu">CPU 核心数 (cpu)</label>
+                            <input class="input-field" type="text" id="cpu" placeholder="2" autocomplete="off" oninput="handleFormInput()">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label" for="memory">内存配额 (memory)</label>
+                            <input class="input-field" type="text" id="memory" placeholder="2Gi" autocomplete="off" oninput="handleFormInput()">
+                        </div>
+                    </div>
+                    <div class="grid-2">
+                        <div class="input-group">
+                            <label class="input-label" for="idleTimeout">空闲超时 (idleTimeout)</label>
+                            <input class="input-field" type="text" id="idleTimeout" placeholder="10m" autocomplete="off" oninput="handleFormInput()">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label" for="healthPath">健康检查路径 (healthPath)</label>
+                            <input class="input-field" type="text" id="healthPath" placeholder="/health" autocomplete="off" oninput="handleFormInput()">
+                        </div>
+                    </div>
+
+                    <!-- Volume Mounts -->
+                    <div class="section-title">存储挂载 / Volume Mounts</div>
+                    <div class="table-container">
+                        <table class="dyn-table" id="volumeMountsTable">
+                            <thead>
+                                <tr>
+                                    <th style="width: 50%;">挂载路径 (mountPath)</th>
+                                    <th style="width: 40%;">子目录 (subPath)</th>
+                                    <th style="width: 10%;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="volumeMountsBody">
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                        <button class="btn-add-row" onclick="addVolumeMountRow()">+ 添加挂载路径</button>
+                    </div>
+
+                    <!-- Environment variables -->
+                    <div class="section-title">环境变量 / Environment Variables</div>
+                    <div class="table-container">
+                        <table class="dyn-table" id="envTable">
+                            <thead>
+                                <tr>
+                                    <th style="width: 45%;">变量名 (Name)</th>
+                                    <th style="width: 45%;">变量值 (Value)</th>
+                                    <th style="width: 10%;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="envBody">
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                        <button class="btn-add-row" onclick="addEnvRow()">+ 添加环境变量</button>
+                    </div>
+
+                    <!-- Commands and scripts -->
+                    <div class="section-title">可选启动配置 / Entrypoint commands</div>
+                    <div class="input-group">
+                        <label class="input-label" for="command">启动命令 (command) - 英文逗号分隔</label>
+                        <input class="input-field" type="text" id="command" placeholder="bocomwork-entrypoint" autocomplete="off" oninput="handleFormInput()">
+                    </div>
+                </div>
+
+                <!-- View 1.2: JSON Payload Editor -->
+                <div id="jsonTabContent" class="tab-content">
+                    <div class="json-editor-container">
+                        <textarea class="json-textarea" id="jsonTextarea" oninput="handleJsonInput()"></textarea>
+                        <div class="json-error-info" id="jsonErrorInfo"></div>
+                    </div>
+                </div>
+
+                <!-- Submit trigger -->
+                <div class="submit-container">
+                    <button class="btn-submit" onclick="handleLaunchSubmit()">部署并进入工作空间</button>
+                    <div class="error-message" id="errorBox"></div>
+                </div>
+            </div>
+
+            <!-- Main Tab View 2: Workspace Directory Panel -->
+            <div id="directoryView" style="display:none;">
+                <!-- Search/Namespace Panel -->
+                <div style="display: flex; gap: 16px; align-items: flex-end; margin-bottom: 20px; text-align: left;">
+                    <div style="flex: 1;">
+                        <label class="input-label" for="queryNamespace">命名空间 (Namespace)</label>
+                        <input class="input-field" type="text" id="queryNamespace" value="bocomwork" placeholder="bocomwork" autocomplete="off">
+                    </div>
+                    <div>
+                        <button class="btn-submit" style="margin: 0; padding: 10px 24px; font-size: 14px; background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);" onclick="refreshWorkspaceDirectory()">查询并刷新列表</button>
+                    </div>
+                </div>
+
+                <!-- Directory Grid -->
+                <div class="table-container" style="overflow-x: auto;">
+                    <table class="dyn-table" id="directoryTable">
+                        <thead>
+                            <tr>
+                                <th style="width: 15%;">用户 ID</th>
+                                <th style="width: 15%;">实例名称</th>
+                                <th style="width: 30%;">运行镜像</th>
+                                <th style="width: 15%;">资源规格</th>
+                                <th style="width: 10%;">状态</th>
+                                <th style="width: 15%; text-align: center;">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="directoryBody">
+                            <!-- Javascript updates -->
+                        </tbody>
+                    </table>
+                    <div id="directoryEmptyState" style="text-align: center; padding: 40px 20px; color: var(--text-muted); display: none;">
+                        在该命名空间下未找到任何活跃的工作空间。
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- View 3: Loading / Startup status -->
+        <div id="loadingView">
+            <div class="loader-container">
+                <div class="loader-ring"></div>
+                <div class="loader-spinner"></div>
+                <div class="loader-glow"></div>
+            </div>
+            <div class="status-title" id="statusTitle">初始化中...</div>
+            <div class="status-desc" id="statusDesc">正在处理您的工作空间生命周期，请稍候</div>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer-credit">© 2026 BocomWork Cloud IDE Platform</div>
+    </div>
+
+    <script>
+        // Default Payload state
+        let payload = {
+            userId: "sss",
+            image: "docker.io/library/bocom-opencode-work:v1.0.5",
+            command: ["bocomwork-entrypoint"],
+            port: 1234,
+            idleTimeout: "10m",
+            namespace: "bocomwork",
+            cpu: "2",
+            memory: "2Gi",
+            volumeMounts: [
+                { mountPath: "/workspace", subPath: "workspace" },
+                { mountPath: "/data", subPath: "data" }
+            ],
+            healthPath: "/health",
+            env: [
+                { name: "oa", value: "aaa" }
+            ]
+        };
+
+        // Initialize elements
+        window.addEventListener('DOMContentLoaded', () => {
+            syncPayloadToForm();
+            renderVolumeMounts();
+            renderEnvVars();
+            syncPayloadToJsonText();
+            
+            // Setup status check on blur for primary identity identifiers
+            document.getElementById('userId').addEventListener('blur', checkStatusOfTargetWorkspace);
+            document.getElementById('namespace').addEventListener('blur', checkStatusOfTargetWorkspace);
+            
+            // Initial check
+            checkStatusOfTargetWorkspace();
+        });
+
+        // Main tab switcher
+        function switchMainTab(tab) {
+            const creatorBtn = document.getElementById('tabCreatorBtn');
+            const directoryBtn = document.getElementById('tabDirectoryBtn');
+            const creatorView = document.getElementById('creatorView');
+            const directoryView = document.getElementById('directoryView');
+            
+            if (tab === 'creator') {
+                creatorBtn.classList.add('active');
+                directoryBtn.classList.remove('active');
+                creatorView.style.display = 'block';
+                directoryView.style.display = 'none';
+            } else {
+                creatorBtn.classList.remove('active');
+                directoryBtn.classList.add('active');
+                creatorView.style.display = 'none';
+                directoryView.style.display = 'block';
+                
+                // Read creation namespace and prefill directory search namespace
+                const creationNs = document.getElementById('namespace').value.trim();
+                if (creationNs) {
+                    document.getElementById('queryNamespace').value = creationNs;
+                }
+                
+                // Fetch directory list
+                refreshWorkspaceDirectory();
+            }
+        }
+
+        // Sub tab switcher (inside Creator tab)
+        function switchSubTab(tab) {
+            const subFormBtn = document.getElementById('subFormBtn');
+            const subJsonBtn = document.getElementById('subJsonBtn');
+            const formContent = document.getElementById('formTabContent');
+            const jsonContent = document.getElementById('jsonTabContent');
+
+            if (tab === 'form') {
+                subFormBtn.classList.add('active');
+                subJsonBtn.classList.remove('active');
+                formContent.classList.add('active');
+                jsonContent.classList.remove('active');
+                
+                // Refresh form fields with potentially modified JSON from tab 2
+                syncPayloadToForm();
+                renderVolumeMounts();
+                renderEnvVars();
+            } else {
+                subFormBtn.classList.remove('active');
+                subJsonBtn.classList.add('active');
+                formContent.classList.remove('active');
+                jsonContent.classList.add('active');
+                
+                // Sync current form fields to payload first, then jsonText
+                syncFormFieldsToPayload();
+                syncPayloadToJsonText();
+            }
+        }
+
+        // Fetch directory of workspaces inside specified namespace
+        async function refreshWorkspaceDirectory() {
+            const namespace = document.getElementById('queryNamespace').value.trim() || 'default';
+            const tbody = document.getElementById('directoryBody');
+            const emptyState = document.getElementById('directoryEmptyState');
+            const table = document.getElementById('directoryTable');
+            
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 24px; color: var(--text-muted);">正在加载工作空间列表，请稍候...</td></tr>';
+            emptyState.style.display = 'none';
+            table.style.display = 'table';
+            
+            try {
+                const res = await fetch('/api/workspaces?namespace=' + encodeURIComponent(namespace));
+                if (!res.ok) {
+                    throw new Error("获取工作空间列表失败: " + await res.text());
+                }
+                const items = await res.json();
+                tbody.innerHTML = '';
+                
+                if (!items || items.length === 0) {
+                    table.style.display = 'none';
+                    emptyState.style.display = 'block';
+                    return;
+                }
+                
+                items.forEach(item => {
+                    const tr = document.createElement('tr');
+                    
+                    const phase = item.phase || 'Unknown';
+                    const phaseLower = phase.toLowerCase();
+                    const badgeHtml = '<span class="status-badge ' + phaseLower + '">' + phase + '</span>';
+                    
+                    let actionButtons = '';
+                    if (phase === 'Running') {
+                        actionButtons = 
+                            '<a class="btn-inline-action btn-connect" href="' + escapeHtml(item.url) + '" target="_blank">进入</a>' +
+                            '<button class="btn-inline-action btn-stop" onclick="inlineStopWorkspace(\'' + escapeHtml(item.userID) + '\')">停止</button>';
+                    } else if (phase === 'Sleeping' || phase === 'Stopped') {
+                        actionButtons = 
+                            '<button class="btn-inline-action btn-wakeup" onclick="inlineWakeupWorkspace(\'' + escapeHtml(item.userID) + '\')">唤醒</button>';
+                    } else {
+                        actionButtons = '<span style="color: var(--text-muted); font-size: 11px; padding: 0 4px;">调度中...</span>';
+                    }
+                    
+                    // Modify button
+                    actionButtons += '<button class="btn-inline-action btn-load" onclick="loadWorkspaceToForm(\'' + escapeHtml(item.userID) + '\', \'' + escapeHtml(item.image) + '\', \'' + escapeHtml(item.cpu) + '\', \'' + escapeHtml(item.memory) + '\')">载入修改</button>';
+                    
+                    tr.innerHTML = 
+                        '<td>' + escapeHtml(item.userID) + '</td>' +
+                        '<td>' + escapeHtml(item.name) + '</td>' +
+                        '<td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="' + escapeHtml(item.image) + '">' + escapeHtml(item.image) + '</td>' +
+                        '<td>CPU: ' + escapeHtml(item.cpu || '-') + ' / 内存: ' + escapeHtml(item.memory || '-') + '</td>' +
+                        '<td>' + badgeHtml + '</td>' +
+                        '<td style="text-align: center;"><div class="action-btn-group">' + actionButtons + '</div></td>';
+                    
+                    tbody.appendChild(tr);
+                });
+            } catch (err) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 24px; color: #ef4444;">' + escapeHtml(err.message) + '</td></tr>';
+            }
+        }
+
+        // Inline actions
+        async function inlineStopWorkspace(userId) {
+            const namespace = document.getElementById('queryNamespace').value.trim() || 'default';
+            if (!confirm('确定要停止用户 ' + userId + ' 的工作空间吗？')) return;
+            
+            const portal = document.getElementById('portalContainer');
+            const loader = document.getElementById('loadingView');
+            portal.style.display = "none";
+            loader.style.display = "flex";
+            
+            try {
+                setStatus("正在停止工作空间...", "正在停止工作空间容器，请稍候...");
+                const res = await fetch('/api/workspaces/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId, namespace })
+                });
+                if (!res.ok) {
+                    throw new Error("停止失败: " + await res.text());
+                }
+                setStatus("停止成功！", "工作空间已停止");
+                setTimeout(() => {
+                    portal.style.display = "block";
+                    loader.style.display = "none";
+                    refreshWorkspaceDirectory();
+                }, 1000);
+            } catch (err) {
+                portal.style.display = "block";
+                loader.style.display = "none";
+                alert(err.message);
+                refreshWorkspaceDirectory();
+            }
+        }
+
+        async function inlineWakeupWorkspace(userId) {
+            const namespace = document.getElementById('queryNamespace').value.trim() || 'default';
+            const portal = document.getElementById('portalContainer');
+            const loader = document.getElementById('loadingView');
+            portal.style.display = "none";
+            loader.style.display = "flex";
+            
+            try {
+                setStatus("正在激活工作空间...", "正在唤醒工作空间容器并配置解析，请稍候...");
+                const res = await fetch('/api/workspaces/wakeup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId, namespace })
+                });
+                if (!res.ok) {
+                    throw new Error("唤醒失败: " + await res.text());
+                }
+                const data = await res.json();
+                setStatus("唤醒就绪！", "工作空间已就绪，正在跳转进入...");
+                setTimeout(() => {
+                    window.location.href = data.url;
+                }, 1000);
+            } catch (err) {
+                portal.style.display = "block";
+                loader.style.display = "none";
+                alert(err.message);
+                refreshWorkspaceDirectory();
+            }
+        }
+
+        // Load row config into form designer
+        function loadWorkspaceToForm(userId, image, cpu, memory) {
+            const namespace = document.getElementById('queryNamespace').value.trim() || 'default';
+            
+            payload.userId = userId;
+            payload.namespace = namespace;
+            payload.image = image;
+            payload.cpu = cpu;
+            payload.memory = memory;
+            
+            syncPayloadToForm();
+            syncPayloadToJsonText();
+            
+            // Switch to creator tab
+            switchMainTab('creator');
+            checkStatusOfTargetWorkspace();
+            
+            // Highlight creator Form tab
+            switchSubTab('form');
+        }
+
+        // Render Volume Mounts dynamic table rows
+        function renderVolumeMounts() {
+            const tbody = document.getElementById('volumeMountsBody');
+            tbody.innerHTML = '';
+            
+            payload.volumeMounts.forEach((vm, idx) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td>' +
+                    '<input class="input-field" type="text" value="' + escapeHtml(vm.mountPath) + '" placeholder="/path" ' +
+                           'oninput="updateVolumeMountField(' + idx + ', \'mountPath\', this.value)">' +
+                '</td>' +
+                '<td>' +
+                    '<input class="input-field" type="text" value="' + escapeHtml(vm.subPath || '') + '" placeholder="subdir" ' +
+                           'oninput="updateVolumeMountField(' + idx + ', \'subPath\', this.value)">' +
+                '</td>' +
+                '<td style="text-align: center;">' +
+                    '<button class="btn-del-row" onclick="deleteVolumeMountRow(' + idx + ')">删除</button>' +
+                '</td>';
+                tbody.appendChild(tr);
+            });
+        }
+
+        function updateVolumeMountField(idx, field, value) {
+            payload.volumeMounts[idx][field] = value;
+            syncPayloadToJsonText();
+        }
+
+        function addVolumeMountRow() {
+            payload.volumeMounts.push({ mountPath: '', subPath: '' });
+            renderVolumeMounts();
+            syncPayloadToJsonText();
+        }
+
+        function deleteVolumeMountRow(idx) {
+            payload.volumeMounts.splice(idx, 1);
+            renderVolumeMounts();
+            syncPayloadToJsonText();
+        }
+
+        // Render Env variables dynamic table rows
+        function renderEnvVars() {
+            const tbody = document.getElementById('envBody');
+            tbody.innerHTML = '';
+            
+            payload.env.forEach((e, idx) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td>' +
+                    '<input class="input-field" type="text" value="' + escapeHtml(e.name) + '" placeholder="KEY" ' +
+                           'oninput="updateEnvField(' + idx + ', \'name\', this.value)">' +
+                '</td>' +
+                '<td>' +
+                    '<input class="input-field" type="text" value="' + escapeHtml(e.value) + '" placeholder="value" ' +
+                           'oninput="updateEnvField(' + idx + ', \'value\', this.value)">' +
+                '</td>' +
+                '<td style="text-align: center;">' +
+                    '<button class="btn-del-row" onclick="deleteEnvRow(' + idx + ')">删除</button>' +
+                '</td>';
+                tbody.appendChild(tr);
+            });
+        }
+
+        function updateEnvField(idx, field, value) {
+            payload.env[idx][field] = value;
+            syncPayloadToJsonText();
+        }
+
+        function addEnvRow() {
+            payload.env.push({ name: '', value: '' });
+            renderEnvVars();
+            syncPayloadToJsonText();
+        }
+
+        function deleteEnvRow(idx) {
+            payload.env.splice(idx, 1);
+            renderEnvVars();
+            syncPayloadToJsonText();
+        }
+
+        // Parse visual fields and build payload
+        function syncFormFieldsToPayload() {
+            payload.userId = document.getElementById('userId').value.trim();
+            payload.namespace = document.getElementById('namespace').value.trim();
+            payload.image = document.getElementById('image').value.trim();
+            
+            const portVal = parseInt(document.getElementById('port').value, 10);
+            payload.port = isNaN(portVal) ? 0 : portVal;
+            
+            payload.cpu = document.getElementById('cpu').value.trim();
+            payload.memory = document.getElementById('memory').value.trim();
+            payload.idleTimeout = document.getElementById('idleTimeout').value.trim();
+            payload.healthPath = document.getElementById('healthPath').value.trim();
+            
+            const cmdVal = document.getElementById('command').value.trim();
+            if (cmdVal) {
+                payload.command = cmdVal.split(',').map(s => s.trim()).filter(Boolean);
+            } else {
+                payload.command = [];
+            }
+        }
+
+        // Apply payload values back to Visual Form fields
+        function syncPayloadToForm() {
+            document.getElementById('userId').value = payload.userId || '';
+            document.getElementById('namespace').value = payload.namespace || '';
+            document.getElementById('image').value = payload.image || '';
+            document.getElementById('port').value = payload.port || '';
+            document.getElementById('cpu').value = payload.cpu || '';
+            document.getElementById('memory').value = payload.memory || '';
+            document.getElementById('idleTimeout').value = payload.idleTimeout || '';
+            document.getElementById('healthPath').value = payload.healthPath || '';
+            document.getElementById('command').value = (payload.command || []).join(', ');
+        }
+
+        // Write current payload model to JSON Editor textarea
+        function syncPayloadToJsonText() {
+            document.getElementById('jsonTextarea').value = JSON.stringify(payload, null, 2);
+        }
+
+        // Realtime sync from visual form to payload + text
+        function handleFormInput() {
+            syncFormFieldsToPayload();
+            syncPayloadToJsonText();
+        }
+
+        // Realtime sync from JSON text to payload (if valid JSON)
+        function handleJsonInput() {
+            const text = document.getElementById('jsonTextarea').value;
+            const errDiv = document.getElementById('jsonErrorInfo');
+            
+            try {
+                const parsed = JSON.parse(text);
+                if (typeof parsed === 'object' && parsed !== null) {
+                    payload = parsed;
+                    errDiv.innerText = ''; // Clear error
+                }
+            } catch (e) {
+                errDiv.innerText = 'JSON 语法错误: ' + e.message;
+            }
+        }
+
+        // Check workspace status on backend
+        async function checkStatusOfTargetWorkspace() {
+            const userId = document.getElementById('userId').value.trim();
+            const namespace = document.getElementById('namespace').value.trim() || 'default';
+            const banner = document.getElementById('statusBanner');
+            const badge = document.getElementById('bannerStatusBadge');
+            const quickConn = document.getElementById('bannerQuickConnect');
+            const stopBtn = document.getElementById('bannerStopBtn');
+            const wakeupBtn = document.getElementById('bannerWakeupBtn');
+
+            if (!userId) {
+                banner.style.display = 'none';
+                return;
+            }
+
+            try {
+                const statusRes = await fetch('/api/workspaces?userId=' + encodeURIComponent(userId) + '&namespace=' + encodeURIComponent(namespace));
+                if (statusRes.ok) {
+                    const statusData = await statusRes.json();
+                    banner.style.display = 'flex';
+                    
+                    if (statusData.exists) {
+                        const phase = statusData.phase || 'Unknown';
+                        badge.innerText = phase;
+                        badge.className = 'status-badge ' + phase.toLowerCase();
+                        
+                        if (phase === 'Running') {
+                            if (statusData.url) {
+                                quickConn.href = statusData.url;
+                                quickConn.style.display = 'inline-block';
+                            } else {
+                                quickConn.style.display = 'none';
+                            }
+                            stopBtn.style.display = 'inline-block';
+                            wakeupBtn.style.display = 'none';
+                        } else if (phase === 'Sleeping' || phase === 'Stopped') {
+                            quickConn.style.display = 'none';
+                            stopBtn.style.display = 'none';
+                            wakeupBtn.style.display = 'inline-block';
+                        } else {
+                            quickConn.style.display = 'none';
+                            stopBtn.style.display = 'none';
+                            wakeupBtn.style.display = 'none';
+                        }
+                    } else {
+                        badge.innerText = 'Not Created';
+                        badge.className = 'status-badge notexist';
+                        quickConn.style.display = 'none';
+                        stopBtn.style.display = 'none';
+                        wakeupBtn.style.display = 'none';
+                    }
+                }
+            } catch (err) {
+                console.error("查询工作空间状态发生异常", err);
+            }
+        }
+
+        // Stop workspace handler
+        async function handleStopWorkspace() {
+            const userId = document.getElementById('userId').value.trim();
+            const namespace = document.getElementById('namespace').value.trim() || 'default';
+            const errorBox = document.getElementById('errorBox');
+            errorBox.innerText = "";
+
+            if (!userId) return;
+
+            const portal = document.getElementById('portalContainer');
+            const loader = document.getElementById('loadingView');
+            const banner = document.getElementById('statusBanner');
+            
+            portal.style.display = "none";
+            banner.style.display = "none";
+            loader.style.display = "flex";
+
+            try {
+                setStatus("正在停止工作空间...", "正在向集群发送停止指令，请稍候...");
+                const response = await fetch('/api/workspaces/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId, namespace })
+                });
+
+                if (!response.ok) {
+                    throw new Error("停止工作空间失败: " + await response.text());
+                }
+
+                setStatus("停止成功！", "工作空间已成功停止运行");
+                setTimeout(() => {
+                    portal.style.display = "block";
+                    loader.style.display = "none";
+                    checkStatusOfTargetWorkspace();
+                }, 1000);
+            } catch (err) {
+                portal.style.display = "block";
+                loader.style.display = "none";
+                errorBox.innerText = err.message;
+                checkStatusOfTargetWorkspace();
+            }
+        }
+
+        // Wakeup/Resume workspace handler
+        async function handleWakeupWorkspace() {
+            const userId = document.getElementById('userId').value.trim();
+            const namespace = document.getElementById('namespace').value.trim() || 'default';
+            const errorBox = document.getElementById('errorBox');
+            errorBox.innerText = "";
+
+            if (!userId) return;
+
+            const portal = document.getElementById('portalContainer');
+            const loader = document.getElementById('loadingView');
+            const banner = document.getElementById('statusBanner');
+            
+            portal.style.display = "none";
+            banner.style.display = "none";
+            loader.style.display = "flex";
+
+            try {
+                setStatus("正在唤醒工作空间...", "正在激活工作空间容器并调度资源，请稍候...");
+                const response = await fetch('/api/workspaces/wakeup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId, namespace })
+                });
+
+                if (!response.ok) {
+                    throw new Error("唤醒工作空间失败: " + await response.text());
+                }
+
+                const data = await response.json();
+                setStatus("唤醒就绪！", "工作空间正在拉起，即将进入...");
+                setTimeout(() => {
+                    window.location.href = data.url;
+                }, 1000);
+            } catch (err) {
+                portal.style.display = "block";
+                loader.style.display = "none";
+                errorBox.innerText = err.message;
+                checkStatusOfTargetWorkspace();
+            }
+        }
+
+        // Submit form handler
+        async function handleLaunchSubmit() {
+            // Lock UI and show loader
+            const activeTab = document.querySelector('.sub-tab-btn.active').id;
+            if (activeTab === 'subFormBtn') {
+                syncFormFieldsToPayload();
+            } else {
+                // For JSON tab, double check if it is currently valid JSON before proceeding
+                const text = document.getElementById('jsonTextarea').value;
+                try {
+                    payload = JSON.parse(text);
+                } catch (e) {
+                    document.getElementById('errorBox').innerText = '当前 JSON 配置格式有误，请修正后再提交！';
+                    return;
+                }
+            }
+
+            const errorBox = document.getElementById('errorBox');
+            errorBox.innerText = "";
+
+            if (!payload.userId) {
+                errorBox.innerText = "用户 ID 为必填项！";
+                return;
+            }
+
+            const portal = document.getElementById('portalContainer');
+            const loader = document.getElementById('loadingView');
+            const banner = document.getElementById('statusBanner');
+            
+            portal.style.display = "none";
+            banner.style.display = "none";
+            loader.style.display = "flex";
+
+            try {
+                setStatus("配置应用中...", "正在提交您的定制规格，请稍候...");
+                
+                const response = await fetch('/api/workspaces', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error("工作空间部署失败: " + await response.text());
+                }
+
+                const data = await response.json();
+                setStatus("部署成功！", "工作空间实例就绪，正在准备环境并进入系统...");
+                
+                setTimeout(() => {
+                    window.location.href = data.url;
+                }, 1000);
+            } catch (err) {
+                portal.style.display = "block";
+                loader.style.display = "none";
+                errorBox.innerText = err.message;
+                checkStatusOfTargetWorkspace(); // Restore banner if possible
+            }
+        }
+
+        // Helper to update loading status UI
+        function setStatus(title, desc) {
+            document.getElementById('statusTitle').innerText = title;
+            document.getElementById('statusDesc').innerText = desc;
+        }
+
+        // HTML Escape helper
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        // Helper to update loading status UI
+        function setStatus(title, desc) {
+            document.getElementById('statusTitle').innerText = title;
+            document.getElementById('statusDesc').innerText = desc;
+        }
+
+        // HTML Escape helper
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+    </script>
+</body>
+</html>
