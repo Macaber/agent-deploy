@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -118,7 +119,7 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 			}
 
 			ctx := r.Context()
-			wsName := fmt.Sprintf("ws-%s", userID)
+			wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", userID))
 			namespace := r.URL.Query().Get("namespace")
 			if namespace == "" {
 				namespace = "default"
@@ -179,7 +180,7 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		ctx := r.Context()
-		wsName := fmt.Sprintf("ws-%s", req.UserID)
+		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", req.UserID))
 		namespace := req.Namespace
 		if namespace == "" {
 			namespace = "default"
@@ -387,7 +388,7 @@ func stopWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		ctx := r.Context()
-		wsName := fmt.Sprintf("ws-%s", req.UserID)
+		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", req.UserID))
 		namespace := req.Namespace
 		if namespace == "" {
 			namespace = "default"
@@ -434,7 +435,7 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		ctx := r.Context()
-		wsName := fmt.Sprintf("ws-%s", req.UserID)
+		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", req.UserID))
 		namespace := req.Namespace
 		if namespace == "" {
 			namespace = "default"
@@ -525,6 +526,21 @@ func getWorkspaceURL(userID string, wsName string, endpoint string) string {
 		endpoint = fmt.Sprintf("%s.%s", wsName, domain)
 	}
 	return fmt.Sprintf("http://%s", endpoint)
+}
+
+// sanitizeK8sName converts a raw string into a valid Kubernetes resource name (RFC 1123).
+// Rules: lowercase, only [a-z0-9-], no leading/trailing hyphens, max 63 chars.
+var invalidK8sChars = regexp.MustCompile(`[^a-z0-9-]+`)
+
+func sanitizeK8sName(name string) string {
+	name = strings.ToLower(name)
+	name = strings.ReplaceAll(name, "_", "-")
+	name = invalidK8sChars.ReplaceAllString(name, "-")
+	name = strings.Trim(name, "-")
+	if len(name) > 63 {
+		name = strings.TrimRight(name[:63], "-")
+	}
+	return name
 }
 
 //go:embed portal.html
