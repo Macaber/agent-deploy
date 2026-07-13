@@ -27,11 +27,11 @@ graph TD
 
 ## 步骤 1：有网环境资源打包 (开发机)
 
-在具备公网访问权限的开发机上，下载并打包部署所需的全部镜像与清单到统一的 `offline-images` 目录下：
+在具备公网访问权限的开发机上，下载并打包部署所需的全部镜像与清单到统一的 `deploy` 目录下：
 
 ```bash
 # 1. 创建统一的离线部署资源目录
-mkdir -p ./offline-images
+mkdir -p ./deploy
 
 # 2. 拉取外部依赖及基础镜像 (注意：开发机为 Mac 时，必须指定 --platform linux/amd64 以确保拉取 x86 镜像)
 docker pull --platform linux/amd64 smanx/opencode:latest
@@ -47,18 +47,18 @@ docker build --platform linux/amd64 -t workspace-operator:v1.0.0 .
 docker build --platform linux/amd64 -f Dockerfile.api-server -t api-server:v1.0.0 .
 cd -
 
-# 4. 导出所有镜像为 tar 包到 offline-images 目录下
-docker save smanx/opencode:latest -o ./offline-images/opencode.tar
-docker save registry.k8s.io/ingress-nginx/controller:v1.9.4 -o ./offline-images/ingress-controller.tar
-docker save registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.4.0 -o ./offline-images/ingress-certgen.tar
-docker save registry.k8s.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2 -o ./offline-images/nfs-provisioner.tar
-docker save workspace-operator:v1.0.0 -o ./offline-images/workspace-operator.tar
-docker save api-server:v1.0.0 -o ./offline-images/api-server.tar
+# 4. 导出所有镜像为 tar 包到 deploy 目录下
+docker save smanx/opencode:latest -o ./deploy/opencode.tar
+docker save registry.k8s.io/ingress-nginx/controller:v1.9.4 -o ./deploy/ingress-controller.tar
+docker save registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.4.0 -o ./deploy/ingress-certgen.tar
+docker save registry.k8s.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2 -o ./deploy/nfs-provisioner.tar
+docker save workspace-operator:v1.0.0 -o ./deploy/workspace-operator.tar
+docker save api-server:v1.0.0 -o ./deploy/api-server.tar
 ```
 
 ### 1.2 生成与收集全部 YAML 部署清单
 
-我们需要把平台部署所需的全部清单统一拷贝到 `offline-images` 目录下：
+我们需要把平台部署所需的全部清单统一拷贝到 `deploy` 目录下：
 
 ```bash
 cd /Users/yfsun/mywork/agent-deploy
@@ -67,24 +67,20 @@ cd /Users/yfsun/mywork/agent-deploy
 GOWORK=off make build-installer IMG=workspace-operator:v1.0.0
 
 # 2. 将生成的一键安装包、api-server-deploy.yaml 以及 ingress-deploy.yaml 拷贝到统一离线目录
-cp dist/install.yaml ./offline-images/
-cp dist/api-server-deploy.yaml ./offline-images/
-cp dist/ingress-deploy.yaml ./offline-images/
+cp dist/install.yaml ./deploy/
 
-# 3. 将本地已下载并配置好的 nfs 目录整个拷贝过去
-cp -r dist/nfs ./offline-images/
 ```
 
-此时，开发机上的 **`offline-images`** 目录已成为了一个**完全自建、开箱即用的离线交付包**，里面同时包含了所有的 `.tar` 镜像文件与 `.yaml` 部署资源。
+此时，开发机上的 **`deploy`** 目录已成为了一个**完全自建、开箱即用的离线交付包**，里面同时包含了所有的 `.tar` 镜像文件与 `.yaml` 部署资源。
 
 ---
 
 ## 步骤 2：离线导入私有镜像仓库
 
-将整个 `offline-images` 目录拷贝到离线环境的镜像节点上，导入镜像并推送（Push）到内部的私有镜像仓库（如 Harbor）：
+将整个 `deploy` 目录拷贝到离线环境的镜像节点上，导入镜像并推送（Push）到内部的私有镜像仓库（如 Harbor）：
 
 ```bash
-cd ./offline-images
+cd ./deploy
 
 # 1. 导入镜像到本地 docker 引擎
 ctr -n k8s.io images import opencode.tar
@@ -100,7 +96,7 @@ ctr -n k8s.io images import api-server.tar
 
 ## 步骤 3：部署 NAS (NFS) 共享存储
 
-在多节点生产集群中，必须通过网络文件系统（NAS / NFS）对开发环境进行持久化。在离线 K8s 节点上，进入 `offline-images` 目录执行部署：
+在多节点生产集群中，必须通过网络文件系统（NAS / NFS）对开发环境进行持久化。在离线 K8s 节点上，进入 `deploy` 目录执行部署：
 
 1. **配置 RBAC 授权**：
 
@@ -214,7 +210,7 @@ ctr -n k8s.io images import api-server.tar
 
 ## 步骤 6：部署 Operator 与 API Server
 
-在离线 K8s 节点上，进入 `offline-images` 目录，执行平台应用的拉起：
+在离线 K8s 节点上，进入 `deploy` 目录，执行平台应用的拉起：
 
 1. **部署自定义 CRD 及 Operator 控制器**：
 
