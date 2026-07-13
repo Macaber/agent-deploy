@@ -144,7 +144,27 @@ type WorkspaceSpec struct {
 	// Stopped indicates whether the workspace is manually stopped (scaled to 0 replicas)
 	// +optional
 	Stopped bool `json:"stopped,omitempty"`
+
+	// SharedVolumeMounts specifies pre-existing generic/shared PVCs to mount
+	// +optional
+	SharedVolumeMounts []SharedVolumeMount `json:"sharedVolumeMounts,omitempty"`
 }
+
+// SharedVolumeMount defines a mount of a pre-existing generic/shared PVC.
+type SharedVolumeMount struct {
+	// PVCName is the name of the pre-existing PersistentVolumeClaim to mount
+	// +kubebuilder:validation:Required
+	PVCName string `json:"pvcName"`
+
+	// MountPath is the path inside the container where the volume should be mounted
+	// +kubebuilder:validation:Required
+	MountPath string `json:"mountPath"`
+
+	// SubPath is the subdirectory within the shared volume to mount
+	// +optional
+	SubPath string `json:"subPath,omitempty"`
+}
+
 
 // WorkspacePhase defines the state transitions of the Workspace
 // +kubebuilder:validation:Enum=Pending;Starting;Running;Sleeping;Stopped;Failed

@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: global-shared-assets-pv # 自定义 PV 名称
+spec:
+  capacity:
+    storage: 10Gi # 声明容量，不影响 NFS 真实使用
+  accessModes:
+    - ReadWriteMany # 必须为 RWX 以支持多 Pod 同时挂载
+  persistentVolumeReclaimPolicy: Retain # 删除 PVC 时保留 PV 和 NAS 数据
+  # 显式指定挂载参数，确保各 K8s 节点挂载参数一致
+  mountOptions:
+    - nfsvers=3
+    - nolock
+    - tcp
+    - noatime
+    - noresvport
+  nfs:
+    server: 10.3.243.101 # NAS 服务的 IP 地址
+    path: /workspace/frontend-shared # NAS 共享的绝对路径目录（按需修改）

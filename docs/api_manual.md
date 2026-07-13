@@ -63,10 +63,10 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   | :--- | :--- | :--- | :--- | :--- |
   | **`userId`** | `string` | **是** | - | 用户唯一标识（决定 workspace 资源名称 `ws-<userId>`）。 |
   | **`namespace`** | `string` | 否 | `"default"` | 工作空间所在的 K8s 命名空间。 |
-  | **`image`** | `string` | 否 | `"smanx/opencode:latest"` | 启动工作空间的容器镜像。 |
+  | **`image`** | `string` | **是** | - | 启动工作空间的容器镜像。 |
   | **`port`** | `int` | 否 | `4096` | 容器监听端口。 |
-  | **`cpu`** | `string` | 否 | - | CPU 资源配额限额，例如 `"1"` (1核)、`"500m"`。 |
-  | **`memory`** | `string` | 否 | - | 内存资源配额限额，例如 `"2Gi"`, `"512Mi"`。 |
+  | **`cpu`** | `string` | 否 | `"500m"` (0.5核) | CPU 资源配额限制与请求，若为空则缺省为 0.5 核。 |
+  | **`memory`** | `string` | 否 | `"1Gi"` | 内存资源配额限制与请求，若为空则缺省为 1G。 |
   | **`storageSize`** | `string` | 否 | `"1Gi"` | 持久化 PVC 大小规格，例如 `"10Gi"`。 |
   | **`storageClass`** | `string`| 否 | - | 指定使用的 StorageClass 名称。 |
   | **`idleTimeout`** | `string` | 否 | `"5m"` (测试模式下) | 空闲超时自动休眠时间，Go 持续时间格式，如 `"30m"`。 |
@@ -75,6 +75,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   | **`command`** | `array` | 否 | - | 自定义容器的启动入口命令 (对应 `ENTRYPOINT`)，如 `["nginx"]`。 |
   | **`args`** | `array` | 否 | - | 自定义容器启动入口命令参数 (对应 `CMD`)，如 `["-g", "daemon off;"]`。 |
   | **`volumeMounts`** | `array` | 否 | - | 自定义持久卷在容器内的挂载路径及卷内子目录映射。如 `[{"mountPath": "/app", "subPath": "app-dir"}]`。 |
+  | **`sharedVolumeMounts`** | `array` | 否 | - | 预先存在的共享存储卷 (PVC) 挂载配置列表，格式为 `[{"pvcName": "shared-pvc", "mountPath": "/shared", "subPath": "subdir"}]`。 |
   | **`postStartScript`** | `string` | 否 | - | **K8s 原生生命周期钩子**。容器启动后立即在后台异步运行的多行 Shell 脚本。 |
   | **`healthPath`** | `string` | 否 | - | **自定义就绪探针 HTTP 路径**。若指定（例如 `"/health"`），K8s 将使用 HTTP GET 探测此路径；若不指定或为空，默认回退使用 TCP 协议对暴露端口（`port`）进行存活健康探测。 |
 
@@ -86,7 +87,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
     "image": "smanx/opencode:latest",
     "port": 4096,
     "cpu": "1",
-    "memory": "2Gi",
+    "memory": "1Gi",
     "storageSize": "10Gi",
     "idleTimeout": "30m",
     "exposeSSH": true,
@@ -102,6 +103,13 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
       {
         "mountPath": "/workspace",
         "subPath": "my-project"
+      }
+    ],
+    "sharedVolumeMounts": [
+      {
+        "pvcName": "global-shared-assets",
+        "mountPath": "/shared/assets",
+        "subPath": "frontend-dist"
       }
     ],
     "postStartScript": "echo 'Container initialized' && touch /workspace/boot-success",

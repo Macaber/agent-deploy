@@ -688,11 +688,11 @@
                     <div class="grid-2">
                         <div class="input-group">
                             <label class="input-label" for="cpu">CPU 核心数 (cpu)</label>
-                            <input class="input-field" type="text" id="cpu" placeholder="2" autocomplete="off" oninput="handleFormInput()">
+                            <input class="input-field" type="text" id="cpu" placeholder="1" autocomplete="off" oninput="handleFormInput()">
                         </div>
                         <div class="input-group">
                             <label class="input-label" for="memory">内存配额 (memory)</label>
-                            <input class="input-field" type="text" id="memory" placeholder="2Gi" autocomplete="off" oninput="handleFormInput()">
+                            <input class="input-field" type="text" id="memory" placeholder="1Gi" autocomplete="off" oninput="handleFormInput()">
                         </div>
                     </div>
                     <div class="grid-2">
@@ -722,6 +722,25 @@
                             </tbody>
                         </table>
                         <button class="btn-add-row" onclick="addVolumeMountRow()">+ 添加挂载路径</button>
+                    </div>
+
+                    <!-- Shared Volume Mounts -->
+                    <div class="section-title">共享卷挂载 / Shared Volume Mounts</div>
+                    <div class="table-container">
+                        <table class="dyn-table" id="sharedVolumeMountsTable">
+                            <thead>
+                                <tr>
+                                    <th style="width: 35%;">PVC 名称 (pvcName)</th>
+                                    <th style="width: 35%;">挂载路径 (mountPath)</th>
+                                    <th style="width: 20%;">子目录 (subPath)</th>
+                                    <th style="width: 10%;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="sharedVolumeMountsBody">
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                        <button class="btn-add-row" onclick="addSharedVolumeMountRow()">+ 添加共享卷挂载</button>
                     </div>
 
                     <!-- Environment variables -->
@@ -826,12 +845,13 @@
             port: 1234,
             idleTimeout: "10m",
             namespace: "bocomwork",
-            cpu: "2",
-            memory: "2Gi",
+            cpu: "1",
+            memory: "1Gi",
             volumeMounts: [
                 { mountPath: "/workspace", subPath: "workspace" },
                 { mountPath: "/data", subPath: "data" }
             ],
+            sharedVolumeMounts: [],
             healthPath: "/health",
             env: [
                 { name: "oa", value: "aaa" }
@@ -842,6 +862,7 @@
         window.addEventListener('DOMContentLoaded', () => {
             syncPayloadToForm();
             renderVolumeMounts();
+            renderSharedVolumeMounts();
             renderEnvVars();
             syncPayloadToJsonText();
             
@@ -898,6 +919,7 @@
                 // Refresh form fields with potentially modified JSON from tab 2
                 syncPayloadToForm();
                 renderVolumeMounts();
+                renderSharedVolumeMounts();
                 renderEnvVars();
             } else {
                 subFormBtn.classList.remove('active');
@@ -1078,6 +1100,56 @@
                 '</td>';
                 tbody.appendChild(tr);
             });
+        }
+
+        // Render Shared Volume Mounts dynamic table rows
+        function renderSharedVolumeMounts() {
+            const tbody = document.getElementById('sharedVolumeMountsBody');
+            tbody.innerHTML = '';
+            
+            if (!payload.sharedVolumeMounts) {
+                payload.sharedVolumeMounts = [];
+            }
+            
+            payload.sharedVolumeMounts.forEach((svm, idx) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td>' +
+                    '<input class="input-field" type="text" value="' + escapeHtml(svm.pvcName) + '" placeholder="shared-pvc-name" ' +
+                           'oninput="updateSharedVolumeMountField(' + idx + ', \'pvcName\', this.value)">' +
+                '</td>' +
+                '<td>' +
+                    '<input class="input-field" type="text" value="' + escapeHtml(svm.mountPath) + '" placeholder="/shared-path" ' +
+                           'oninput="updateSharedVolumeMountField(' + idx + ', \'mountPath\', this.value)">' +
+                '</td>' +
+                '<td>' +
+                    '<input class="input-field" type="text" value="' + escapeHtml(svm.subPath || '') + '" placeholder="subdir" ' +
+                           'oninput="updateSharedVolumeMountField(' + idx + ', \'subPath\', this.value)">' +
+                '</td>' +
+                '<td style="text-align: center;">' +
+                    '<button class="btn-del-row" onclick="deleteSharedVolumeMountRow(' + idx + ')">删除</button>' +
+                '</td>';
+                tbody.appendChild(tr);
+            });
+        }
+
+        function updateSharedVolumeMountField(idx, field, value) {
+            payload.sharedVolumeMounts[idx][field] = value;
+            syncPayloadToJsonText();
+        }
+
+        function addSharedVolumeMountRow() {
+            if (!payload.sharedVolumeMounts) {
+                payload.sharedVolumeMounts = [];
+            }
+            payload.sharedVolumeMounts.push({ pvcName: '', mountPath: '', subPath: '' });
+            renderSharedVolumeMounts();
+            syncPayloadToJsonText();
+        }
+
+        function deleteSharedVolumeMountRow(idx) {
+            payload.sharedVolumeMounts.splice(idx, 1);
+            renderSharedVolumeMounts();
+            syncPayloadToJsonText();
         }
 
         function updateVolumeMountField(idx, field, value) {

@@ -1,0 +1,16 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: dynamic-nas-frontend
+provisioner: nfs.csi.k8s.io # 官方 NFS CSI 驱动的 provisioner 名字
+volumeBindingMode: Immediate
+parameters:
+  server: 10.3.243.101 # NAS IP
+  share: /workspace/frontend-shared # NAS 共享目录（修改此路径）
+  subDir: ${pvc.metadata.namespace}-${pvc.metadata.name}
+mountOptions:
+  - nfsvers=3
+  - nolock
+  - tcp
+  - noatime
+  - noresvport

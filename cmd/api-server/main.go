@@ -170,12 +170,17 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 			Env             []aiv1alpha1.EnvVar      `json:"env,omitempty"`
 			Command         []string                 `json:"command,omitempty"`
 			Args            []string                 `json:"args,omitempty"`
-			VolumeMounts    []aiv1alpha1.VolumeMount `json:"volumeMounts,omitempty"`
-			PostStartScript string                   `json:"postStartScript,omitempty"`
-			HealthPath      string                   `json:"healthPath,omitempty"`
+			VolumeMounts    []aiv1alpha1.VolumeMount       `json:"volumeMounts,omitempty"`
+			PostStartScript string                         `json:"postStartScript,omitempty"`
+			HealthPath      string                         `json:"healthPath,omitempty"`
+			SharedVolumeMounts []aiv1alpha1.SharedVolumeMount `json:"sharedVolumeMounts,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserID == "" {
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.Image == "" {
+			http.Error(w, "Missing required parameter: image", http.StatusBadRequest)
 			return
 		}
 
@@ -192,9 +197,6 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 			if apierrors.IsNotFound(err) {
 				// Set defaults
 				image := req.Image
-				if image == "" {
-					image = "smanx/opencode:latest"
-				}
 				port := req.Port
 				if port == 0 {
 					port = 4096
@@ -238,6 +240,7 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 							Size:         storageSize,
 							StorageClass: req.StorageClass,
 						},
+						SharedVolumeMounts: req.SharedVolumeMounts,
 					},
 				}
 				if err := c.Create(ctx, ws); err != nil {
@@ -314,6 +317,10 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 			}
 			if req.ExposeSSH != nil && ws.Spec.ExposeSSH != *req.ExposeSSH {
 				ws.Spec.ExposeSSH = *req.ExposeSSH
+				needsUpdate = true
+			}
+			if len(req.SharedVolumeMounts) > 0 {
+				ws.Spec.SharedVolumeMounts = req.SharedVolumeMounts
 				needsUpdate = true
 			}
 

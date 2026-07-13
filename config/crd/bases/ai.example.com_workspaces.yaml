@@ -155,6 +155,30 @@ spec:
                 required:
                 - image
                 type: object
+              sharedVolumeMounts:
+                description: SharedVolumeMounts specifies pre-existing generic/shared
+                  PVCs to mount
+                items:
+                  description: SharedVolumeMount defines a mount of a pre-existing
+                    generic/shared PVC.
+                  properties:
+                    mountPath:
+                      description: MountPath is the path inside the container where
+                        the volume should be mounted
+                      type: string
+                    pvcName:
+                      description: PVCName is the name of the pre-existing PersistentVolumeClaim
+                        to mount
+                      type: string
+                    subPath:
+                      description: SubPath is the subdirectory within the shared volume
+                        to mount
+                      type: string
+                  required:
+                  - mountPath
+                  - pvcName
+                  type: object
+                type: array
               stopped:
                 description: Stopped indicates whether the workspace is manually stopped
                   (scaled to 0 replicas)

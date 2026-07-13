@@ -286,23 +286,29 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 
 	// Parse resource requirements
 	resources := corev1.ResourceRequirements{}
-	if ws.Spec.Runtime.CPU != "" || ws.Spec.Runtime.Memory != "" {
-		resources.Limits = corev1.ResourceList{}
-		resources.Requests = corev1.ResourceList{}
-		if ws.Spec.Runtime.CPU != "" {
-			qty, err := apiresources.ParseQuantity(ws.Spec.Runtime.CPU)
-			if err == nil {
-				resources.Limits[corev1.ResourceCPU] = qty
-				resources.Requests[corev1.ResourceCPU] = qty
-			}
-		}
-		if ws.Spec.Runtime.Memory != "" {
-			qty, err := apiresources.ParseQuantity(ws.Spec.Runtime.Memory)
-			if err == nil {
-				resources.Limits[corev1.ResourceMemory] = qty
-				resources.Requests[corev1.ResourceMemory] = qty
-			}
-		}
+	
+	// Default resource specs if empty (0.5c CPU / 1G Memory)
+	cpuStr := ws.Spec.Runtime.CPU
+	if cpuStr == "" {
+		cpuStr = "500m" // 0.5 CPU
+	}
+	memStr := ws.Spec.Runtime.Memory
+	if memStr == "" {
+		memStr = "1Gi"  // 1G Memory
+	}
+
+	resources.Limits = corev1.ResourceList{}
+	resources.Requests = corev1.ResourceList{}
+	
+	qtyCPU, err := apiresources.ParseQuantity(cpuStr)
+	if err == nil {
+		resources.Limits[corev1.ResourceCPU] = qtyCPU
+		resources.Requests[corev1.ResourceCPU] = qtyCPU
+	}
+	qtyMem, err := apiresources.ParseQuantity(memStr)
+	if err == nil {
+		resources.Limits[corev1.ResourceMemory] = qtyMem
+		resources.Requests[corev1.ResourceMemory] = qtyMem
 	}
 
 	// Ports
@@ -364,6 +370,25 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		},
 	}
 	var volumeMounts []corev1.VolumeMount
+
+	// Append pre-existing shared volume mounts if specified
+	for i, svm := range ws.Spec.SharedVolumeMounts {
+		volumeName := fmt.Sprintf("shared-vol-%d", i)
+		volumes = append(volumes, corev1.Volume{
+			Name: volumeName,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: svm.PVCName,
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      volumeName,
+			MountPath: svm.MountPath,
+			SubPath:   svm.SubPath,
+		})
+	}
+
 	if len(ws.Spec.Runtime.VolumeMounts) > 0 {
 		for _, vm := range ws.Spec.Runtime.VolumeMounts {
 			volumeMounts = append(volumeMounts, corev1.VolumeMount{
