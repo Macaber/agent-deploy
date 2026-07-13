@@ -300,13 +300,11 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	resources.Limits = corev1.ResourceList{}
 	resources.Requests = corev1.ResourceList{}
 	
-	qtyCPU, err := apiresources.ParseQuantity(cpuStr)
-	if err == nil {
+	if qtyCPU, err := apiresources.ParseQuantity(cpuStr); err == nil {
 		resources.Limits[corev1.ResourceCPU] = qtyCPU
 		resources.Requests[corev1.ResourceCPU] = qtyCPU
 	}
-	qtyMem, err := apiresources.ParseQuantity(memStr)
-	if err == nil {
+	if qtyMem, err := apiresources.ParseQuantity(memStr); err == nil {
 		resources.Limits[corev1.ResourceMemory] = qtyMem
 		resources.Requests[corev1.ResourceMemory] = qtyMem
 	}
