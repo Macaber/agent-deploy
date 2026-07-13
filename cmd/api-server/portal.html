@@ -767,6 +767,10 @@
                         <label class="input-label" for="command">启动命令 (command) - 英文逗号分隔</label>
                         <input class="input-field" type="text" id="command" placeholder="bocomwork-entrypoint" autocomplete="off" oninput="handleFormInput()">
                     </div>
+                    <div class="input-group">
+                        <label class="input-label" for="postStartScript">启动后脚本 (postStartScript)</label>
+                        <textarea class="input-field" id="postStartScript" placeholder="echo 'Container initialized' && touch /workspace/boot-success" autocomplete="off" style="resize: vertical; min-height: 80px;" oninput="handleFormInput()"></textarea>
+                    </div>
                 </div>
 
                 <!-- View 1.2: JSON Payload Editor -->
@@ -978,7 +982,7 @@
                     }
                     
                     // Modify button
-                    actionButtons += '<button class="btn-inline-action btn-load" onclick="loadWorkspaceToForm(\'' + escapeHtml(item.userId) + '\', \'' + escapeHtml(item.image) + '\', \'' + escapeHtml(item.cpu) + '\', \'' + escapeHtml(item.memory) + '\')">载入修改</button>';
+                    actionButtons += '<button class="btn-inline-action btn-load" onclick="loadWorkspaceToForm(\'' + escapeHtml(item.userId) + '\')">载入修改</button>';
                     
                     tr.innerHTML = 
                         '<td>' + escapeHtml(item.userId) + '</td>' +
@@ -1060,24 +1064,62 @@
         }
 
         // Load row config into form designer
-        function loadWorkspaceToForm(userId, image, cpu, memory) {
+        async function loadWorkspaceToForm(userId) {
             const namespace = document.getElementById('queryNamespace').value.trim() || 'default';
             
-            payload.userId = userId;
-            payload.namespace = namespace;
-            payload.image = image;
-            payload.cpu = cpu;
-            payload.memory = memory;
-            
-            syncPayloadToForm();
-            syncPayloadToJsonText();
-            
-            // Switch to creator tab
-            switchMainTab('creator');
-            checkStatusOfTargetWorkspace();
-            
-            // Highlight creator Form tab
-            switchSubTab('form');
+            try {
+                // Lock UI with loader while fetching full spec
+                const portal = document.getElementById('portalContainer');
+                const loader = document.getElementById('loadingView');
+                portal.style.display = "none";
+                loader.style.display = "flex";
+                setStatus("正在加载配置...", "正在从服务器拉取完整的配置信息...");
+
+                const res = await fetch(getApiUrl('api/workspaces?userId=' + encodeURIComponent(userId) + '&namespace=' + encodeURIComponent(namespace)));
+                if (!res.ok) throw new Error(await getCleanErrorMsg(res, "获取工作空间详情失败"));
+                const data = await res.json();
+                
+                portal.style.display = "block";
+                loader.style.display = "none";
+
+                if (data.exists && data.spec) {
+                    const spec = data.spec;
+                    
+                    payload.userId = userId;
+                    payload.namespace = namespace;
+                    payload.image = spec.runtime?.image || '';
+                    payload.port = spec.runtime?.port || 0;
+                    payload.cpu = spec.runtime?.cpu || '';
+                    payload.memory = spec.runtime?.memory || '';
+                    payload.idleTimeout = spec.idleTimeout || '';
+                    payload.healthPath = spec.runtime?.healthPath || '';
+                    payload.command = spec.runtime?.command || [];
+                    payload.args = spec.runtime?.args || [];
+                    payload.postStartScript = spec.runtime?.postStartScript || '';
+                    payload.env = spec.runtime?.env || [];
+                    payload.volumeMounts = spec.runtime?.volumeMounts || [];
+                    payload.sharedVolumeMounts = spec.sharedVolumeMounts || [];
+                    
+                    syncPayloadToForm();
+                    renderVolumeMounts();
+                    renderSharedVolumeMounts();
+                    renderEnvVars();
+                    syncPayloadToJsonText();
+                    
+                    // Switch to creator tab
+                    switchMainTab('creator');
+                    checkStatusOfTargetWorkspace();
+                    
+                    // Highlight creator Form tab
+                    switchSubTab('form');
+                } else {
+                    alert("工作空间不存在或缺少配置详情。");
+                }
+            } catch (err) {
+                document.getElementById('portalContainer').style.display = "block";
+                document.getElementById('loadingView').style.display = "none";
+                alert(err.message);
+            }
         }
 
         // Render Volume Mounts dynamic table rows
@@ -1228,6 +1270,7 @@
             } else {
                 payload.command = [];
             }
+            payload.postStartScript = document.getElementById('postStartScript').value.trim();
         }
 
         // Apply payload values back to Visual Form fields
@@ -1241,6 +1284,7 @@
             document.getElementById('idleTimeout').value = payload.idleTimeout || '';
             document.getElementById('healthPath').value = payload.healthPath || '';
             document.getElementById('command').value = (payload.command || []).join(', ');
+            document.getElementById('postStartScript').value = payload.postStartScript || '';
         }
 
         // Write current payload model to JSON Editor textarea

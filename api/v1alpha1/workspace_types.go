@@ -165,7 +165,6 @@ type SharedVolumeMount struct {
 	SubPath string `json:"subPath,omitempty"`
 }
 
-
 // WorkspacePhase defines the state transitions of the Workspace
 // +kubebuilder:validation:Enum=Pending;Starting;Running;Sleeping;Stopped;Failed
 type WorkspacePhase string

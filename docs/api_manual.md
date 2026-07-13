@@ -125,6 +125,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   ```
 - **错误响应**：
   - `400 Bad Request`：请求体 JSON 格式错误或缺失 `userId`。
+  - `503 Service Unavailable`：工作空间启动失败（Phase 变更为 `Failed`），快速失败而无需等待超时。返回 JSON 示例：`{"error": "Workspace failed to start", "phase": "Failed"}`。
   - `504 Gateway Timeout`：空间在 90 秒内未能成功进入 `Running` 状态。
   - `500 Internal Server Error`：与 Kubernetes API 交互异常。
 
@@ -153,6 +154,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 - **错误响应**：
   - `400 Bad Request`：请求体 JSON 格式错误或缺失 `userId`。
   - `404 Not Found`：指定用户的工作空间不存在（需要先通过启动接口进行创建）。
+  - `503 Service Unavailable`：工作空间唤醒失败（Phase 变更为 `Failed`），快速失败而无需等待超时。返回 JSON 示例：`{"error": "Workspace failed to start", "phase": "Failed"}`。
   - `504 Gateway Timeout`：空间在 90 秒内未能成功唤醒进入 `Running` 状态。
   - `500 Internal Server Error`：与 Kubernetes API 交互异常。
 

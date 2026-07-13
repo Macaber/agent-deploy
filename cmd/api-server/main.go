@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -44,7 +45,7 @@ func main() {
 	}
 
 	http.HandleFunc("/", serveHome)
-	http.HandleFunc("/api/workspaces", createWorkspaceHandler(k8sClient))
+	http.HandleFunc("/api/workspaces", workspaceRouter(k8sClient))
 	http.HandleFunc("/api/workspaces/stop", stopWorkspaceHandler(k8sClient))
 	http.HandleFunc("/api/workspaces/wakeup", wakeupWorkspaceHandler(k8sClient))
 
@@ -72,109 +73,135 @@ func serveHome(w http.ResponseWriter, r *http.Request) {
 	tmpl.Execute(w, nil)
 }
 
-func createWorkspaceHandler(c client.Client) http.HandlerFunc {
+// workspaceRequest is the shared request body for workspace create/update operations.
+type workspaceRequest struct {
+	UserID             string                         `json:"userId"`
+	Namespace          string                         `json:"namespace,omitempty"`
+	Image              string                         `json:"image,omitempty"`
+	Port               int32                          `json:"port,omitempty"`
+	CPU                string                         `json:"cpu,omitempty"`
+	Memory             string                         `json:"memory,omitempty"`
+	StorageSize        string                         `json:"storageSize,omitempty"`
+	StorageClass       string                         `json:"storageClass,omitempty"`
+	IdleTimeout        string                         `json:"idleTimeout,omitempty"`
+	ExposeSSH          *bool                          `json:"exposeSSH,omitempty"`
+	Env                []aiv1alpha1.EnvVar            `json:"env,omitempty"`
+	Command            []string                       `json:"command,omitempty"`
+	Args               []string                       `json:"args,omitempty"`
+	VolumeMounts       []aiv1alpha1.VolumeMount       `json:"volumeMounts,omitempty"`
+	PostStartScript    string                         `json:"postStartScript,omitempty"`
+	HealthPath         string                         `json:"healthPath,omitempty"`
+	SharedVolumeMounts []aiv1alpha1.SharedVolumeMount `json:"sharedVolumeMounts,omitempty"`
+}
+
+// workspaceItem is the JSON response type for listing workspaces.
+type workspaceItem struct {
+	UserID string `json:"userId"`
+	Name   string `json:"name"`
+	Phase  string `json:"phase"`
+	URL    string `json:"url"`
+	Image  string `json:"image"`
+	CPU    string `json:"cpu"`
+	Memory string `json:"memory"`
+}
+
+// workspaceRouter dispatches /api/workspaces requests to the appropriate handler by HTTP method.
+func workspaceRouter(c client.Client) http.HandlerFunc {
+	listHandler := listWorkspacesHandler(c)
+	getHandler := getWorkspaceHandler(c)
+	createHandler := createOrUpdateWorkspaceHandler(c)
+
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			userID := r.URL.Query().Get("userId")
-			if userID == "" {
-				namespace := r.URL.Query().Get("namespace")
-				if namespace == "" {
-					namespace = "default"
-				}
-				ctx := r.Context()
-				wsList := &aiv1alpha1.WorkspaceList{}
-				if err := c.List(ctx, wsList, client.InNamespace(namespace)); err != nil {
-					log.Printf("Failed to list Workspaces: %v", err)
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-
-				type WorkspaceItem struct {
-					UserID string `json:"userId"`
-					Name   string `json:"name"`
-					Phase  string `json:"phase"`
-					URL    string `json:"url"`
-					Image  string `json:"image"`
-					CPU    string `json:"cpu"`
-					Memory string `json:"memory"`
-				}
-
-				items := []WorkspaceItem{}
-				for _, ws := range wsList.Items {
-					url := getWorkspaceURL(ws.Spec.Owner, ws.Name, ws.Status.Endpoint)
-					items = append(items, WorkspaceItem{
-						UserID: ws.Spec.Owner,
-						Name:   ws.Name,
-						Phase:  string(ws.Status.Phase),
-						URL:    url,
-						Image:  ws.Spec.Runtime.Image,
-						CPU:    ws.Spec.Runtime.CPU,
-						Memory: ws.Spec.Runtime.Memory,
-					})
-				}
-
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(items)
-				return
+		switch r.Method {
+		case http.MethodGet:
+			if r.URL.Query().Get("userId") == "" {
+				listHandler.ServeHTTP(w, r)
+			} else {
+				getHandler.ServeHTTP(w, r)
 			}
-
-			ctx := r.Context()
-			wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", userID))
-			namespace := r.URL.Query().Get("namespace")
-			if namespace == "" {
-				namespace = "default"
-			}
-
-			ws := &aiv1alpha1.Workspace{}
-			err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws)
-			w.Header().Set("Content-Type", "application/json")
-			if err != nil {
-				if apierrors.IsNotFound(err) {
-					json.NewEncoder(w).Encode(map[string]any{
-						"exists": false,
-						"phase":  "",
-						"url":    "",
-					})
-					return
-				}
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			url := getWorkspaceURL(userID, wsName, ws.Status.Endpoint)
-
-			json.NewEncoder(w).Encode(map[string]any{
-				"exists": true,
-				"phase":  ws.Status.Phase,
-				"url":    url,
-			})
-			return
-		}
-
-		if r.Method != http.MethodPost {
+		case http.MethodPost:
+			createHandler.ServeHTTP(w, r)
+		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// listWorkspacesHandler handles GET /api/workspaces (without userId) — lists all workspaces in a namespace.
+func listWorkspacesHandler(c client.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		namespace := r.URL.Query().Get("namespace")
+		if namespace == "" {
+			namespace = "default"
+		}
+		ctx := r.Context()
+		wsList := &aiv1alpha1.WorkspaceList{}
+		if err := c.List(ctx, wsList, client.InNamespace(namespace)); err != nil {
+			log.Printf("Failed to list Workspaces: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		var req struct {
-			UserID          string                   `json:"userId"`
-			Namespace       string                   `json:"namespace,omitempty"`
-			Image           string                   `json:"image,omitempty"`
-			Port            int32                    `json:"port,omitempty"`
-			CPU             string                   `json:"cpu,omitempty"`
-			Memory          string                   `json:"memory,omitempty"`
-			StorageSize     string                   `json:"storageSize,omitempty"`
-			StorageClass    string                   `json:"storageClass,omitempty"`
-			IdleTimeout     string                   `json:"idleTimeout,omitempty"`
-			ExposeSSH       *bool                    `json:"exposeSSH,omitempty"`
-			Env             []aiv1alpha1.EnvVar      `json:"env,omitempty"`
-			Command         []string                 `json:"command,omitempty"`
-			Args            []string                 `json:"args,omitempty"`
-			VolumeMounts    []aiv1alpha1.VolumeMount       `json:"volumeMounts,omitempty"`
-			PostStartScript string                         `json:"postStartScript,omitempty"`
-			HealthPath      string                         `json:"healthPath,omitempty"`
-			SharedVolumeMounts []aiv1alpha1.SharedVolumeMount `json:"sharedVolumeMounts,omitempty"`
+		items := []workspaceItem{}
+		for _, ws := range wsList.Items {
+			url := getWorkspaceURL(ws.Spec.Owner, ws.Name, ws.Status.Endpoint)
+			items = append(items, workspaceItem{
+				UserID: ws.Spec.Owner,
+				Name:   ws.Name,
+				Phase:  string(ws.Status.Phase),
+				URL:    url,
+				Image:  ws.Spec.Runtime.Image,
+				CPU:    ws.Spec.Runtime.CPU,
+				Memory: ws.Spec.Runtime.Memory,
+			})
 		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(items)
+	}
+}
+
+// getWorkspaceHandler handles GET /api/workspaces?userId=xxx — queries a single workspace's status.
+func getWorkspaceHandler(c client.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := r.URL.Query().Get("userId")
+		ctx := r.Context()
+		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", userID))
+		namespace := r.URL.Query().Get("namespace")
+		if namespace == "" {
+			namespace = "default"
+		}
+
+		ws := &aiv1alpha1.Workspace{}
+		err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				json.NewEncoder(w).Encode(map[string]any{
+					"exists": false,
+					"phase":  "",
+					"url":    "",
+				})
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		url := getWorkspaceURL(userID, wsName, ws.Status.Endpoint)
+		json.NewEncoder(w).Encode(map[string]any{
+			"exists": true,
+			"phase":  ws.Status.Phase,
+			"url":    url,
+			"spec":   ws.Spec,
+		})
+	}
+}
+
+// createOrUpdateWorkspaceHandler handles POST /api/workspaces — creates a new workspace or updates an existing one.
+func createOrUpdateWorkspaceHandler(c client.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req workspaceRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserID == "" {
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
 			return
@@ -195,55 +222,7 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 		err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws)
 		if err != nil {
 			if apierrors.IsNotFound(err) {
-				// Set defaults
-				image := req.Image
-				port := req.Port
-				if port == 0 {
-					port = 4096
-				}
-				storageSize := req.StorageSize
-				if storageSize == "" {
-					storageSize = "1Gi"
-				}
-				idleTimeout := req.IdleTimeout
-				if idleTimeout == "" {
-					idleTimeout = "5m"
-				}
-				exposeSSH := false
-				if req.ExposeSSH != nil {
-					exposeSSH = *req.ExposeSSH
-				}
-
-				// Create a new Workspace
-				ws = &aiv1alpha1.Workspace{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      wsName,
-						Namespace: namespace,
-					},
-					Spec: aiv1alpha1.WorkspaceSpec{
-						Owner:       req.UserID,
-						IdleTimeout: idleTimeout,
-						ExposeSSH:   exposeSSH,
-						Runtime: aiv1alpha1.RuntimeSpec{
-							Image:           image,
-							Port:            port,
-							CPU:             req.CPU,
-							Memory:          req.Memory,
-							Env:             req.Env,
-							Command:         req.Command,
-							Args:            req.Args,
-							VolumeMounts:    req.VolumeMounts,
-							PostStartScript: req.PostStartScript,
-							HealthPath:      req.HealthPath,
-						},
-						Storage: aiv1alpha1.StorageSpec{
-							Size:         storageSize,
-							StorageClass: req.StorageClass,
-						},
-						SharedVolumeMounts: req.SharedVolumeMounts,
-					},
-				}
-				if err := c.Create(ctx, ws); err != nil {
+				if err := createNewWorkspace(ctx, c, &req, wsName, namespace); err != nil {
 					log.Printf("Failed to create Workspace: %v", err)
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
@@ -255,124 +234,200 @@ func createWorkspaceHandler(c client.Client) http.HandlerFunc {
 				return
 			}
 		} else {
-			// Workspace exists! Let's check if it was stopped. If so, resume it!
-			needsUpdate := false
-			if ws.Spec.Stopped {
-				ws.Spec.Stopped = false
-				needsUpdate = true
-			}
-
-			// Update specifications if explicitly passed in the request payload
-			if req.Image != "" && ws.Spec.Runtime.Image != req.Image {
-				ws.Spec.Runtime.Image = req.Image
-				needsUpdate = true
-			}
-			if req.Port != 0 && ws.Spec.Runtime.Port != req.Port {
-				ws.Spec.Runtime.Port = req.Port
-				needsUpdate = true
-			}
-			if req.CPU != "" && ws.Spec.Runtime.CPU != req.CPU {
-				ws.Spec.Runtime.CPU = req.CPU
-				needsUpdate = true
-			}
-			if req.Memory != "" && ws.Spec.Runtime.Memory != req.Memory {
-				ws.Spec.Runtime.Memory = req.Memory
-				needsUpdate = true
-			}
-			if len(req.Env) > 0 {
-				ws.Spec.Runtime.Env = req.Env
-				needsUpdate = true
-			}
-			if len(req.Command) > 0 {
-				ws.Spec.Runtime.Command = req.Command
-				needsUpdate = true
-			}
-			if len(req.Args) > 0 {
-				ws.Spec.Runtime.Args = req.Args
-				needsUpdate = true
-			}
-			if len(req.VolumeMounts) > 0 {
-				ws.Spec.Runtime.VolumeMounts = req.VolumeMounts
-				needsUpdate = true
-			}
-			if req.PostStartScript != "" {
-				ws.Spec.Runtime.PostStartScript = req.PostStartScript
-				needsUpdate = true
-			}
-			if req.HealthPath != "" && ws.Spec.Runtime.HealthPath != req.HealthPath {
-				ws.Spec.Runtime.HealthPath = req.HealthPath
-				needsUpdate = true
-			}
-			if req.StorageSize != "" && ws.Spec.Storage.Size != req.StorageSize {
-				ws.Spec.Storage.Size = req.StorageSize
-				needsUpdate = true
-			}
-			if req.StorageClass != "" && ws.Spec.Storage.StorageClass != req.StorageClass {
-				ws.Spec.Storage.StorageClass = req.StorageClass
-				needsUpdate = true
-			}
-			if req.IdleTimeout != "" && ws.Spec.IdleTimeout != req.IdleTimeout {
-				ws.Spec.IdleTimeout = req.IdleTimeout
-				needsUpdate = true
-			}
-			if req.ExposeSSH != nil && ws.Spec.ExposeSSH != *req.ExposeSSH {
-				ws.Spec.ExposeSSH = *req.ExposeSSH
-				needsUpdate = true
-			}
-			if len(req.SharedVolumeMounts) > 0 {
-				ws.Spec.SharedVolumeMounts = req.SharedVolumeMounts
-				needsUpdate = true
-			}
-
-			if needsUpdate {
-				if err := c.Update(ctx, ws); err != nil {
-					log.Printf("Failed to update Workspace: %v", err)
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				log.Printf("Updated existing Workspace spec: %s", wsName)
-			}
-
-			// Always update LastActiveTime to now when the user starts/resumes the workspace,
-			// which wakes it up from Sleeping state.
-			ws.Status.LastActiveTime = &metav1.Time{Time: time.Now()}
-			if err := c.Status().Update(ctx, ws); err != nil {
-				log.Printf("Failed to update Workspace lastActiveTime: %v", err)
+			if err := updateExistingWorkspace(ctx, c, ws, &req, wsName, namespace); err != nil {
+				log.Printf("Failed to update Workspace: %v", err)
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			log.Printf("Updated Workspace lastActiveTime: %s", wsName)
 		}
 
-		// Poll until Workspace status.phase is Running
-		timeout := time.After(90 * time.Second)
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
+		// Poll until Workspace status.phase is Running or Failed
+		pollWorkspaceRunning(ctx, c, w, req.UserID, wsName, namespace, "Workspace creation timed out")
+	}
+}
 
-		for {
-			select {
-			case <-timeout:
-				http.Error(w, "Workspace creation timed out", http.StatusGatewayTimeout)
+// createNewWorkspace creates a brand new Workspace CR with default values applied.
+func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequest, wsName, namespace string) error {
+	port := req.Port
+	if port == 0 {
+		port = 4096
+	}
+	storageSize := req.StorageSize
+	if storageSize == "" {
+		storageSize = "1Gi"
+	}
+	idleTimeout := req.IdleTimeout
+	if idleTimeout == "" {
+		idleTimeout = "5m"
+	}
+	exposeSSH := false
+	if req.ExposeSSH != nil {
+		exposeSSH = *req.ExposeSSH
+	}
+
+	ws := &aiv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      wsName,
+			Namespace: namespace,
+		},
+		Spec: aiv1alpha1.WorkspaceSpec{
+			Owner:       req.UserID,
+			IdleTimeout: idleTimeout,
+			ExposeSSH:   exposeSSH,
+			Runtime: aiv1alpha1.RuntimeSpec{
+				Image:           req.Image,
+				Port:            port,
+				CPU:             req.CPU,
+				Memory:          req.Memory,
+				Env:             req.Env,
+				Command:         req.Command,
+				Args:            req.Args,
+				VolumeMounts:    req.VolumeMounts,
+				PostStartScript: req.PostStartScript,
+				HealthPath:      req.HealthPath,
+			},
+			Storage: aiv1alpha1.StorageSpec{
+				Size:         storageSize,
+				StorageClass: req.StorageClass,
+			},
+			SharedVolumeMounts: req.SharedVolumeMounts,
+		},
+	}
+	return c.Create(ctx, ws)
+}
+
+// updateExistingWorkspace applies spec changes and resets LastActiveTime to resume a workspace.
+func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha1.Workspace, req *workspaceRequest, wsName, namespace string) error {
+	needsUpdate := false
+	if ws.Spec.Stopped {
+		ws.Spec.Stopped = false
+		needsUpdate = true
+	}
+
+	// Update specifications if explicitly passed in the request payload
+	if req.Image != "" && ws.Spec.Runtime.Image != req.Image {
+		ws.Spec.Runtime.Image = req.Image
+		needsUpdate = true
+	}
+	if req.Port != 0 && ws.Spec.Runtime.Port != req.Port {
+		ws.Spec.Runtime.Port = req.Port
+		needsUpdate = true
+	}
+	if req.CPU != "" && ws.Spec.Runtime.CPU != req.CPU {
+		ws.Spec.Runtime.CPU = req.CPU
+		needsUpdate = true
+	}
+	if req.Memory != "" && ws.Spec.Runtime.Memory != req.Memory {
+		ws.Spec.Runtime.Memory = req.Memory
+		needsUpdate = true
+	}
+	if len(req.Env) > 0 {
+		ws.Spec.Runtime.Env = req.Env
+		needsUpdate = true
+	}
+	if len(req.Command) > 0 {
+		ws.Spec.Runtime.Command = req.Command
+		needsUpdate = true
+	}
+	if len(req.Args) > 0 {
+		ws.Spec.Runtime.Args = req.Args
+		needsUpdate = true
+	}
+	if len(req.VolumeMounts) > 0 {
+		ws.Spec.Runtime.VolumeMounts = req.VolumeMounts
+		needsUpdate = true
+	}
+	if req.PostStartScript != "" {
+		ws.Spec.Runtime.PostStartScript = req.PostStartScript
+		needsUpdate = true
+	}
+	if req.HealthPath != "" && ws.Spec.Runtime.HealthPath != req.HealthPath {
+		ws.Spec.Runtime.HealthPath = req.HealthPath
+		needsUpdate = true
+	}
+	if req.StorageSize != "" && ws.Spec.Storage.Size != req.StorageSize {
+		ws.Spec.Storage.Size = req.StorageSize
+		needsUpdate = true
+	}
+	if req.StorageClass != "" && ws.Spec.Storage.StorageClass != req.StorageClass {
+		ws.Spec.Storage.StorageClass = req.StorageClass
+		needsUpdate = true
+	}
+	if req.IdleTimeout != "" && ws.Spec.IdleTimeout != req.IdleTimeout {
+		ws.Spec.IdleTimeout = req.IdleTimeout
+		needsUpdate = true
+	}
+	if req.ExposeSSH != nil && ws.Spec.ExposeSSH != *req.ExposeSSH {
+		ws.Spec.ExposeSSH = *req.ExposeSSH
+		needsUpdate = true
+	}
+	if len(req.SharedVolumeMounts) > 0 {
+		ws.Spec.SharedVolumeMounts = req.SharedVolumeMounts
+		needsUpdate = true
+	}
+
+	if needsUpdate {
+		if err := c.Update(ctx, ws); err != nil {
+			return fmt.Errorf("failed to update Workspace spec: %w", err)
+		}
+		log.Printf("Updated existing Workspace spec: %s", wsName)
+	}
+
+	// Re-fetch to get latest resourceVersion after spec update
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws); err != nil {
+		return fmt.Errorf("failed to re-fetch Workspace after spec update: %w", err)
+	}
+
+	// Always update LastActiveTime to now when the user starts/resumes the workspace,
+	// which wakes it up from Sleeping state.
+	ws.Status.LastActiveTime = &metav1.Time{Time: time.Now()}
+	if err := c.Status().Update(ctx, ws); err != nil {
+		return fmt.Errorf("failed to update Workspace lastActiveTime: %w", err)
+	}
+	log.Printf("Updated Workspace lastActiveTime: %s", wsName)
+	return nil
+}
+
+// pollWorkspaceRunning polls the workspace status until it reaches Running or Failed state,
+// writing the JSON result to the ResponseWriter.
+func pollWorkspaceRunning(ctx context.Context, c client.Client, w http.ResponseWriter, userID, wsName, namespace, timeoutMsg string) {
+	timeout := time.After(90 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			http.Error(w, timeoutMsg, http.StatusGatewayTimeout)
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			currentWs := &aiv1alpha1.Workspace{}
+			if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, currentWs); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
-			case <-ctx.Done():
+			}
+
+			if currentWs.Status.Phase == aiv1alpha1.WorkspaceFailed {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				json.NewEncoder(w).Encode(map[string]string{
+					"error": "Workspace failed to start",
+					"phase": string(currentWs.Status.Phase),
+				})
 				return
-			case <-ticker.C:
-				currentWs := &aiv1alpha1.Workspace{}
-				if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, currentWs); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
+			}
 
-				if currentWs.Status.Phase == aiv1alpha1.WorkspaceRunning {
-					url := getWorkspaceURL(req.UserID, wsName, currentWs.Status.Endpoint)
+			if currentWs.Status.Phase == aiv1alpha1.WorkspaceRunning {
+				url := getWorkspaceURL(userID, wsName, currentWs.Status.Endpoint)
 
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(map[string]string{
-						"url":   url,
-						"phase": string(currentWs.Status.Phase),
-					})
-					return
-				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{
+					"url":   url,
+					"phase": string(currentWs.Status.Phase),
+				})
+				return
 			}
 		}
 	}
@@ -475,6 +530,13 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 			log.Printf("Resumed stopped Workspace spec in wakeup: %s", wsName)
 		}
 
+		// Re-fetch to get latest resourceVersion after spec update
+		if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws); err != nil {
+			log.Printf("Failed to re-fetch Workspace after spec update in wakeup: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
 		// Always update LastActiveTime to now when waking it up from Sleeping state
 		ws.Status.LastActiveTime = &metav1.Time{Time: time.Now()}
 		if err := c.Status().Update(ctx, ws); err != nil {
@@ -482,39 +544,10 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		log.Printf("Successfully waked up Workspace lastActiveTime: %s", wsName)
+		log.Printf("Successfully woke up Workspace lastActiveTime: %s", wsName)
 
-		// Poll until Workspace status.phase is Running
-		timeout := time.After(90 * time.Second)
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-timeout:
-				http.Error(w, "Workspace wakeup timed out", http.StatusGatewayTimeout)
-				return
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				currentWs := &aiv1alpha1.Workspace{}
-				if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, currentWs); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-
-				if currentWs.Status.Phase == aiv1alpha1.WorkspaceRunning {
-					url := getWorkspaceURL(req.UserID, wsName, currentWs.Status.Endpoint)
-
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(map[string]string{
-						"url":   url,
-						"phase": string(currentWs.Status.Phase),
-					})
-					return
-				}
-			}
-		}
+		// Poll until Workspace status.phase is Running or Failed
+		pollWorkspaceRunning(ctx, c, w, req.UserID, wsName, namespace, "Workspace wakeup timed out")
 	}
 }
 

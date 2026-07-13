@@ -174,8 +174,10 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Handle transitions and Idle timeout calculation
 	if ws.Status.Phase == aiv1alpha1.WorkspaceRunning {
-		// If phase transitions to Running from any other phase, reset last active time
-		if oldPhase != aiv1alpha1.WorkspaceRunning {
+		// Reset last active time only when transitioning from a non-active state to Running,
+		// avoiding accidental reset during scale-down when ReadyReplicas hasn't reached 0 yet.
+		if oldPhase == aiv1alpha1.WorkspaceSleeping || oldPhase == aiv1alpha1.WorkspaceStopped ||
+			oldPhase == aiv1alpha1.WorkspacePending || oldPhase == aiv1alpha1.WorkspaceFailed {
 			ws.Status.LastActiveTime = &metav1.Time{Time: time.Now()}
 		}
 
@@ -286,7 +288,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 
 	// Parse resource requirements
 	resources := corev1.ResourceRequirements{}
-	
+
 	// Default resource specs if empty (0.5c CPU / 1G Memory)
 	cpuStr := ws.Spec.Runtime.CPU
 	if cpuStr == "" {
@@ -294,12 +296,12 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	}
 	memStr := ws.Spec.Runtime.Memory
 	if memStr == "" {
-		memStr = "1Gi"  // 1G Memory
+		memStr = "1Gi" // 1G Memory
 	}
 
 	resources.Limits = corev1.ResourceList{}
 	resources.Requests = corev1.ResourceList{}
-	
+
 	if qtyCPU, err := apiresources.ParseQuantity(cpuStr); err == nil {
 		resources.Limits[corev1.ResourceCPU] = qtyCPU
 		resources.Requests[corev1.ResourceCPU] = qtyCPU
@@ -513,6 +515,9 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	}
 
 	// Update logic: we update replica count and other spec settings
+	if len(deploy.Spec.Template.Spec.Containers) == 0 {
+		return "", 0, fmt.Errorf("deployment %s has no containers", deployName)
+	}
 	deploy.Spec.Replicas = &desiredReplicas
 	deploy.Spec.Template.Spec.Containers[0].Image = ws.Spec.Runtime.Image
 	deploy.Spec.Template.Spec.Containers[0].ImagePullPolicy = corev1.PullIfNotPresent
@@ -737,10 +742,6 @@ func (r *WorkspaceReconciler) reconcileScaledObject(ctx context.Context, ws *aiv
 
 func boolPtr(b bool) *bool {
 	return &b
-}
-
-func int32Ptr(i int32) *int32 {
-	return &i
 }
 
 func int64Ptr(i int64) *int64 {
