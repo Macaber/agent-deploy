@@ -858,7 +858,8 @@
             sharedVolumeMounts: [],
             healthPath: "/health",
             env: [
-                { name: "oa", value: "aaa" }
+                { name: "OPENCODE_RESOURCE_ATTRIBUTES", value: "service.name=opencode,workspace.owner=$(WORKSPACE_OWNER),workspace.name=$(WORKSPACE_NAME)" },
+                { name: "OA", value: "sss" }
             ]
         };
 
@@ -1097,6 +1098,10 @@
                     payload.args = spec.runtime?.args || [];
                     payload.postStartScript = spec.runtime?.postStartScript || '';
                     payload.env = spec.runtime?.env || [];
+                    let oaVar = payload.env.find(e => e.name === 'OA');
+                    if (oaVar) {
+                        oaVar.value = userId;
+                    }
                     payload.volumeMounts = spec.runtime?.volumeMounts || [];
                     payload.sharedVolumeMounts = spec.sharedVolumeMounts || [];
                     
@@ -1271,6 +1276,13 @@
                 payload.command = [];
             }
             payload.postStartScript = document.getElementById('postStartScript').value.trim();
+            
+            if (payload.env) {
+                let oaVar = payload.env.find(e => e.name === 'OA');
+                if (oaVar) {
+                    oaVar.value = payload.userId;
+                }
+            }
         }
 
         // Apply payload values back to Visual Form fields
@@ -1295,6 +1307,7 @@
         // Realtime sync from visual form to payload + text
         function handleFormInput() {
             syncFormFieldsToPayload();
+            renderEnvVars();
             syncPayloadToJsonText();
         }
 
@@ -1307,6 +1320,12 @@
                 const parsed = JSON.parse(text);
                 if (typeof parsed === 'object' && parsed !== null) {
                     payload = parsed;
+                    if (payload.env) {
+                        let oaVar = payload.env.find(e => e.name === 'OA');
+                        if (oaVar) {
+                            oaVar.value = payload.userId || '';
+                        }
+                    }
                     errDiv.innerText = ''; // Clear error
                 }
             } catch (e) {

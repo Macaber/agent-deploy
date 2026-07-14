@@ -34,7 +34,7 @@
 │   ├── manager/            # Operator 控制器 Deployment 基础配置文件
 │   └── samples/            # 样本 Workspace 实例 YAML 示例配置
 │
-├── offline-images/         # 离线交付部署包目录 (专用于生产无网环境下部署)
+├── deploy/         # 离线交付部署包目录 (专用于生产无网环境下部署)
 │   ├── nfs/                # NFS-client-provisioner 动态分配器的 K8s 配置
 │   ├── api-server-deploy.yaml # API-Server 网关的 K8s 部署配置
 │   ├── ingress-deploy.yaml    # Ingress-Nginx 网关控制器的 K8s 部署配置
@@ -59,6 +59,7 @@
 ## 快速入门
 
 ### 前提条件
+
 - Go 语言版本: `v1.24.6+` (或更高)
 - Docker 版本: `17.03+`
 - Kubectl 版本: `v1.11.3+`
@@ -135,7 +136,7 @@ GOWORK=off make build-installer IMG=<your-registry>/agent-deploy:tag
 
 > **注意**: 上述命令将在 `dist` 目录下自动生成一个 `install.yaml` 文件。该文件包含了通过 Kustomize 打包好的所有资源声明（CRD、RBAC、Deployment 等），用户无需安装其他依赖即可一键安装本项目。
 
-2. 使用部署包安装
+1. 使用部署包安装
 
 最终用户只需运行以下 `kubectl` 命令即可一键安装该项目：
 
@@ -151,7 +152,7 @@ kubectl apply -f https://raw.githubusercontent.com/<org>/agent-deploy/<tag or br
 ./bin/kubebuilder edit --plugins=helm/v2-alpha
 ```
 
-2. 该命令会在 `dist/chart` 目录下生成 Helm Chart 结构，最终用户可以通过 Helm 从该目录或您发布的 Chart 仓库来安装：
+1. 该命令会在 `dist/chart` 目录下生成 Helm Chart 结构，最终用户可以通过 Helm 从该目录或您发布的 Chart 仓库来安装：
 
 ```sh
 helm install my-release ./dist/chart/ --namespace agent-system --create-namespace

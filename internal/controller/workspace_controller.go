@@ -372,16 +372,27 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	var volumeMounts []corev1.VolumeMount
 
 	// Append pre-existing shared volume mounts if specified
-	for i, svm := range ws.Spec.SharedVolumeMounts {
-		volumeName := fmt.Sprintf("shared-vol-%d", i)
-		volumes = append(volumes, corev1.Volume{
-			Name: volumeName,
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: svm.PVCName,
+	// Group by PVCName to avoid declaring multiple Volumes for the same PVC in PodSpec
+	sharedVolumeMap := make(map[string]string) // maps PVCName to generated volumeName
+	sharedVolCount := 0
+
+	for _, svm := range ws.Spec.SharedVolumeMounts {
+		volumeName, exists := sharedVolumeMap[svm.PVCName]
+		if !exists {
+			volumeName = fmt.Sprintf("shared-vol-%d", sharedVolCount)
+			sharedVolumeMap[svm.PVCName] = volumeName
+			sharedVolCount++
+
+			volumes = append(volumes, corev1.Volume{
+				Name: volumeName,
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: svm.PVCName,
+					},
 				},
-			},
-		})
+			})
+		}
+
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
 			Name:      volumeName,
 			MountPath: svm.MountPath,
