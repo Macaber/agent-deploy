@@ -658,6 +658,9 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 					Name:      ingressName,
 					Namespace: ws.Namespace,
 					Labels:    labels,
+					Annotations: map[string]string{
+						"nginx.ingress.kubernetes.io/proxy-body-size": "50m",
+					},
 				},
 				Spec: ingressSpec,
 			}
@@ -672,6 +675,10 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 		return "", err
 	}
 
+	if ingress.Annotations == nil {
+		ingress.Annotations = make(map[string]string)
+	}
+	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-body-size"] = "50m"
 	ingress.Spec = ingressSpec
 	if err := r.Update(ctx, ingress); err != nil {
 		return "", err
