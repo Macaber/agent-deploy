@@ -1584,6 +1584,14 @@
                 return;
             }
 
+            if (payload.idleTimeout) {
+                const durationRegex = /^([0-9]+(h|m|s|ms))+$/;
+                if (!durationRegex.test(payload.idleTimeout)) {
+                    errorBox.innerText = "空闲超时格式不正确！必须为数字与 h/m/s/ms 的英文组合，如: 30m, 2h, 24h (暂不支持 d 作为天数单位)。";
+                    return;
+                }
+            }
+
             const portal = document.getElementById('portalContainer');
             const loader = document.getElementById('loadingView');
             const banner = document.getElementById('statusBanner');
