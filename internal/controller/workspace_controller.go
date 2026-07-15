@@ -659,7 +659,9 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 					Namespace: ws.Namespace,
 					Labels:    labels,
 					Annotations: map[string]string{
-						"nginx.ingress.kubernetes.io/proxy-body-size": "50m",
+						"nginx.ingress.kubernetes.io/proxy-body-size":    "50m",
+						"nginx.ingress.kubernetes.io/proxy-read-timeout": "86400",
+						"nginx.ingress.kubernetes.io/proxy-send-timeout": "86400",
 					},
 				},
 				Spec: ingressSpec,
@@ -679,6 +681,8 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 		ingress.Annotations = make(map[string]string)
 	}
 	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-body-size"] = "50m"
+	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-read-timeout"] = "86400"
+	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-send-timeout"] = "86400"
 	ingress.Spec = ingressSpec
 	if err := r.Update(ctx, ingress); err != nil {
 		return "", err
