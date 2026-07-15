@@ -858,11 +858,19 @@
                 { mountPath: "/workspace", subPath: "workspace" },
                 { mountPath: "/data", subPath: "data" }
             ],
-            sharedVolumeMounts: [],
+            sharedVolumeMounts: [
+                { pvcName: "bocomwork-share", mountPath: "/opt/bocom-defaults/skill/", subPath: "skill" },
+                { pvcName: "bocomwork-share", mountPath: "/opt/express/bocomwork", subPath: "bocomwork" },
+                { pvcName: "bocomwork-share", mountPath: "/opt/bocom-defaults/opencodedir/", subPath: "opencodedir" }
+
+            ],
             healthPath: "/health",
             env: [
                 { name: "OPENCODE_RESOURCE_ATTRIBUTES", value: "service.name=opencode,workspace.owner=$(WORKSPACE_OWNER),workspace.name=$(WORKSPACE_NAME)" },
-                { name: "OA", value: "sss" }
+                { name: "OA", value: "sss" },
+                { name: "BOCOMWORK_EMAIL_IMAP_HOST", value: "imap.bankcomm.com" },
+                { name: "SKILLHUB_API_BASE", value: "http://12.244.109.88/skillhub-server" },
+                { name: "SKILLHUB_CHANNEL_RAND", value: "ygzzfyzh" }
             ]
         };
 

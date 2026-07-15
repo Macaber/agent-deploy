@@ -195,6 +195,8 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 					// Idle expired, trigger immediate reconcile to scale down
 					nextRequeue = 1 * time.Second
 				}
+			} else {
+				log.Error(err, "Failed to parse idleTimeout in requeue calculation", "value", ws.Spec.IdleTimeout)
 			}
 		}
 	}
@@ -256,6 +258,7 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 }
 
 func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1alpha1.Workspace, pvcName string) (string, int32, error) {
+	log := logf.FromContext(ctx)
 	deployName := ws.Name + "-deploy"
 	deploy := &appsv1.Deployment{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: deployName}, deploy)
@@ -273,6 +276,8 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 				if time.Now().After(idleExpiry) {
 					desiredReplicas = 0
 				}
+			} else {
+				log.Error(err, "Failed to parse idleTimeout in replica calculation", "value", ws.Spec.IdleTimeout)
 			}
 		}
 	}
