@@ -645,9 +645,12 @@
         <!-- Main Portal Container -->
         <div id="portalContainer">
             <!-- Main Tabs -->
-            <div class="tabs">
-                <button class="tab-btn active" id="tabCreatorBtn" onclick="switchMainTab('creator')">创建与配置 (Create Workspace)</button>
-                <button class="tab-btn" id="tabDirectoryBtn" onclick="switchMainTab('directory')">工作空间管理 (Workspace Directory)</button>
+            <div class="tabs" style="justify-content: space-between; align-items: center;">
+                <div style="display: flex; gap: 16px;">
+                    <button class="tab-btn active" id="tabCreatorBtn" onclick="switchMainTab('creator')">创建与配置 (Create Workspace)</button>
+                    <button class="tab-btn" id="tabDirectoryBtn" onclick="switchMainTab('directory')">工作空间管理 (Workspace Directory)</button>
+                </div>
+                <button id="logoutBtn" class="btn-inline-action btn-stop" style="display: none; padding: 6px 14px; font-size: 12px; margin-right: 8px;" onclick="handleLogout()">退出登录</button>
             </div>
 
             <!-- Main Tab View 1: Creator Panel -->
@@ -863,8 +866,82 @@
             ]
         };
 
-        // Initialize elements
-        window.addEventListener('DOMContentLoaded', () => {
+        // Check if authentication is required and update view accordingly
+        async function checkAuthAndInit() {
+            try {
+                const res = await fetch(getApiUrl('api/auth/check'));
+                if (!res.ok) {
+                    showLoginView();
+                    return;
+                }
+                const data = await res.json();
+                if (data.authenticated) {
+                    hideLoginView();
+                    if (data.authEnabled) {
+                        document.getElementById('logoutBtn').style.display = 'block';
+                    } else {
+                        document.getElementById('logoutBtn').style.display = 'none';
+                    }
+                    initPortal();
+                } else {
+                    showLoginView();
+                }
+            } catch (e) {
+                initPortal();
+            }
+        }
+
+        function showLoginView() {
+            document.getElementById('cardContainer').style.display = 'none';
+            document.getElementById('loginView').style.display = 'flex';
+        }
+
+        function hideLoginView() {
+            document.getElementById('cardContainer').style.display = 'block';
+            document.getElementById('loginView').style.display = 'none';
+        }
+
+        // Handle Login Submission
+        async function handleLoginSubmit() {
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value.trim();
+            const errorDiv = document.getElementById('loginError');
+            errorDiv.innerText = '';
+
+            if (!username || !password) {
+                errorDiv.innerText = '用户名和密码不能为空！';
+                return;
+            }
+
+            try {
+                const res = await fetch(getApiUrl('api/login'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                if (!res.ok) {
+                    throw new Error(await res.text() || '登录失败');
+                }
+
+                hideLoginView();
+                checkAuthAndInit();
+            } catch (err) {
+                errorDiv.innerText = err.message;
+            }
+        }
+
+        async function handleLogout() {
+            if (!confirm('确定要退出登录吗？')) return;
+            try {
+                await fetch(getApiUrl('api/logout'), { method: 'POST' });
+                showLoginView();
+            } catch (e) {
+                showLoginView();
+            }
+        }
+
+        function initPortal() {
             syncPayloadToForm();
             renderVolumeMounts();
             renderSharedVolumeMounts();
@@ -872,11 +949,18 @@
             syncPayloadToJsonText();
             
             // Setup status check on blur for primary identity identifiers
+            document.getElementById('userId').removeEventListener('blur', checkStatusOfTargetWorkspace);
             document.getElementById('userId').addEventListener('blur', checkStatusOfTargetWorkspace);
+            document.getElementById('namespace').removeEventListener('blur', checkStatusOfTargetWorkspace);
             document.getElementById('namespace').addEventListener('blur', checkStatusOfTargetWorkspace);
             
             // Initial check
             checkStatusOfTargetWorkspace();
+        }
+
+        // Initialize elements
+        window.addEventListener('DOMContentLoaded', () => {
+            checkAuthAndInit();
         });
 
         // Main tab switcher
@@ -1604,17 +1688,49 @@
             document.getElementById('statusTitle').innerText = title;
             document.getElementById('statusDesc').innerText = desc;
         }
-
-        // HTML Escape helper
-        function escapeHtml(str) {
-            if (!str) return '';
-            return str
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;");
-        }
     </script>
+
+    <!-- Login View overlay -->
+    <div id="loginView" style="display: none; align-items: center; justify-content: center; min-height: 100vh; width: 100%; position: absolute; top: 0; left: 0; z-index: 1000; background-color: var(--bg-color); padding: 20px; box-sizing: border-box;">
+        <div class="card" style="max-width: 400px; padding: 40px; text-align: center;">
+            <!-- Brand Header -->
+            <div class="brand-container" style="margin-bottom: 24px;">
+                <svg class="logo-svg" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M32 2L60 18V50L32 62L4 50V18L32 2Z" stroke="url(#loginLogoGrad)" stroke-width="3" stroke-linejoin="round"/>
+                    <path d="M32 12L51 23V41L32 52L13 41V23L32 12Z" fill="url(#loginLogoFillGrad)" opacity="0.85"/>
+                    <circle cx="32" cy="32" r="6" fill="#0284c7" />
+                    <defs>
+                        <linearGradient id="loginLogoGrad" x1="4" y1="2" x2="60" y2="62" gradientUnits="userSpaceOnUse">
+                            <stop stop-color="#0ea5e9"/>
+                            <stop offset="1" stop-color="#6366f1"/>
+                        </linearGradient>
+                        <linearGradient id="loginLogoFillGrad" x1="13" y1="12" x2="51" y2="52" gradientUnits="userSpaceOnUse">
+                            <stop stop-color="rgba(14, 165, 233, 0.15)"/>
+                            <stop offset="1" stop-color="rgba(99, 102, 241, 0.15)"/>
+                        </linearGradient>
+                    </defs>
+                </svg>
+                <div class="brand-text">
+                    <h2 class="brand-name">BOCOMWORK</h2>
+                    <div class="brand-subtitle">Cloud Workspace Provisioner</div>
+                </div>
+            </div>
+
+            <div style="font-size: 18px; font-weight: 600; margin-bottom: 24px; color: var(--text-main);">系统登录 (Sign In)</div>
+            
+            <div style="text-align: left; margin-bottom: 16px;">
+                <label class="input-label" for="loginUsername">用户名 (Username)</label>
+                <input class="input-field" type="text" id="loginUsername" placeholder="请输入用户名" autocomplete="username">
+            </div>
+            
+            <div style="text-align: left; margin-bottom: 24px;">
+                <label class="input-label" for="loginPassword">密码 (Password)</label>
+                <input class="input-field" type="password" id="loginPassword" placeholder="请输入密码" autocomplete="current-password" onkeydown="if(event.key==='Enter')handleLoginSubmit()">
+            </div>
+
+            <button class="btn-submit" onclick="handleLoginSubmit()" style="margin-bottom: 16px;">登录</button>
+            <div class="error-message" id="loginError" style="min-height: 20px;"></div>
+        </div>
+    </div>
 </body>
 </html>

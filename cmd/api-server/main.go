@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -45,9 +46,12 @@ func main() {
 	}
 
 	http.HandleFunc("/", serveHome)
-	http.HandleFunc("/api/workspaces", workspaceRouter(k8sClient))
-	http.HandleFunc("/api/workspaces/stop", stopWorkspaceHandler(k8sClient))
-	http.HandleFunc("/api/workspaces/wakeup", wakeupWorkspaceHandler(k8sClient))
+	http.HandleFunc("/api/login", loginHandler)
+	http.HandleFunc("/api/logout", logoutHandler)
+	http.HandleFunc("/api/auth/check", authCheckHandler)
+	http.HandleFunc("/api/workspaces", requireAuth(workspaceRouter(k8sClient)))
+	http.HandleFunc("/api/workspaces/stop", requireAuth(stopWorkspaceHandler(k8sClient)))
+	http.HandleFunc("/api/workspaces/wakeup", requireAuth(wakeupWorkspaceHandler(k8sClient)))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -581,6 +585,97 @@ func sanitizeK8sName(name string) string {
 		name = strings.TrimRight(name[:63], "-")
 	}
 	return name
+}
+
+var (
+	portalUsername = os.Getenv("USERNAME")
+	portalPassword = os.Getenv("PASSWORD")
+	expectedToken  string
+	authEnabled    bool
+)
+
+func init() {
+	if portalUsername != "" {
+		authEnabled = true
+		hasher := sha256.New()
+		hasher.Write([]byte(portalUsername + ":" + portalPassword))
+		expectedToken = fmt.Sprintf("%x", hasher.Sum(nil))
+		log.Printf("Portal authentication enabled. Username: %s", portalUsername)
+	} else {
+		log.Println("Portal authentication disabled (USERNAME not set).")
+	}
+}
+
+func isAuthorized(r *http.Request) bool {
+	if !authEnabled {
+		return true
+	}
+	cookie, err := r.Cookie("session_token")
+	if err != nil {
+		return false
+	}
+	return cookie.Value == expectedToken
+}
+
+func requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !isAuthorized(r) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}
+}
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Username == portalUsername && req.Password == portalPassword {
+		http.SetCookie(w, &http.Cookie{
+			Name:     "session_token",
+			Value:    expectedToken,
+			Path:     "/",
+			HttpOnly: true,
+			MaxAge:   86400 * 7, // 7 days
+			SameSite: http.SameSiteLaxMode,
+		})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"success": true})
+		return
+	}
+
+	http.Error(w, "用户名或密码错误", http.StatusUnauthorized)
+}
+
+func logoutHandler(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session_token",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   -1,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"success": true})
+}
+
+func authCheckHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"authenticated": isAuthorized(r),
+		"authEnabled":   authEnabled,
+	})
 }
 
 //go:embed portal.html
