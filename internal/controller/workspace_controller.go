@@ -27,12 +27,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	apiresources "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -115,25 +112,8 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	// Reconcile KEDA ScaledObject dynamically
-	if err := r.reconcileScaledObject(ctx, ws, deployName); err != nil {
-		if meta.IsNoMatchError(err) {
-			log.Info("KEDA ScaledObject CRD not found in cluster, skipping KEDA integration")
-		} else {
-			log.Error(err, "Failed to reconcile KEDA ScaledObject")
-		}
-	}
-
 	// 3. Status Phase logic & Idle Timeout logic
 	var nextRequeue time.Duration
-
-	// Compute next Requeue based on TTL if set
-	if ws.Status.ExpiryTime != nil {
-		remainingTTL := time.Until(ws.Status.ExpiryTime.Time)
-		if remainingTTL > 0 {
-			nextRequeue = remainingTTL
-		}
-	}
 
 	oldPhase := ws.Status.Phase
 	oldPodName := ws.Status.PodName
@@ -188,9 +168,7 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				idleExpiry := ws.Status.LastActiveTime.Add(idleDuration)
 				remainingIdle := time.Until(idleExpiry)
 				if remainingIdle > 0 {
-					if nextRequeue == 0 || remainingIdle < nextRequeue {
-						nextRequeue = remainingIdle
-					}
+					nextRequeue = remainingIdle
 				} else {
 					// Idle expired, trigger immediate reconcile to scale down
 					nextRequeue = 1 * time.Second
@@ -263,24 +241,8 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	deploy := &appsv1.Deployment{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: deployName}, deploy)
 
-	// Determine desired replicas
-	desiredReplicas := int32(1)
-	if ws.Spec.Stopped {
-		desiredReplicas = 0
-	} else {
-		// If not stopped, check if it's sleeping due to idle timeout
-		if ws.Spec.IdleTimeout != "" && ws.Status.LastActiveTime != nil {
-			idleDuration, err := time.ParseDuration(ws.Spec.IdleTimeout)
-			if err == nil {
-				idleExpiry := ws.Status.LastActiveTime.Add(idleDuration)
-				if time.Now().After(idleExpiry) {
-					desiredReplicas = 0
-				}
-			} else {
-				log.Error(err, "Failed to parse idleTimeout in replica calculation", "value", ws.Spec.IdleTimeout)
-			}
-		}
-	}
+	// Operator always owns Deployment.spec.replicas (Stopped / IdleTimeout / default 1).
+	desiredReplicas := computeDesiredReplicas(ws, log)
 
 	// Build runtime container environment
 	envVars := []corev1.EnvVar{
@@ -405,6 +367,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		})
 	}
 
+	// Append workspace-data mounts without replacing SharedVolumeMounts already in volumeMounts.
 	if len(ws.Spec.Runtime.VolumeMounts) > 0 {
 		for _, vm := range ws.Spec.Runtime.VolumeMounts {
 			volumeMounts = append(volumeMounts, corev1.VolumeMount{
@@ -414,13 +377,11 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 			})
 		}
 	} else {
-		volumeMounts = []corev1.VolumeMount{
-			{
-				Name:      "workspace-data",
-				MountPath: "/workspace",
-				SubPath:   "workspace",
-			},
-		}
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "workspace-data",
+			MountPath: "/workspace",
+			SubPath:   "workspace",
+		})
 
 		if strings.Contains(ws.Spec.Runtime.Image, "smanx/opencode") {
 			volumeMounts = append(volumeMounts,
@@ -530,7 +491,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		return "", 0, err
 	}
 
-	// Update logic: we update replica count and other spec settings
+	// Update replica count and other spec settings
 	if len(deploy.Spec.Template.Spec.Containers) == 0 {
 		return "", 0, fmt.Errorf("deployment %s has no containers", deployName)
 	}
@@ -556,6 +517,30 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	}
 
 	return deploy.Name, desiredReplicas, nil
+}
+
+// computeDesiredReplicas returns the desired Deployment replica count.
+//
+//   - Stopped=true → 0
+//   - IdleTimeout set and lastActiveTime + idleTimeout elapsed → 0
+//   - otherwise → 1
+func computeDesiredReplicas(ws *aiv1alpha1.Workspace, log interface {
+	Error(err error, msg string, keysAndValues ...any)
+}) int32 {
+	if ws.Spec.Stopped {
+		return 0
+	}
+	if ws.Spec.IdleTimeout != "" && ws.Status.LastActiveTime != nil {
+		idleDuration, err := time.ParseDuration(ws.Spec.IdleTimeout)
+		if err != nil {
+			log.Error(err, "Failed to parse idleTimeout in replica calculation", "value", ws.Spec.IdleTimeout)
+			return 1
+		}
+		if time.Now().After(ws.Status.LastActiveTime.Add(idleDuration)) {
+			return 0
+		}
+	}
+	return 1
 }
 
 func (r *WorkspaceReconciler) reconcileService(ctx context.Context, ws *aiv1alpha1.Workspace) (string, error) {
@@ -704,67 +689,6 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&networkingv1.Ingress{}).
 		Named("workspace").
 		Complete(r)
-}
-
-func (r *WorkspaceReconciler) reconcileScaledObject(ctx context.Context, ws *aiv1alpha1.Workspace, deployName string) error {
-	scaledObjectName := ws.Name + "-scaledobject"
-
-	so := &unstructured.Unstructured{}
-	so.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "keda.sh",
-		Version: "v1alpha1",
-		Kind:    "ScaledObject",
-	})
-
-	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: scaledObjectName}, so)
-
-	host := getWorkspaceHost(ws.Name)
-
-	// Construct the desired ScaledObject structure
-	desiredSO := &unstructured.Unstructured{}
-	desiredSO.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "keda.sh",
-		Version: "v1alpha1",
-		Kind:    "ScaledObject",
-	})
-	desiredSO.SetName(scaledObjectName)
-	desiredSO.SetNamespace(ws.Namespace)
-
-	desiredSpec := map[string]any{
-		"scaleTargetRef": map[string]any{
-			"apiVersion": "apps/v1",
-			"kind":       "Deployment",
-			"name":       deployName,
-		},
-		"minReplicaCount": int64(0),
-		"maxReplicaCount": int64(1),
-		"cooldownPeriod":  int64(300), // 5 minutes
-		"triggers": []any{
-			map[string]any{
-				"type": "http",
-				"metadata": map[string]any{
-					"serverAddress": "http://keda-http-add-on-interceptor.keda:8080",
-					"host":          host,
-				},
-			},
-		},
-	}
-
-	desiredSO.Object["spec"] = desiredSpec
-
-	if err := ctrl.SetControllerReference(ws, desiredSO, r.Scheme); err != nil {
-		return err
-	}
-
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return r.Create(ctx, desiredSO)
-		}
-		return err
-	}
-
-	so.Object["spec"] = desiredSpec
-	return r.Update(ctx, so)
 }
 
 func boolPtr(b bool) *bool {

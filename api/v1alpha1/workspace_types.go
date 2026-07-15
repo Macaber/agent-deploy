@@ -136,7 +136,11 @@ type WorkspaceSpec struct {
 	// +optional
 	ExposeSSH bool `json:"exposeSSH,omitempty"`
 
-	// IdleTimeout specifies the duration of inactivity after which the workspace scales to 0
+	// IdleTimeout is the max run window after status.lastActiveTime before the Operator
+	// scales the workspace to 0 (Sleeping). It is NOT live traffic idle detection:
+	// lastActiveTime is set on create and when the user starts/wakes the workspace via API
+	// (or when phase transitions into Running from a non-running state).
+	// When empty, the workspace will not auto-sleep by this rule.
 	// e.g. "30m", "1h"
 	// +optional
 	IdleTimeout string `json:"idleTimeout,omitempty"`
@@ -196,13 +200,11 @@ type WorkspaceStatus struct {
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
 
-	// LastActiveTime indicates the timestamp of the last detected activity
+	// LastActiveTime is the timestamp used as the start of the IdleTimeout run window.
+	// Updated on first status init, on wake/start via API-Server, and when phase transitions
+	// into Running from Sleeping/Stopped/Pending/Failed. Not updated by Ingress HTTP traffic.
 	// +optional
 	LastActiveTime *metav1.Time `json:"lastActiveTime,omitempty"`
-
-	// ExpiryTime indicates the computed time when this workspace will expire under the TTL policy
-	// +optional
-	ExpiryTime *metav1.Time `json:"expiryTime,omitempty"`
 
 	// Conditions represent the current state of the Workspace resource.
 	// +listType=map

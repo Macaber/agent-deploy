@@ -1,6 +1,6 @@
 # Agent Workspace 部署架构设计与组件作用解析
 
-本项目基于 Kubernetes 构建了一套面向企业/团队的**动态开发工作空间（Workspace On Demand）**托管平台。系统通过 API-Server 网关和 Operator 控制器，实现了开发环境的一键拉起、资源限额、闲置休眠及过期销毁。
+本项目基于 Kubernetes 构建了一套面向企业/团队的**动态开发工作空间（Workspace On Demand）**托管平台。系统通过 API-Server 网关和 Operator 控制器，实现了开发环境的一键拉起、资源限额与会话超时休眠。
 
 以下是系统的整体部署架构设计以及各核心组件在其中扮演的角色与协同工作原理。
 
@@ -44,7 +44,8 @@ graph TD
 * **具体职责**：
   * **资源状态监听**：不断轮询监听 K8s 集群中 Workspace 实例的创建、修改和删除事件。
   * **子资源编排（一键拉起）**：根据 Workspace 的声明规格，自动创建并管理对应的 `PersistentVolumeClaim`（持久化卷）、`Deployment`（计算负载）、`Service`（内网暴露）和 `Ingress`（外部路由），并建立 **Owner Reference（所有者引用）** 确保级联删除。
-  * **闲置自动休眠**：在后台监控工作空间的 `Status.LastActiveTime`（最后活跃时间）。一旦闲置时长超过 `idleTimeout`，Operator 会自动将 Deployment 的副本数（Replicas）缩容至 `0`，并释放 CPU 和内存，将状态标为 `Sleeping`。
+  * **会话超时自动休眠（`idleTimeout`）**：以 `Status.LastActiveTime` 为起点计时（创建/API 唤醒/从非 Running 进入 Running 时更新），**不是**根据 Ingress 实时流量判断“是否有人在用”。超过 `idleTimeout` 后 Operator 将 Deployment 副本缩至 `0`，状态为 `Sleeping`。唤醒需通过 API（更新 `lastActiveTime`）或将 `stopped` 置回 false 后由控制器拉起。
+  * **副本管理**：Deployment 的 `replicas` 始终由 Operator 根据 `stopped` / `idleTimeout` 写入，无需额外扩缩容组件。
 
 ### 🌐 (2) Ingress (网关路由层)
 * **组件构成**：`ingress-nginx-controller`（基于 Nginx 的 Kubernetes 官方网关控制器）。

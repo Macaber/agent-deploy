@@ -54,7 +54,11 @@ spec:
                 type: boolean
               idleTimeout:
                 description: |-
-                  IdleTimeout specifies the duration of inactivity after which the workspace scales to 0
+                  IdleTimeout is the max run window after status.lastActiveTime before the Operator
+                  scales the workspace to 0 (Sleeping). It is NOT live traffic idle detection:
+                  lastActiveTime is set on create and when the user starts/wakes the workspace via API
+                  (or when phase transitions into Running from a non-running state).
+                  When empty, the workspace will not auto-sleep by this rule.
                   e.g. "30m", "1h"
                 type: string
               owner:
@@ -268,14 +272,11 @@ spec:
               endpoint:
                 description: Endpoint is the external URL or access path for the workspace
                 type: string
-              expiryTime:
-                description: ExpiryTime indicates the computed time when this workspace
-                  will expire under the TTL policy
-                format: date-time
-                type: string
               lastActiveTime:
-                description: LastActiveTime indicates the timestamp of the last detected
-                  activity
+                description: |-
+                  LastActiveTime is the timestamp used as the start of the IdleTimeout run window.
+                  Updated on first status init, on wake/start via API-Server, and when phase transitions
+                  into Running from Sleeping/Stopped/Pending/Failed. Not updated by Ingress HTTP traffic.
                 format: date-time
                 type: string
               phase:

@@ -228,10 +228,6 @@ func (in *WorkspaceStatus) DeepCopyInto(out *WorkspaceStatus) {
 		in, out := &in.LastActiveTime, &out.LastActiveTime
 		*out = (*in).DeepCopy()
 	}
-	if in.ExpiryTime != nil {
-		in, out := &in.ExpiryTime, &out.ExpiryTime
-		*out = (*in).DeepCopy()
-	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

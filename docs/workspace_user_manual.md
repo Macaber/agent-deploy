@@ -16,7 +16,7 @@ metadata:
   namespace: default           # 2. 部署的 Namespace 命名空间
 spec:
   owner: alice                 # 3. 拥有者用户 ID
-  idleTimeout: 30m             # 4. 空闲超时自动睡眠时间
+  idleTimeout: 30m             # 4. 自 lastActiveTime 起的最长运行窗口（到时休眠）
   exposeSSH: true              # 5. 是否暴露 SSH 端口
   stopped: false               # 6. 手动启停状态位
   runtime:                     # 7. 容器运行规格定义
@@ -44,7 +44,7 @@ spec:
 | :--- | :--- | :--- | :--- | :--- |
 | **`owner`** | `string` | **是** | 声明该独立工作空间归属的用户 ID。 | `"alice"`, `"user_1001"` |
 | **`stopped`** | `boolean` | 否 | 手动启停控制开关。<br>设为 `true`：触发手动挂起，副本数降为 0（容器销毁以释放 CPU/内存算力，数据保存在 PVC/NAS 磁盘中）。<br>设为 `false` 或不填：处于正常激活运行状态。 | `true`, `false` |
-| **`idleTimeout`** | `string` | 否 | 自动休眠（缩容至 0 副本）的空闲超时时间配额。采用 Go 持续时间格式表示。若省略该字段，则该空间永不因为空闲而超时关闭。 | `"15m"` (15分钟)<br>`"2h"` (2小时) |
+| **`idleTimeout`** | `string` | 否 | **会话/最大运行窗口**：自 `status.lastActiveTime` 起经过该时长后自动缩容至 0（`Sleeping`）。**不是**“检测用户停止操作后的闲置”。`lastActiveTime` 在创建、API 唤醒/创建更新、以及从 Sleeping/Stopped 等进入 Running 时刷新；**不会**因业务 HTTP 流量自动刷新。省略则不会按该规则自动休眠。Go 时长格式。 | `"15m"` (15分钟)<br>`"2h"` (2小时) |
 | **`exposeSSH`** | `boolean` | 否 | 是否在容器中额外开启并暴露 SSH 端口（22 端口）。如果设为 `true`，Service 和 Ingress 将自动代理 SSH 流量。默认为 `false`。 | `true`, `false` |
 
 ---
@@ -93,13 +93,13 @@ env:
 | **`podName`** | `string` | 当前集群中实际运行的容器 Pod 的名称。当处于休眠或停止时，此值为空。 | `"ws-alice-deploy-66bfdfb459-vrwsn"` |
 | **`pvcName`** | `string` | 绑定到该工作空间的存储卷（PersistentVolumeClaim）名称。 | `"ws-alice-pvc"` |
 | **`endpoint`** | `string` | 工作空间对外的 HTTP 访问链接域名入口。 | `"ws-alice.localhost"`, `"ws-alice.domain.com"` |
-| **`lastActiveTime`**| `datetime` | 最近一次检测到用户活跃（或手动唤醒）的时间戳。用于计算空闲过期时间。 | `"2026-06-25T10:14:01Z"` |
+| **`lastActiveTime`**| `datetime` | `idleTimeout` 计时起点。创建、API 唤醒/更新启动、以及 phase 转入 Running 时写入；**非**实时流量活跃探测。 | `"2026-06-25T10:14:01Z"` |
 
 ### 状态阶段 (Status.Phase) 转换定义
 
 * **`Pending`**: 准备中。Operator 正在处理基础资源（例如在等待 NAS/NFS 磁盘卷 PVC 成功绑定）。
 * **`Starting`**: 启动中。正在调度 Pod、拉取镜像或初始化存储子路径。
 * **`Running`**: 运行中。容器内部的服务已准备就绪，可以通过 `endpoint` 域名正常打开网页访问。
-* **`Sleeping`**: 空闲休眠中。触发了空闲检测（持续 `idleTimeout` 时间无任何活跃），容器已被销毁释放算力，数据完好保留在 NAS 存储上，点击“唤醒”或新请求流量接入时会瞬间恢复。
+* **`Sleeping`**: 休眠中。因自 `lastActiveTime` 起已超过 `idleTimeout`（会话运行窗口到期），容器已销毁释放算力，数据仍在 PVC/NAS。通过 API「唤醒」更新 `lastActiveTime` 后可再拉起。
 * **`Stopped`**: 已停止。用户手动点击了“关闭工作空间”，副本数被安全缩容到 0，数据完整保留。
 * **`Failed`**: 运行失败。可能由于镜像拉取失败、CPU/内存配额不足或持久化挂载出错等原因导致。
