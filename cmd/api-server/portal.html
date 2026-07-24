@@ -733,10 +733,11 @@
                         <table class="dyn-table" id="sharedVolumeMountsTable">
                             <thead>
                                 <tr>
-                                    <th style="width: 35%;">PVC 名称 (pvcName)</th>
-                                    <th style="width: 35%;">挂载路径 (mountPath)</th>
+                                    <th style="width: 30%;">PVC 名称 (pvcName)</th>
+                                    <th style="width: 30%;">挂载路径 (mountPath)</th>
                                     <th style="width: 20%;">子目录 (subPath)</th>
-                                    <th style="width: 10%;">操作</th>
+                                    <th style="width: 10%; text-align: center;">只读</th>
+                                    <th style="width: 10%; text-align: center;">操作</th>
                                 </tr>
                             </thead>
                             <tbody id="sharedVolumeMountsBody">
@@ -744,6 +745,26 @@
                             </tbody>
                         </table>
                         <button class="btn-add-row" onclick="addSharedVolumeMountRow()">+ 添加共享卷挂载</button>
+                    </div>
+
+                    <!-- Init Containers -->
+                    <div class="section-title">初始化容器 / Init Containers (可选)</div>
+                    <div class="table-container">
+                        <table class="dyn-table" id="initContainersTable">
+                            <thead>
+                                <tr>
+                                    <th style="width: 15%;">容器名 (name)</th>
+                                    <th style="width: 25%;">镜像 (image)</th>
+                                    <th style="width: 25%;">启动命令 (command)</th>
+                                    <th style="width: 25%;">运行参数 (args)</th>
+                                    <th style="width: 10%;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="initContainersBody">
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                        <button class="btn-add-row" onclick="addInitContainerRow()">+ 添加初始化容器</button>
                     </div>
 
                     <!-- Environment variables -->
@@ -846,8 +867,8 @@
     <script>
         // Default Payload state
         let payload = {
-            userId: "sss",
-            image: "docker.io/library/bocom-opencode-work:v1.0.5",
+            userId: "sun_yunfeng",
+            image: "docker.io/library/bocomwork:v1.0.2",
             command: ["bocomwork-entrypoint"],
             port: 3000,
             idleTimeout: "10m",
@@ -855,22 +876,33 @@
             cpu: "0.5",
             memory: "1Gi",
             volumeMounts: [
-                { mountPath: "/workspace", subPath: "workspace" },
-                { mountPath: "/data", subPath: "data" }
+                { mountPath: "/root/.bocomwork", subPath: "bocomwork" },
+                { mountPath: "/root/.local/share/opencode", subPath: "data" },
+                { mountPath: "/root/.config/opencode", subPath: "data" }
             ],
             sharedVolumeMounts: [
-                { pvcName: "bocomwork-share", mountPath: "/opt/bocom-defaults/skill/", subPath: "skill" },
-                { pvcName: "bocomwork-share", mountPath: "/opt/express/bocomwork", subPath: "bocomwork" },
-                { pvcName: "bocomwork-share", mountPath: "/opt/bocom-defaults/opencodedir/", subPath: "opencodedir" }
+                { pvcName: "bocomwork-local-share", mountPath: "/opt/bocom-defaults/skills/", subPath: "skills" },
+                { pvcName: "bocomwork-local-share", mountPath: "/opt/bocom-defaults/dist/", subPath: "dist" },
+                { pvcName: "bocomwork-local-share", mountPath: "/opt/bocom-defaults/opencodedir/", subPath: "opencodedir" }
 
             ],
-            healthPath: "/health",
             env: [
                 { name: "OPENCODE_RESOURCE_ATTRIBUTES", value: "service.name=opencode,workspace.owner=$(WORKSPACE_OWNER),workspace.name=$(WORKSPACE_NAME)" },
-                { name: "OA", value: "sss" },
-                { name: "BOCOMWORK_EMAIL_IMAP_HOST", value: "imap.bankcomm.com" },
-                { name: "SKILLHUB_API_BASE", value: "http://12.244.109.88/skillhub-server" },
-                { name: "SKILLHUB_CHANNEL_RAND", value: "ygzzfyzh" }
+                { name: "AIONUI_DATA_DIR", value: "/root/.bocomwork" },
+                { name: "OA", value: "sun_yunfeng" },
+                { name: "GUWP_TOKEN", value: "" },
+                { name: "AIONUI_HOST", value: "0.0.0.0" },
+                { name: "WEBUI_PORT", value: "3000" },
+                { name: "AIONUI_ALLOW_REMOTE", value: "1" },
+                { name: "BOCOMWORK_EMAIL_IMAP_HOST", value: "" },
+                { name: "SKILLHUB_API_BASE", value: "" },
+                { name: "SKILLHUB_CHANNEL_RAND", value: "" },
+                { name: "SKILLHUB_PLATFORM", value: "BOCOMCODE" },
+                { name: "OPENCODE_CONFIG", value: "/root/config/bocomcode.json" },
+                { name: "BOCOMWORK_EMAIL_SOCKS_PROXY", value: "" },
+                { name: "OPENCODE_PARSE_SERVICE_URL", value: "" },
+                { name: "OPENCODE_WORD_CONVERTER_URL", value: "" },
+                { name: "GUWP_USER_PROFILE_URL", value: "" }
             ]
         };
 
@@ -953,6 +985,7 @@
             syncPayloadToForm();
             renderVolumeMounts();
             renderSharedVolumeMounts();
+            renderInitContainers();
             renderEnvVars();
             syncPayloadToJsonText();
             
@@ -1017,6 +1050,7 @@
                 syncPayloadToForm();
                 renderVolumeMounts();
                 renderSharedVolumeMounts();
+                renderInitContainers();
                 renderEnvVars();
             } else {
                 subFormBtn.classList.remove('active');
@@ -1196,10 +1230,12 @@
                     }
                     payload.volumeMounts = spec.runtime?.volumeMounts || [];
                     payload.sharedVolumeMounts = spec.sharedVolumeMounts || [];
+                    payload.initContainers = spec.runtime?.initContainers || [];
                     
                     syncPayloadToForm();
                     renderVolumeMounts();
                     renderSharedVolumeMounts();
+                    renderInitContainers();
                     renderEnvVars();
                     syncPayloadToJsonText();
                     
@@ -1252,6 +1288,7 @@
             
             payload.sharedVolumeMounts.forEach((svm, idx) => {
                 const tr = document.createElement('tr');
+                const isChecked = svm.readOnly ? 'checked' : '';
                 tr.innerHTML = '<td>' +
                     '<input class="input-field" type="text" value="' + escapeHtml(svm.pvcName) + '" placeholder="shared-pvc-name" ' +
                            'oninput="updateSharedVolumeMountField(' + idx + ', \'pvcName\', this.value)">' +
@@ -1263,6 +1300,9 @@
                 '<td>' +
                     '<input class="input-field" type="text" value="' + escapeHtml(svm.subPath || '') + '" placeholder="subdir" ' +
                            'oninput="updateSharedVolumeMountField(' + idx + ', \'subPath\', this.value)">' +
+                '</td>' +
+                '<td style="text-align: center;">' +
+                    '<input type="checkbox" ' + isChecked + ' onchange="updateSharedVolumeMountField(' + idx + ', \'readOnly\', this.checked)">' +
                 '</td>' +
                 '<td style="text-align: center;">' +
                     '<button class="btn-del-row" onclick="deleteSharedVolumeMountRow(' + idx + ')">删除</button>' +
@@ -1280,7 +1320,7 @@
             if (!payload.sharedVolumeMounts) {
                 payload.sharedVolumeMounts = [];
             }
-            payload.sharedVolumeMounts.push({ pvcName: '', mountPath: '', subPath: '' });
+            payload.sharedVolumeMounts.push({ pvcName: '', mountPath: '', subPath: '', readOnly: false });
             renderSharedVolumeMounts();
             syncPayloadToJsonText();
         }
@@ -1288,6 +1328,78 @@
         function deleteSharedVolumeMountRow(idx) {
             payload.sharedVolumeMounts.splice(idx, 1);
             renderSharedVolumeMounts();
+            syncPayloadToJsonText();
+        }
+
+        // Render Init Containers dynamic table rows
+        function renderInitContainers() {
+            const tbody = document.getElementById('initContainersBody');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+            
+            if (!payload.initContainers) {
+                payload.initContainers = [];
+            }
+            
+            payload.initContainers.forEach((ic, idx) => {
+                const tr = document.createElement('tr');
+                const cmdStr = (ic.command || []).join(', ');
+                const argsStr = (ic.args || []).join(', ');
+                
+                tr.innerHTML = '<td>' +
+                    '<input class="input-field" type="text" value="' + escapeHtml(ic.name || '') + '" placeholder="sync-tools" ' +
+                           'oninput="updateInitContainerField(' + idx + ', \'name\', this.value)">' +
+                '</td>' +
+                '<td>' +
+                    '<input class="input-field" type="text" value="' + escapeHtml(ic.image || '') + '" placeholder="rancher/library-busybox:1.31.1" ' +
+                           'oninput="updateInitContainerField(' + idx + ', \'image\', this.value)">' +
+                '</td>' +
+                '<td>' +
+                    '<input class="input-field" type="text" value="' + escapeHtml(cmdStr) + '" placeholder="sh, -c" ' +
+                           'oninput="updateInitContainerArrayField(' + idx + ', \'command\', this.value)">' +
+                '</td>' +
+                '<td>' +
+                    '<input class="input-field" type="text" value="' + escapeHtml(argsStr) + '" placeholder="cp -rn /src/* /dst/" ' +
+                           'oninput="updateInitContainerArrayField(' + idx + ', \'args\', this.value)">' +
+                '</td>' +
+                '<td style="text-align: center;">' +
+                    '<button class="btn-del-row" onclick="deleteInitContainerRow(' + idx + ')">删除</button>' +
+                '</td>';
+                tbody.appendChild(tr);
+            });
+        }
+
+        function updateInitContainerField(idx, field, value) {
+            payload.initContainers[idx][field] = value;
+            syncPayloadToJsonText();
+        }
+
+        function updateInitContainerArrayField(idx, field, value) {
+            if (value.trim()) {
+                payload.initContainers[idx][field] = value.split(',').map(s => s.trim()).filter(Boolean);
+            } else {
+                payload.initContainers[idx][field] = [];
+            }
+            syncPayloadToJsonText();
+        }
+
+        function addInitContainerRow() {
+            if (!payload.initContainers) {
+                payload.initContainers = [];
+            }
+            payload.initContainers.push({
+                name: '',
+                image: '',
+                command: [],
+                args: []
+            });
+            renderInitContainers();
+            syncPayloadToJsonText();
+        }
+
+        function deleteInitContainerRow(idx) {
+            payload.initContainers.splice(idx, 1);
+            renderInitContainers();
             syncPayloadToJsonText();
         }
 

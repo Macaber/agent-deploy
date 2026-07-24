@@ -95,6 +95,41 @@ type RuntimeSpec struct {
 	// HealthPath is the HTTP path for readiness probe check (e.g. "/health"). If empty, defaults to TCP socket check.
 	// +optional
 	HealthPath string `json:"healthPath,omitempty"`
+
+	// InitContainers specifies custom init containers executed before the main container starts
+	// +optional
+	InitContainers []InitContainerSpec `json:"initContainers,omitempty"`
+}
+
+// InitContainerSpec defines configuration for an init container executed before main container start.
+type InitContainerSpec struct {
+	// Name is the init container name
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Image is the init container image
+	// +kubebuilder:validation:Required
+	Image string `json:"image"`
+
+	// Command specifies startup command (entrypoint) for init container
+	// +optional
+	Command []string `json:"command,omitempty"`
+
+	// Args specifies startup arguments for init container
+	// +optional
+	Args []string `json:"args,omitempty"`
+
+	// Env is a list of environment variables for init container
+	// +optional
+	Env []EnvVar `json:"env,omitempty"`
+
+	// VolumeMounts specifies custom directory mounts inside the init container mapping to the workspace storage
+	// +optional
+	VolumeMounts []VolumeMount `json:"volumeMounts,omitempty"`
+
+	// SharedVolumeMounts specifies pre-existing generic/shared PVC mounts inside the init container
+	// +optional
+	SharedVolumeMounts []SharedVolumeMount `json:"sharedVolumeMounts,omitempty"`
 }
 
 // StorageSpec defines the storage properties for user persistence.
@@ -167,6 +202,10 @@ type SharedVolumeMount struct {
 	// SubPath is the subdirectory within the shared volume to mount
 	// +optional
 	SubPath string `json:"subPath,omitempty"`
+
+	// ReadOnly specifies whether the volume mount should be read-only
+	// +optional
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // WorkspacePhase defines the state transitions of the Workspace

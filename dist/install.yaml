@@ -132,6 +132,98 @@ spec:
                   image:
                     description: Image is the container image to run for the workspace
                     type: string
+                  initContainers:
+                    description: InitContainers specifies custom init containers executed
+                      before the main container starts
+                    items:
+                      description: InitContainerSpec defines configuration for an
+                        init container executed before main container start.
+                      properties:
+                        args:
+                          description: Args specifies startup arguments for init container
+                          items:
+                            type: string
+                          type: array
+                        command:
+                          description: Command specifies startup command (entrypoint)
+                            for init container
+                          items:
+                            type: string
+                          type: array
+                        env:
+                          description: Env is a list of environment variables for
+                            init container
+                          items:
+                            description: EnvVar represents a simple environment variable
+                              key-value pair.
+                            properties:
+                              name:
+                                type: string
+                              value:
+                                type: string
+                            required:
+                            - name
+                            - value
+                            type: object
+                          type: array
+                        image:
+                          description: Image is the init container image
+                          type: string
+                        name:
+                          description: Name is the init container name
+                          type: string
+                        sharedVolumeMounts:
+                          description: SharedVolumeMounts specifies pre-existing generic/shared
+                            PVC mounts inside the init container
+                          items:
+                            description: SharedVolumeMount defines a mount of a pre-existing
+                              generic/shared PVC.
+                            properties:
+                              mountPath:
+                                description: MountPath is the path inside the container
+                                  where the volume should be mounted
+                                type: string
+                              pvcName:
+                                description: PVCName is the name of the pre-existing
+                                  PersistentVolumeClaim to mount
+                                type: string
+                              readOnly:
+                                description: ReadOnly specifies whether the volume
+                                  mount should be read-only
+                                type: boolean
+                              subPath:
+                                description: SubPath is the subdirectory within the
+                                  shared volume to mount
+                                type: string
+                            required:
+                            - mountPath
+                            - pvcName
+                            type: object
+                          type: array
+                        volumeMounts:
+                          description: VolumeMounts specifies custom directory mounts
+                            inside the init container mapping to the workspace storage
+                          items:
+                            description: VolumeMount defines a directory mount point
+                              inside the container mapping to the workspace storage.
+                            properties:
+                              mountPath:
+                                description: MountPath is the path inside the container
+                                  where the volume should be mounted
+                                type: string
+                              subPath:
+                                description: SubPath is the subdirectory within the
+                                  workspace volume to mount
+                                type: string
+                            required:
+                            - mountPath
+                            type: object
+                          type: array
+                      required:
+                      - image
+                      - name
+                      type: object
+                    type: array
                   memory:
                     description: Memory specifies Memory resource limits/requests,
                       e.g. "512Mi", "2Gi"
@@ -182,6 +274,10 @@ spec:
                       description: PVCName is the name of the pre-existing PersistentVolumeClaim
                         to mount
                       type: string
+                    readOnly:
+                      description: ReadOnly specifies whether the volume mount should
+                        be read-only
+                      type: boolean
                     subPath:
                       description: SubPath is the subdirectory within the shared volume
                         to mount
@@ -636,7 +732,7 @@ spec:
         env:
         - name: WORKSPACE_DOMAIN
           value: bocomcode
-        image: workspace-operator:v1.0.11
+        image: workspace-operator:v1.0.12
         livenessProbe:
           httpGet:
             path: /healthz

@@ -364,6 +364,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 			Name:      volumeName,
 			MountPath: svm.MountPath,
 			SubPath:   svm.SubPath,
+			ReadOnly:  svm.ReadOnly,
 		})
 	}
 
@@ -409,8 +410,58 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		}
 	}
 
-	// Temporarily disabled git clone initContainers
+	// Build custom initContainers if specified in ws.Spec.Runtime.InitContainers
 	var initContainers []corev1.Container
+	for _, icSpec := range ws.Spec.Runtime.InitContainers {
+		var icEnvVars []corev1.EnvVar
+		for _, env := range icSpec.Env {
+			icEnvVars = append(icEnvVars, corev1.EnvVar{Name: env.Name, Value: env.Value})
+		}
+
+		var icVolumeMounts []corev1.VolumeMount
+		for _, svm := range icSpec.SharedVolumeMounts {
+			volumeName, exists := sharedVolumeMap[svm.PVCName]
+			if !exists {
+				volumeName = fmt.Sprintf("shared-vol-%d", sharedVolCount)
+				sharedVolumeMap[svm.PVCName] = volumeName
+				sharedVolCount++
+
+				volumes = append(volumes, corev1.Volume{
+					Name: volumeName,
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: svm.PVCName,
+						},
+					},
+				})
+			}
+
+			icVolumeMounts = append(icVolumeMounts, corev1.VolumeMount{
+				Name:      volumeName,
+				MountPath: svm.MountPath,
+				SubPath:   svm.SubPath,
+				ReadOnly:  svm.ReadOnly,
+			})
+		}
+
+		for _, vm := range icSpec.VolumeMounts {
+			icVolumeMounts = append(icVolumeMounts, corev1.VolumeMount{
+				Name:      "workspace-data",
+				MountPath: vm.MountPath,
+				SubPath:   vm.SubPath,
+			})
+		}
+
+		initContainers = append(initContainers, corev1.Container{
+			Name:            icSpec.Name,
+			Image:           icSpec.Image,
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			Command:         icSpec.Command,
+			Args:            icSpec.Args,
+			Env:             icEnvVars,
+			VolumeMounts:    icVolumeMounts,
+		})
+	}
 
 	labels := map[string]string{
 		"app":       "workspace",
@@ -464,7 +515,6 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 									Name:            "runtime",
 									Image:           ws.Spec.Runtime.Image,
 									ImagePullPolicy: corev1.PullIfNotPresent,
-									WorkingDir:      "/workspace",
 									Command:         command,
 									Args:            containerArgs,
 									Ports:           ports,
@@ -498,7 +548,6 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	deploy.Spec.Replicas = &desiredReplicas
 	deploy.Spec.Template.Spec.Containers[0].Image = ws.Spec.Runtime.Image
 	deploy.Spec.Template.Spec.Containers[0].ImagePullPolicy = corev1.PullIfNotPresent
-	deploy.Spec.Template.Spec.Containers[0].WorkingDir = "/workspace"
 	deploy.Spec.Template.Spec.Containers[0].Command = command
 	deploy.Spec.Template.Spec.Containers[0].Args = containerArgs
 	deploy.Spec.Template.Spec.Containers[0].Env = envVars

@@ -91,11 +91,13 @@ type workspaceRequest struct {
 	ExposeSSH          *bool                          `json:"exposeSSH,omitempty"`
 	Env                []aiv1alpha1.EnvVar            `json:"env,omitempty"`
 	Command            []string                       `json:"command,omitempty"`
+	Cmd                []string                       `json:"cmd,omitempty"`
 	Args               []string                       `json:"args,omitempty"`
 	VolumeMounts       []aiv1alpha1.VolumeMount       `json:"volumeMounts,omitempty"`
 	PostStartScript    string                         `json:"postStartScript,omitempty"`
 	HealthPath         string                         `json:"healthPath,omitempty"`
 	SharedVolumeMounts []aiv1alpha1.SharedVolumeMount `json:"sharedVolumeMounts,omitempty"`
+	InitContainers     []aiv1alpha1.InitContainerSpec `json:"initContainers,omitempty"`
 }
 
 // workspaceItem is the JSON response type for listing workspaces.
@@ -269,6 +271,11 @@ func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequ
 		exposeSSH = *req.ExposeSSH
 	}
 
+	cmdList := req.Command
+	if len(cmdList) == 0 && len(req.Cmd) > 0 {
+		cmdList = req.Cmd
+	}
+
 	ws := &aiv1alpha1.Workspace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      wsName,
@@ -284,11 +291,12 @@ func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequ
 				CPU:             req.CPU,
 				Memory:          req.Memory,
 				Env:             req.Env,
-				Command:         req.Command,
+				Command:         cmdList,
 				Args:            req.Args,
 				VolumeMounts:    req.VolumeMounts,
 				PostStartScript: req.PostStartScript,
 				HealthPath:      req.HealthPath,
+				InitContainers:  req.InitContainers,
 			},
 			Storage: aiv1alpha1.StorageSpec{
 				Size:         storageSize,
@@ -329,8 +337,12 @@ func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha
 		ws.Spec.Runtime.Env = req.Env
 		needsUpdate = true
 	}
-	if len(req.Command) > 0 {
-		ws.Spec.Runtime.Command = req.Command
+	cmdList := req.Command
+	if len(cmdList) == 0 && len(req.Cmd) > 0 {
+		cmdList = req.Cmd
+	}
+	if len(cmdList) > 0 {
+		ws.Spec.Runtime.Command = cmdList
 		needsUpdate = true
 	}
 	if len(req.Args) > 0 {
@@ -367,6 +379,10 @@ func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha
 	}
 	if len(req.SharedVolumeMounts) > 0 {
 		ws.Spec.SharedVolumeMounts = req.SharedVolumeMounts
+		needsUpdate = true
+	}
+	if len(req.InitContainers) > 0 {
+		ws.Spec.Runtime.InitContainers = req.InitContainers
 		needsUpdate = true
 	}
 

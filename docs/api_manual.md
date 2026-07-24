@@ -72,10 +72,11 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   | **`idleTimeout`** | `string` | 否 | `"5m"` (API 创建默认) | 自 `lastActiveTime` 起的最长运行窗口，超时后 Operator 将工作空间缩容为 `Sleeping`。**不是**实时“无操作闲置”检测；唤醒/再次创建会刷新 `lastActiveTime`。Go 持续时间格式，如 `"30m"`。 |
   | **`exposeSSH`** | `boolean` | 否 | `false` | 是否开启并暴露 SSH 默认 22 端口。 |
   | **`env`** | `array` | 否 | - | 环境变量列表，格式为 `[{"name": "KEY", "value": "VAL"}]`。 |
-  | **`command`** | `array` | 否 | - | 自定义容器的启动入口命令 (对应 `ENTRYPOINT`)，如 `["nginx"]`。 |
+  | **`command`** 或 **`cmd`** | `array` | 否 | - | 自定义容器的启动入口命令 (对应 `ENTRYPOINT`)，如 `["bocomwork-entrypoint"]` 或 `["/bin/bash"]`。 |
   | **`args`** | `array` | 否 | - | 自定义容器启动入口命令参数 (对应 `CMD`)，如 `["-g", "daemon off;"]`。 |
   | **`volumeMounts`** | `array` | 否 | - | 自定义持久卷在容器内的挂载路径及卷内子目录映射。如 `[{"mountPath": "/app", "subPath": "app-dir"}]`。 |
-  | **`sharedVolumeMounts`** | `array` | 否 | - | 预先存在的共享存储卷 (PVC) 挂载配置列表，格式为 `[{"pvcName": "shared-pvc", "mountPath": "/shared", "subPath": "subdir"}]`。 |
+  | **`sharedVolumeMounts`** | `array` | 否 | - | 预先存在的共享存储卷 (PVC) 挂载配置列表。支持 `readOnly` 属性，格式为 `[{"pvcName": "shared-pvc", "mountPath": "/shared", "subPath": "subdir", "readOnly": true}]`。 |
+  | **`initContainers`** | `array` | 否 | - | **初始化容器配置列表**。在主容器启动前依次运行的初始化容器（例如用于只读复制工具包到个人独占盘）。支持 `name`, `image`, `command`, `args`, `env`, `volumeMounts`, `sharedVolumeMounts` 字段。 |
   | **`postStartScript`** | `string` | 否 | - | **K8s 原生生命周期钩子**。容器启动后立即在后台异步运行的多行 Shell 脚本。 |
   | **`healthPath`** | `string` | 否 | - | **自定义就绪探针 HTTP 路径**。若指定（例如 `"/health"`），K8s 将使用 HTTP GET 探测此路径；若不指定或为空，默认回退使用 TCP 协议对暴露端口（`port`）进行存活健康探测。 |
 
@@ -83,9 +84,9 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   ```json
   {
     "userId": "alice",
-    "namespace": "default",
-    "image": "smanx/opencode:latest",
-    "port": 4096,
+    "namespace": "bocomwork",
+    "image": "docker.io/library/bocom-opencode-work:v1.0.5",
+    "port": 3000,
     "cpu": "1",
     "memory": "1Gi",
     "storageSize": "10Gi",
@@ -93,23 +94,50 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
     "exposeSSH": true,
     "env": [
       {
-        "name": "OPENCODE_SERVER_PASSWORD",
-        "value": "mypassword123"
+        "name": "OPENCODE_RESOURCE_ATTRIBUTES",
+        "value": "service.name=opencode,workspace.owner=$(WORKSPACE_OWNER)"
       }
     ],
-    "command": ["/bin/bash"],
-    "args": ["-c", "/entrypoint.sh"],
+    "command": ["bocomwork-entrypoint"],
     "volumeMounts": [
       {
         "mountPath": "/workspace",
-        "subPath": "my-project"
+        "subPath": "workspace"
+      },
+      {
+        "mountPath": "/data",
+        "subPath": "data"
       }
     ],
     "sharedVolumeMounts": [
       {
-        "pvcName": "global-shared-assets",
-        "mountPath": "/shared/assets",
-        "subPath": "frontend-dist"
+        "pvcName": "bocomwork-local-share",
+        "mountPath": "/opt/bocom-defaults/skill/",
+        "subPath": "skill",
+        "readOnly": true
+      }
+    ],
+    "initContainers": [
+      {
+        "name": "sync-shared-tools",
+        "image": "rancher/library-busybox:1.31.1",
+        "command": ["sh", "-c"],
+        "args": [
+          "cp -rn /mnt/shared-pvc/skill/* /workspace/opt/bocom-defaults/skill/"
+        ],
+        "sharedVolumeMounts": [
+          {
+            "pvcName": "bocomwork-local-share",
+            "mountPath": "/mnt/shared-pvc",
+            "readOnly": true
+          }
+        ],
+        "volumeMounts": [
+          {
+            "mountPath": "/workspace",
+            "subPath": "workspace"
+          }
+        ]
       }
     ],
     "postStartScript": "echo 'Container initialized' && touch /workspace/boot-success",
