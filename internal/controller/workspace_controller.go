@@ -558,6 +558,9 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 				},
 				Spec: appsv1.DeploymentSpec{
 					Replicas: &desiredReplicas,
+					Strategy: appsv1.DeploymentStrategy{
+						Type: appsv1.RecreateDeploymentStrategyType,
+					},
 					Selector: &metav1.LabelSelector{
 						MatchLabels: labels,
 					},
@@ -605,6 +608,9 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		return "", 0, fmt.Errorf("deployment %s has no containers", deployName)
 	}
 	deploy.Spec.Replicas = &desiredReplicas
+	deploy.Spec.Strategy = appsv1.DeploymentStrategy{
+		Type: appsv1.RecreateDeploymentStrategyType,
+	}
 	deploy.Spec.Template.Spec.Containers[0].Image = ws.Spec.Runtime.Image
 	deploy.Spec.Template.Spec.Containers[0].ImagePullPolicy = corev1.PullIfNotPresent
 	deploy.Spec.Template.Spec.Containers[0].Command = command

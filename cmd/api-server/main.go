@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -312,102 +313,115 @@ func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequ
 
 // updateExistingWorkspace applies spec changes and resets LastActiveTime to resume a workspace.
 func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha1.Workspace, req *workspaceRequest, wsName, namespace string) error {
-	needsUpdate := false
-	if ws.Spec.Stopped {
-		ws.Spec.Stopped = false
-		needsUpdate = true
-	}
-
-	// Update specifications if explicitly passed in the request payload
-	if req.Image != "" && ws.Spec.Runtime.Image != req.Image {
-		ws.Spec.Runtime.Image = req.Image
-		needsUpdate = true
-	}
-	if req.Port != 0 && ws.Spec.Runtime.Port != req.Port {
-		ws.Spec.Runtime.Port = req.Port
-		needsUpdate = true
-	}
-	if req.CPU != "" && ws.Spec.Runtime.CPU != req.CPU {
-		ws.Spec.Runtime.CPU = req.CPU
-		needsUpdate = true
-	}
-	if req.Memory != "" && ws.Spec.Runtime.Memory != req.Memory {
-		ws.Spec.Runtime.Memory = req.Memory
-		needsUpdate = true
-	}
-	if len(req.Env) > 0 {
-		ws.Spec.Runtime.Env = req.Env
-		needsUpdate = true
-	}
-	cmdList := req.Command
-	if len(cmdList) == 0 && len(req.Cmd) > 0 {
-		cmdList = req.Cmd
-	}
-	if len(cmdList) > 0 {
-		ws.Spec.Runtime.Command = cmdList
-		needsUpdate = true
-	}
-	if len(req.Args) > 0 {
-		ws.Spec.Runtime.Args = req.Args
-		needsUpdate = true
-	}
-	if len(req.VolumeMounts) > 0 {
-		ws.Spec.Runtime.VolumeMounts = req.VolumeMounts
-		needsUpdate = true
-	}
-	if req.PostStartScript != "" {
-		ws.Spec.Runtime.PostStartScript = req.PostStartScript
-		needsUpdate = true
-	}
-	if req.HealthPath != "" && ws.Spec.Runtime.HealthPath != req.HealthPath {
-		ws.Spec.Runtime.HealthPath = req.HealthPath
-		needsUpdate = true
-	}
-	if req.StorageSize != "" && ws.Spec.Storage.Size != req.StorageSize {
-		ws.Spec.Storage.Size = req.StorageSize
-		needsUpdate = true
-	}
-	if req.StorageClass != "" && ws.Spec.Storage.StorageClass != req.StorageClass {
-		ws.Spec.Storage.StorageClass = req.StorageClass
-		needsUpdate = true
-	}
-	if req.IdleTimeout != "" && ws.Spec.IdleTimeout != req.IdleTimeout {
-		ws.Spec.IdleTimeout = req.IdleTimeout
-		needsUpdate = true
-	}
-	if req.ExposeSSH != nil && ws.Spec.ExposeSSH != *req.ExposeSSH {
-		ws.Spec.ExposeSSH = *req.ExposeSSH
-		needsUpdate = true
-	}
-	if len(req.SharedVolumeMounts) > 0 {
-		ws.Spec.SharedVolumeMounts = req.SharedVolumeMounts
-		needsUpdate = true
-	}
-	if len(req.ConfigMapVolumeMounts) > 0 {
-		ws.Spec.ConfigMapVolumeMounts = req.ConfigMapVolumeMounts
-		needsUpdate = true
-	}
-	if len(req.InitContainers) > 0 {
-		ws.Spec.Runtime.InitContainers = req.InitContainers
-		needsUpdate = true
-	}
-
-	if needsUpdate {
-		if err := c.Update(ctx, ws); err != nil {
-			return fmt.Errorf("failed to update Workspace spec: %w", err)
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		currentWs := &aiv1alpha1.Workspace{}
+		if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, currentWs); err != nil {
+			return err
 		}
-		log.Printf("Updated existing Workspace spec: %s", wsName)
-	}
 
-	// Re-fetch to get latest resourceVersion after spec update
-	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws); err != nil {
-		return fmt.Errorf("failed to re-fetch Workspace after spec update: %w", err)
+		needsUpdate := false
+		if currentWs.Spec.Stopped {
+			currentWs.Spec.Stopped = false
+			needsUpdate = true
+		}
+
+		// Update specifications if explicitly passed in the request payload
+		if req.Image != "" && currentWs.Spec.Runtime.Image != req.Image {
+			currentWs.Spec.Runtime.Image = req.Image
+			needsUpdate = true
+		}
+		if req.Port != 0 && currentWs.Spec.Runtime.Port != req.Port {
+			currentWs.Spec.Runtime.Port = req.Port
+			needsUpdate = true
+		}
+		if req.CPU != "" && currentWs.Spec.Runtime.CPU != req.CPU {
+			currentWs.Spec.Runtime.CPU = req.CPU
+			needsUpdate = true
+		}
+		if req.Memory != "" && currentWs.Spec.Runtime.Memory != req.Memory {
+			currentWs.Spec.Runtime.Memory = req.Memory
+			needsUpdate = true
+		}
+		if len(req.Env) > 0 {
+			currentWs.Spec.Runtime.Env = req.Env
+			needsUpdate = true
+		}
+		cmdList := req.Command
+		if len(cmdList) == 0 && len(req.Cmd) > 0 {
+			cmdList = req.Cmd
+		}
+		if len(cmdList) > 0 {
+			currentWs.Spec.Runtime.Command = cmdList
+			needsUpdate = true
+		}
+		if len(req.Args) > 0 {
+			currentWs.Spec.Runtime.Args = req.Args
+			needsUpdate = true
+		}
+		if len(req.VolumeMounts) > 0 {
+			currentWs.Spec.Runtime.VolumeMounts = req.VolumeMounts
+			needsUpdate = true
+		}
+		if req.PostStartScript != "" {
+			currentWs.Spec.Runtime.PostStartScript = req.PostStartScript
+			needsUpdate = true
+		}
+		if req.HealthPath != "" && currentWs.Spec.Runtime.HealthPath != req.HealthPath {
+			currentWs.Spec.Runtime.HealthPath = req.HealthPath
+			needsUpdate = true
+		}
+		if req.StorageSize != "" && currentWs.Spec.Storage.Size != req.StorageSize {
+			currentWs.Spec.Storage.Size = req.StorageSize
+			needsUpdate = true
+		}
+		if req.StorageClass != "" && currentWs.Spec.Storage.StorageClass != req.StorageClass {
+			currentWs.Spec.Storage.StorageClass = req.StorageClass
+			needsUpdate = true
+		}
+		if req.IdleTimeout != "" && currentWs.Spec.IdleTimeout != req.IdleTimeout {
+			currentWs.Spec.IdleTimeout = req.IdleTimeout
+			needsUpdate = true
+		}
+		if req.ExposeSSH != nil && currentWs.Spec.ExposeSSH != *req.ExposeSSH {
+			currentWs.Spec.ExposeSSH = *req.ExposeSSH
+			needsUpdate = true
+		}
+		if len(req.SharedVolumeMounts) > 0 {
+			currentWs.Spec.SharedVolumeMounts = req.SharedVolumeMounts
+			needsUpdate = true
+		}
+		if len(req.ConfigMapVolumeMounts) > 0 {
+			currentWs.Spec.ConfigMapVolumeMounts = req.ConfigMapVolumeMounts
+			needsUpdate = true
+		}
+		if len(req.InitContainers) > 0 {
+			currentWs.Spec.Runtime.InitContainers = req.InitContainers
+			needsUpdate = true
+		}
+
+		if needsUpdate {
+			if err := c.Update(ctx, currentWs); err != nil {
+				return err
+			}
+			log.Printf("Updated existing Workspace spec: %s", wsName)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update Workspace spec: %w", err)
 	}
 
 	// Always update LastActiveTime to now when the user starts/resumes the workspace,
 	// which wakes it up from Sleeping state.
-	ws.Status.LastActiveTime = &metav1.Time{Time: time.Now()}
-	if err := c.Status().Update(ctx, ws); err != nil {
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		currentWs := &aiv1alpha1.Workspace{}
+		if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, currentWs); err != nil {
+			return err
+		}
+		currentWs.Status.LastActiveTime = &metav1.Time{Time: time.Now()}
+		return c.Status().Update(ctx, currentWs)
+	})
+	if err != nil {
 		return fmt.Errorf("failed to update Workspace lastActiveTime: %w", err)
 	}
 	log.Printf("Updated Workspace lastActiveTime: %s", wsName)
@@ -482,17 +496,15 @@ func stopWorkspaceHandler(c client.Client) http.HandlerFunc {
 			namespace = "default"
 		}
 
-		ws := &aiv1alpha1.Workspace{}
-		err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws)
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			ws := &aiv1alpha1.Workspace{}
+			if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws); err != nil {
+				return err
+			}
+			ws.Spec.Stopped = true
+			return c.Update(ctx, ws)
+		})
 		if err != nil {
-			log.Printf("Failed to fetch Workspace %s: %v", wsName, err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Update stopped to true
-		ws.Spec.Stopped = true
-		if err := c.Update(ctx, ws); err != nil {
 			log.Printf("Failed to stop Workspace %s: %v", wsName, err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -529,43 +541,38 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 			namespace = "default"
 		}
 
-		ws := &aiv1alpha1.Workspace{}
-		err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws)
+		// Update stopped to false if it was manually stopped
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			ws := &aiv1alpha1.Workspace{}
+			if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws); err != nil {
+				return err
+			}
+			if ws.Spec.Stopped {
+				ws.Spec.Stopped = false
+				return c.Update(ctx, ws)
+			}
+			return nil
+		})
 		if err != nil {
 			if apierrors.IsNotFound(err) {
 				http.Error(w, "Workspace not found", http.StatusNotFound)
 				return
 			}
-			log.Printf("Failed to fetch Workspace: %v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Update stopped to false if it was manually stopped
-		needsUpdateSpec := false
-		if ws.Spec.Stopped {
-			ws.Spec.Stopped = false
-			needsUpdateSpec = true
-		}
-		if needsUpdateSpec {
-			if err := c.Update(ctx, ws); err != nil {
-				log.Printf("Failed to resume Workspace spec: %v", err)
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			log.Printf("Resumed stopped Workspace spec in wakeup: %s", wsName)
-		}
-
-		// Re-fetch to get latest resourceVersion after spec update
-		if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws); err != nil {
-			log.Printf("Failed to re-fetch Workspace after spec update in wakeup: %v", err)
+			log.Printf("Failed to resume Workspace spec: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		// Always update LastActiveTime to now when waking it up from Sleeping state
-		ws.Status.LastActiveTime = &metav1.Time{Time: time.Now()}
-		if err := c.Status().Update(ctx, ws); err != nil {
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			ws := &aiv1alpha1.Workspace{}
+			if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws); err != nil {
+				return err
+			}
+			ws.Status.LastActiveTime = &metav1.Time{Time: time.Now()}
+			return c.Status().Update(ctx, ws)
+		})
+		if err != nil {
 			log.Printf("Failed to update Workspace lastActiveTime in wakeup: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
