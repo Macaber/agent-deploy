@@ -57,6 +57,33 @@ spec:
           spec:
             description: WorkspaceSpec defines the desired state of Workspace
             properties:
+              configMapVolumeMounts:
+                description: ConfigMapVolumeMounts specifies ConfigMaps to mount as
+                  volumes inside the workspace container
+                items:
+                  description: ConfigMapVolumeMount defines a volume mount from a
+                    Kubernetes ConfigMap.
+                  properties:
+                    configMapName:
+                      description: ConfigMapName is the name of the ConfigMap to mount
+                      type: string
+                    mountPath:
+                      description: MountPath is the path inside the container where
+                        the volume should be mounted
+                      type: string
+                    readOnly:
+                      description: ReadOnly specifies whether the volume mount should
+                        be read-only
+                      type: boolean
+                    subPath:
+                      description: SubPath is the subdirectory within the ConfigMap
+                        volume to mount
+                      type: string
+                  required:
+                  - configMapName
+                  - mountPath
+                  type: object
+                type: array
               exposeSSH:
                 description: ExposeSSH enables SSH access to the workspace container
                 type: boolean
@@ -149,6 +176,34 @@ spec:
                             for init container
                           items:
                             type: string
+                          type: array
+                        configMapVolumeMounts:
+                          description: ConfigMapVolumeMounts specifies ConfigMaps
+                            to mount as volumes inside the init container
+                          items:
+                            description: ConfigMapVolumeMount defines a volume mount
+                              from a Kubernetes ConfigMap.
+                            properties:
+                              configMapName:
+                                description: ConfigMapName is the name of the ConfigMap
+                                  to mount
+                                type: string
+                              mountPath:
+                                description: MountPath is the path inside the container
+                                  where the volume should be mounted
+                                type: string
+                              readOnly:
+                                description: ReadOnly specifies whether the volume
+                                  mount should be read-only
+                                type: boolean
+                              subPath:
+                                description: SubPath is the subdirectory within the
+                                  ConfigMap volume to mount
+                                type: string
+                            required:
+                            - configMapName
+                            - mountPath
+                            type: object
                           type: array
                         env:
                           description: Env is a list of environment variables for
@@ -466,6 +521,15 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - persistentvolumeclaims
   - services
   verbs:
@@ -475,14 +539,6 @@ rules:
   - list
   - patch
   - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-  - list
   - watch
 - apiGroups:
   - ai.example.com
@@ -732,7 +788,7 @@ spec:
         env:
         - name: WORKSPACE_DOMAIN
           value: bocomcode
-        image: workspace-operator:v1.0.12
+        image: workspace-operator:v1.0.13
         livenessProbe:
           httpGet:
             path: /healthz

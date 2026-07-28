@@ -77,8 +77,32 @@ var _ = Describe("Workspace Controller", func() {
 			By("Cleanup the specific resource instance Workspace")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
+		It("should successfully reconcile the resource with ConfigMap volume mounts", func() {
+			By("updating the resource to include ConfigMapVolumeMounts")
+			resource := &aiv1alpha1.Workspace{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+			resource.Spec.ConfigMapVolumeMounts = []aiv1alpha1.ConfigMapVolumeMount{
+				{
+					ConfigMapName: "bocomwork-config",
+					MountPath:     "/etc/bocomwork",
+					ReadOnly:      true,
+				},
+			}
+			resource.Spec.Runtime.InitContainers = []aiv1alpha1.InitContainerSpec{
+				{
+					Name:  "init-config",
+					Image: "alpine:latest",
+					ConfigMapVolumeMounts: []aiv1alpha1.ConfigMapVolumeMount{
+						{
+							ConfigMapName: "bocomwork-config",
+							MountPath:     "/etc/bocomwork-init",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+
+			By("Reconciling the updated resource")
 			controllerReconciler := &WorkspaceReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -88,8 +112,6 @@ var _ = Describe("Workspace Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})
 	})
 })

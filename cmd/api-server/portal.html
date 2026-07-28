@@ -747,6 +747,26 @@
                         <button class="btn-add-row" onclick="addSharedVolumeMountRow()">+ 添加共享卷挂载</button>
                     </div>
 
+                    <!-- ConfigMap Volume Mounts -->
+                    <div class="section-title">ConfigMap 卷挂载 / ConfigMap Volume Mounts (可选)</div>
+                    <div class="table-container">
+                        <table class="dyn-table" id="configMapVolumeMountsTable">
+                            <thead>
+                                <tr>
+                                    <th style="width: 30%;">ConfigMap 名称 (configMapName)</th>
+                                    <th style="width: 30%;">挂载路径 (mountPath)</th>
+                                    <th style="width: 20%;">子路径 (subPath)</th>
+                                    <th style="width: 10%; text-align: center;">只读</th>
+                                    <th style="width: 10%; text-align: center;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="configMapVolumeMountsBody">
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                        <button class="btn-add-row" onclick="addConfigMapVolumeMountRow()">+ 添加 ConfigMap 卷挂载</button>
+                    </div>
+
                     <!-- Init Containers -->
                     <div class="section-title">初始化容器 / Init Containers (可选)</div>
                     <div class="table-container">
@@ -985,6 +1005,7 @@
             syncPayloadToForm();
             renderVolumeMounts();
             renderSharedVolumeMounts();
+            renderConfigMapVolumeMounts();
             renderInitContainers();
             renderEnvVars();
             syncPayloadToJsonText();
@@ -1230,11 +1251,13 @@
                     }
                     payload.volumeMounts = spec.runtime?.volumeMounts || [];
                     payload.sharedVolumeMounts = spec.sharedVolumeMounts || [];
+                    payload.configMapVolumeMounts = spec.configMapVolumeMounts || [];
                     payload.initContainers = spec.runtime?.initContainers || [];
                     
                     syncPayloadToForm();
                     renderVolumeMounts();
                     renderSharedVolumeMounts();
+                    renderConfigMapVolumeMounts();
                     renderInitContainers();
                     renderEnvVars();
                     syncPayloadToJsonText();
@@ -1328,6 +1351,61 @@
         function deleteSharedVolumeMountRow(idx) {
             payload.sharedVolumeMounts.splice(idx, 1);
             renderSharedVolumeMounts();
+            syncPayloadToJsonText();
+        }
+
+        // Render ConfigMap Volume Mounts dynamic table rows
+        function renderConfigMapVolumeMounts() {
+            const tbody = document.getElementById('configMapVolumeMountsBody');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+            
+            if (!payload.configMapVolumeMounts) {
+                payload.configMapVolumeMounts = [];
+            }
+            
+            payload.configMapVolumeMounts.forEach((cm, idx) => {
+                const tr = document.createElement('tr');
+                const isChecked = cm.readOnly ? 'checked' : '';
+                tr.innerHTML = '<td>' +
+                    '<input class="input-field" type="text" value="' + escapeHtml(cm.configMapName || '') + '" placeholder="bocomwork-config" ' +
+                           'oninput="updateConfigMapVolumeMountField(' + idx + ', \'configMapName\', this.value)">' +
+                '</td>' +
+                '<td>' +
+                    '<input class="input-field" type="text" value="' + escapeHtml(cm.mountPath || '') + '" placeholder="/etc/config" ' +
+                           'oninput="updateConfigMapVolumeMountField(' + idx + ', \'mountPath\', this.value)">' +
+                '</td>' +
+                '<td>' +
+                    '<input class="input-field" type="text" value="' + escapeHtml(cm.subPath || '') + '" placeholder="config.yaml" ' +
+                           'oninput="updateConfigMapVolumeMountField(' + idx + ', \'subPath\', this.value)">' +
+                '</td>' +
+                '<td style="text-align: center;">' +
+                    '<input type="checkbox" ' + isChecked + ' onchange="updateConfigMapVolumeMountField(' + idx + ', \'readOnly\', this.checked)">' +
+                '</td>' +
+                '<td style="text-align: center;">' +
+                    '<button class="btn-del-row" onclick="deleteConfigMapVolumeMountRow(' + idx + ')">删除</button>' +
+                '</td>';
+                tbody.appendChild(tr);
+            });
+        }
+
+        function updateConfigMapVolumeMountField(idx, field, value) {
+            payload.configMapVolumeMounts[idx][field] = value;
+            syncPayloadToJsonText();
+        }
+
+        function addConfigMapVolumeMountRow() {
+            if (!payload.configMapVolumeMounts) {
+                payload.configMapVolumeMounts = [];
+            }
+            payload.configMapVolumeMounts.push({ configMapName: '', mountPath: '', subPath: '', readOnly: false });
+            renderConfigMapVolumeMounts();
+            syncPayloadToJsonText();
+        }
+
+        function deleteConfigMapVolumeMountRow(idx) {
+            payload.configMapVolumeMounts.splice(idx, 1);
+            renderConfigMapVolumeMounts();
             syncPayloadToJsonText();
         }
 

@@ -79,7 +79,31 @@ env:
 | 子参数名 | 数据类型 | 是否必填 | 作用描述 | 示例值 |
 | :--- | :--- | :--- | :--- | :--- |
 | **`size`** | `string` | **是** | 持久化磁盘的容量大小。 | `"1Gi"`, `"20Gi"` |
-| **`storageClass`** | `string` | 否 | 绑定的 Kubernetes 存储类名称。如果为空，则使用集群中默认的 StorageClass（例如生产环境部署的 `nfs-client`）。 | `"standard"`, `"nfs-storage"` |
+| **`storageClass`** | `string` | 否 | 绑定的 Kubernetes StorageClass 名称。如果为空，则使用集群中默认的 StorageClass（例如生产环境部署的 `nfs-client`）。 | `"standard"`, `"nfs-storage"` |
+
+---
+
+### D. 高级卷挂载配置 (Shared & ConfigMap Volume Mounts)
+
+支持将已有的共享 PVC 磁盘或 Kubernetes ConfigMap 挂载至容器（及初始化容器）：
+
+| 参数名 | 数据类型 | 作用描述 | 示例 |
+| :--- | :--- | :--- | :--- |
+| **`sharedVolumeMounts`** | `array` | 预先存在的共享存储卷 (PVC) 挂载列表。 | `[{"pvcName": "shared-pvc", "mountPath": "/shared", "readOnly": true}]` |
+| **`configMapVolumeMounts`** | `array` | Kubernetes ConfigMap 配置文件挂载列表。 | `[{"configMapName": "bocomwork-config", "mountPath": "/etc/bocomwork", "readOnly": true}]` |
+
+#### 配置示例：
+```yaml
+sharedVolumeMounts:
+  - pvcName: "bocomwork-local-share"
+    mountPath: "/opt/bocom-defaults/skill"
+    subPath: "skill"
+    readOnly: true
+configMapVolumeMounts:
+  - configMapName: "bocomwork-config"
+    mountPath: "/etc/bocomwork"
+    readOnly: true
+```
 
 ---
 

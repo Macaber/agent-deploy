@@ -76,7 +76,8 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   | **`args`** | `array` | 否 | - | 自定义容器启动入口命令参数 (对应 `CMD`)，如 `["-g", "daemon off;"]`。 |
   | **`volumeMounts`** | `array` | 否 | - | 自定义持久卷在容器内的挂载路径及卷内子目录映射。如 `[{"mountPath": "/app", "subPath": "app-dir"}]`。 |
   | **`sharedVolumeMounts`** | `array` | 否 | - | 预先存在的共享存储卷 (PVC) 挂载配置列表。支持 `readOnly` 属性，格式为 `[{"pvcName": "shared-pvc", "mountPath": "/shared", "subPath": "subdir", "readOnly": true}]`。 |
-  | **`initContainers`** | `array` | 否 | - | **初始化容器配置列表**。在主容器启动前依次运行的初始化容器（例如用于只读复制工具包到个人独占盘）。支持 `name`, `image`, `command`, `args`, `env`, `volumeMounts`, `sharedVolumeMounts` 字段。 |
+  | **`configMapVolumeMounts`** | `array` | 否 | - | Kubernetes ConfigMap 卷挂载配置列表。支持 `readOnly` 属性，格式为 `[{"configMapName": "bocomwork-config", "mountPath": "/etc/bocomwork", "subPath": "config.yaml", "readOnly": true}]`。 |
+  | **`initContainers`** | `array` | 否 | - | **初始化容器配置列表**。在主容器启动前依次运行的初始化容器。支持 `name`, `image`, `command`, `args`, `env`, `volumeMounts`, `sharedVolumeMounts`, `configMapVolumeMounts` 字段。 |
   | **`postStartScript`** | `string` | 否 | - | **K8s 原生生命周期钩子**。容器启动后立即在后台异步运行的多行 Shell 脚本。 |
   | **`healthPath`** | `string` | 否 | - | **自定义就绪探针 HTTP 路径**。若指定（例如 `"/health"`），K8s 将使用 HTTP GET 探测此路径；若不指定或为空，默认回退使用 TCP 协议对暴露端口（`port`）进行存活健康探测。 |
 
@@ -114,6 +115,13 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
         "pvcName": "bocomwork-local-share",
         "mountPath": "/opt/bocom-defaults/skill/",
         "subPath": "skill",
+        "readOnly": true
+      }
+    ],
+    "configMapVolumeMounts": [
+      {
+        "configMapName": "bocomwork-config",
+        "mountPath": "/etc/bocomwork",
         "readOnly": true
       }
     ],

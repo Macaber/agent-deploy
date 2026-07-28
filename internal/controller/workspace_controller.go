@@ -50,6 +50,7 @@ type WorkspaceReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 
@@ -368,6 +369,37 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		})
 	}
 
+	// Append ConfigMap volume mounts if specified
+	configMapVolumeMap := make(map[string]string) // maps ConfigMapName to generated volumeName
+	cmVolCount := 0
+
+	for _, cm := range ws.Spec.ConfigMapVolumeMounts {
+		volumeName, exists := configMapVolumeMap[cm.ConfigMapName]
+		if !exists {
+			volumeName = fmt.Sprintf("cm-vol-%d", cmVolCount)
+			configMapVolumeMap[cm.ConfigMapName] = volumeName
+			cmVolCount++
+
+			volumes = append(volumes, corev1.Volume{
+				Name: volumeName,
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: cm.ConfigMapName,
+						},
+					},
+				},
+			})
+		}
+
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      volumeName,
+			MountPath: cm.MountPath,
+			SubPath:   cm.SubPath,
+			ReadOnly:  cm.ReadOnly,
+		})
+	}
+
 	// Append workspace-data mounts without replacing SharedVolumeMounts already in volumeMounts.
 	if len(ws.Spec.Runtime.VolumeMounts) > 0 {
 		for _, vm := range ws.Spec.Runtime.VolumeMounts {
@@ -441,6 +473,33 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 				MountPath: svm.MountPath,
 				SubPath:   svm.SubPath,
 				ReadOnly:  svm.ReadOnly,
+			})
+		}
+
+		for _, cm := range icSpec.ConfigMapVolumeMounts {
+			volumeName, exists := configMapVolumeMap[cm.ConfigMapName]
+			if !exists {
+				volumeName = fmt.Sprintf("cm-vol-%d", cmVolCount)
+				configMapVolumeMap[cm.ConfigMapName] = volumeName
+				cmVolCount++
+
+				volumes = append(volumes, corev1.Volume{
+					Name: volumeName,
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: cm.ConfigMapName,
+							},
+						},
+					},
+				})
+			}
+
+			icVolumeMounts = append(icVolumeMounts, corev1.VolumeMount{
+				Name:      volumeName,
+				MountPath: cm.MountPath,
+				SubPath:   cm.SubPath,
+				ReadOnly:  cm.ReadOnly,
 			})
 		}
 

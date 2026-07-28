@@ -79,25 +79,26 @@ func serveHome(w http.ResponseWriter, r *http.Request) {
 
 // workspaceRequest is the shared request body for workspace create/update operations.
 type workspaceRequest struct {
-	UserID             string                         `json:"userId"`
-	Namespace          string                         `json:"namespace,omitempty"`
-	Image              string                         `json:"image,omitempty"`
-	Port               int32                          `json:"port,omitempty"`
-	CPU                string                         `json:"cpu,omitempty"`
-	Memory             string                         `json:"memory,omitempty"`
-	StorageSize        string                         `json:"storageSize,omitempty"`
-	StorageClass       string                         `json:"storageClass,omitempty"`
-	IdleTimeout        string                         `json:"idleTimeout,omitempty"`
-	ExposeSSH          *bool                          `json:"exposeSSH,omitempty"`
-	Env                []aiv1alpha1.EnvVar            `json:"env,omitempty"`
-	Command            []string                       `json:"command,omitempty"`
-	Cmd                []string                       `json:"cmd,omitempty"`
-	Args               []string                       `json:"args,omitempty"`
-	VolumeMounts       []aiv1alpha1.VolumeMount       `json:"volumeMounts,omitempty"`
-	PostStartScript    string                         `json:"postStartScript,omitempty"`
-	HealthPath         string                         `json:"healthPath,omitempty"`
-	SharedVolumeMounts []aiv1alpha1.SharedVolumeMount `json:"sharedVolumeMounts,omitempty"`
-	InitContainers     []aiv1alpha1.InitContainerSpec `json:"initContainers,omitempty"`
+	UserID                string                            `json:"userId"`
+	Namespace             string                            `json:"namespace,omitempty"`
+	Image                 string                            `json:"image,omitempty"`
+	Port                  int32                             `json:"port,omitempty"`
+	CPU                   string                            `json:"cpu,omitempty"`
+	Memory                string                            `json:"memory,omitempty"`
+	StorageSize           string                            `json:"storageSize,omitempty"`
+	StorageClass          string                            `json:"storageClass,omitempty"`
+	IdleTimeout           string                            `json:"idleTimeout,omitempty"`
+	ExposeSSH             *bool                             `json:"exposeSSH,omitempty"`
+	Env                   []aiv1alpha1.EnvVar               `json:"env,omitempty"`
+	Command               []string                          `json:"command,omitempty"`
+	Cmd                   []string                          `json:"cmd,omitempty"`
+	Args                  []string                          `json:"args,omitempty"`
+	VolumeMounts          []aiv1alpha1.VolumeMount          `json:"volumeMounts,omitempty"`
+	PostStartScript       string                            `json:"postStartScript,omitempty"`
+	HealthPath            string                            `json:"healthPath,omitempty"`
+	SharedVolumeMounts    []aiv1alpha1.SharedVolumeMount    `json:"sharedVolumeMounts,omitempty"`
+	ConfigMapVolumeMounts []aiv1alpha1.ConfigMapVolumeMount `json:"configMapVolumeMounts,omitempty"`
+	InitContainers        []aiv1alpha1.InitContainerSpec    `json:"initContainers,omitempty"`
 }
 
 // workspaceItem is the JSON response type for listing workspaces.
@@ -302,7 +303,8 @@ func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequ
 				Size:         storageSize,
 				StorageClass: req.StorageClass,
 			},
-			SharedVolumeMounts: req.SharedVolumeMounts,
+			SharedVolumeMounts:    req.SharedVolumeMounts,
+			ConfigMapVolumeMounts: req.ConfigMapVolumeMounts,
 		},
 	}
 	return c.Create(ctx, ws)
@@ -379,6 +381,10 @@ func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha
 	}
 	if len(req.SharedVolumeMounts) > 0 {
 		ws.Spec.SharedVolumeMounts = req.SharedVolumeMounts
+		needsUpdate = true
+	}
+	if len(req.ConfigMapVolumeMounts) > 0 {
+		ws.Spec.ConfigMapVolumeMounts = req.ConfigMapVolumeMounts
 		needsUpdate = true
 	}
 	if len(req.InitContainers) > 0 {

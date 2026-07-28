@@ -130,6 +130,10 @@ type InitContainerSpec struct {
 	// SharedVolumeMounts specifies pre-existing generic/shared PVC mounts inside the init container
 	// +optional
 	SharedVolumeMounts []SharedVolumeMount `json:"sharedVolumeMounts,omitempty"`
+
+	// ConfigMapVolumeMounts specifies ConfigMaps to mount as volumes inside the init container
+	// +optional
+	ConfigMapVolumeMounts []ConfigMapVolumeMount `json:"configMapVolumeMounts,omitempty"`
 }
 
 // StorageSpec defines the storage properties for user persistence.
@@ -187,6 +191,10 @@ type WorkspaceSpec struct {
 	// SharedVolumeMounts specifies pre-existing generic/shared PVCs to mount
 	// +optional
 	SharedVolumeMounts []SharedVolumeMount `json:"sharedVolumeMounts,omitempty"`
+
+	// ConfigMapVolumeMounts specifies ConfigMaps to mount as volumes inside the workspace container
+	// +optional
+	ConfigMapVolumeMounts []ConfigMapVolumeMount `json:"configMapVolumeMounts,omitempty"`
 }
 
 // SharedVolumeMount defines a mount of a pre-existing generic/shared PVC.
@@ -200,6 +208,25 @@ type SharedVolumeMount struct {
 	MountPath string `json:"mountPath"`
 
 	// SubPath is the subdirectory within the shared volume to mount
+	// +optional
+	SubPath string `json:"subPath,omitempty"`
+
+	// ReadOnly specifies whether the volume mount should be read-only
+	// +optional
+	ReadOnly bool `json:"readOnly,omitempty"`
+}
+
+// ConfigMapVolumeMount defines a volume mount from a Kubernetes ConfigMap.
+type ConfigMapVolumeMount struct {
+	// ConfigMapName is the name of the ConfigMap to mount
+	// +kubebuilder:validation:Required
+	ConfigMapName string `json:"configMapName"`
+
+	// MountPath is the path inside the container where the volume should be mounted
+	// +kubebuilder:validation:Required
+	MountPath string `json:"mountPath"`
+
+	// SubPath is the subdirectory within the ConfigMap volume to mount
 	// +optional
 	SubPath string `json:"subPath,omitempty"`
 

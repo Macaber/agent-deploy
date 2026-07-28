@@ -6,11 +6,13 @@
 
 `agent-deploy` 项目通过引入自定义资源 `Workspace`，将底层 Deployment、PVC、Service、Ingress 封装起来。平台可通过声明式 API 创建 `Workspace` 实例，由 Operator 完成资源编排与生命周期管理。
 
-**副本与休眠：**
+**核心特性：**
 
-- `stopped=true`：Operator 将 Deployment 副本置为 0（手动停止）。
-- 配置了 `idleTimeout`：自 `status.lastActiveTime` 起超过该时长后缩容为 0（`Sleeping`）。`lastActiveTime` 在创建/API 唤醒时刷新，**不是** Ingress 实时流量闲置探测。
-- 省略 `idleTimeout`：不会按会话窗口自动休眠，副本由 Operator 保持为 1（除非手动停止）。
+- **存储与配置挂载：** 支持独立工作区 PVC、预先存在的共享存储卷（`sharedVolumeMounts`）以及 Kubernetes ConfigMap 卷挂载（`configMapVolumeMounts`），方便为 Agent 注入共享资源和外部配置文件（如 `bocomwork-config`）。
+- **副本与休眠：**
+  - `stopped=true`：Operator 将 Deployment 副本置为 0（手动停止）。
+  - 配置了 `idleTimeout`：自 `status.lastActiveTime` 起超过该时长后缩容为 0（`Sleeping`）。`lastActiveTime` 在创建/API 唤醒时刷新，**不是** Ingress 实时流量闲置探测。
+  - 省略 `idleTimeout`：不会按会话窗口自动休眠，副本由 Operator 保持为 1（除非手动停止）。
 
 ---
 
