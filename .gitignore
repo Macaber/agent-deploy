@@ -19,12 +19,27 @@ go.work
 # Kubernetes Generated files - skip generated files, except for vendored files
 !vendor/**/zz_generated.*
 
-# editor and IDE paraphernalia
+# Java & Maven output files
+target/
+**/target/
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+.mvn/
+.flattened-pom.xml
+
+# Editor and IDE paraphernalia
 .idea
 .vscode
 *.swp
 *.swo
 *~
+*.iml
+.classpath
+.project
+.settings/
 
 # Kubeconfig might contain secrets
 *.kubeconfig
