@@ -1,0 +1,30 @@
+server:
+  port: ${PORT:3000}
+
+spring:
+  application:
+    name: agent-deploy-java
+  thymeleaf:
+    cache: false
+    mode: HTML
+
+app:
+  operator:
+    enabled: ${OPERATOR_ENABLED:true}
+    leader-election:
+      enabled: ${LEADER_ELECTION_ENABLED:false}
+      lease-name: ${LEASE_NAME:agent-deploy-operator-lease}
+  apiserver:
+    enabled: ${APISERVER_ENABLED:true}
+
+logging:
+  level:
+    root: INFO
+    com.example.workspace: DEBUG
+    io.javaoperatorsdk.operator: INFO
+
+javaoperatorsdk:
+  controllers:
+    workspacereconciler:
+      namespaces:
+        - "default"

@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-server-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: api-server-clusterrole
+rules:
+- apiGroups: ["ai.example.com"]
+  resources: ["workspaces", "workspaces/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: api-server-clusterrolebinding
+subjects:
+- kind: ServiceAccount
+  name: api-server-sa
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: api-server-clusterrole
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server-java
+  namespace: default
+  labels:
+    app: api-server-java
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-server-java
+  template:
+    metadata:
+      labels:
+        app: api-server-java
+    spec:
+      serviceAccountName: api-server-sa
+      containers:
+      - name: api-server
+        image: agent-deploy-api-server-java:v1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+        env:
+        - name: OPERATOR_ENABLED
+          value: "false"
+        - name: APISERVER_ENABLED
+          value: "true"
+        - name: PORT
+          value: "3000"
+        - name: WORKSPACE_DOMAIN
+          value: "bocomcode"
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-server-svc
+  namespace: default
+spec:
+  type: NodePort
+  ports:
+  - port: 3000
+    targetPort: 3000
+    nodePort: 30000
+  selector:
+    app: api-server-java
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-server-ingress
+  namespace: default
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: launcher.workspace.bocomcode
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-server-svc
+            port:
+              number: 3000
