@@ -50,9 +50,9 @@ func main() {
 	http.HandleFunc("/api/login", loginHandler)
 	http.HandleFunc("/api/logout", logoutHandler)
 	http.HandleFunc("/api/auth/check", authCheckHandler)
-	http.HandleFunc("/api/workspaces", requireAuth(workspaceRouter(k8sClient)))
-	http.HandleFunc("/api/workspaces/stop", requireAuth(stopWorkspaceHandler(k8sClient)))
-	http.HandleFunc("/api/workspaces/wakeup", requireAuth(wakeupWorkspaceHandler(k8sClient)))
+	http.HandleFunc("/api/workspaces", workspaceRouter(k8sClient))
+	http.HandleFunc("/api/workspaces/stop", stopWorkspaceHandler(k8sClient))
+	http.HandleFunc("/api/workspaces/wakeup", wakeupWorkspaceHandler(k8sClient))
 
 	port := os.Getenv("PORT")
 	if port == "" {

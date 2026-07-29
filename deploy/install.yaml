@@ -57,12 +57,43 @@ spec:
           spec:
             description: WorkspaceSpec defines the desired state of Workspace
             properties:
+              configMapVolumeMounts:
+                description: ConfigMapVolumeMounts specifies ConfigMaps to mount as
+                  volumes inside the workspace container
+                items:
+                  description: ConfigMapVolumeMount defines a volume mount from a
+                    Kubernetes ConfigMap.
+                  properties:
+                    configMapName:
+                      description: ConfigMapName is the name of the ConfigMap to mount
+                      type: string
+                    mountPath:
+                      description: MountPath is the path inside the container where
+                        the volume should be mounted
+                      type: string
+                    readOnly:
+                      description: ReadOnly specifies whether the volume mount should
+                        be read-only
+                      type: boolean
+                    subPath:
+                      description: SubPath is the subdirectory within the ConfigMap
+                        volume to mount
+                      type: string
+                  required:
+                  - configMapName
+                  - mountPath
+                  type: object
+                type: array
               exposeSSH:
                 description: ExposeSSH enables SSH access to the workspace container
                 type: boolean
               idleTimeout:
                 description: |-
-                  IdleTimeout specifies the duration of inactivity after which the workspace scales to 0
+                  IdleTimeout is the max run window after status.lastActiveTime before the Operator
+                  scales the workspace to 0 (Sleeping). It is NOT live traffic idle detection:
+                  lastActiveTime is set on create and when the user starts/wakes the workspace via API
+                  (or when phase transitions into Running from a non-running state).
+                  When empty, the workspace will not auto-sleep by this rule.
                   e.g. "30m", "1h"
                 type: string
               owner:
@@ -128,6 +159,126 @@ spec:
                   image:
                     description: Image is the container image to run for the workspace
                     type: string
+                  initContainers:
+                    description: InitContainers specifies custom init containers executed
+                      before the main container starts
+                    items:
+                      description: InitContainerSpec defines configuration for an
+                        init container executed before main container start.
+                      properties:
+                        args:
+                          description: Args specifies startup arguments for init container
+                          items:
+                            type: string
+                          type: array
+                        command:
+                          description: Command specifies startup command (entrypoint)
+                            for init container
+                          items:
+                            type: string
+                          type: array
+                        configMapVolumeMounts:
+                          description: ConfigMapVolumeMounts specifies ConfigMaps
+                            to mount as volumes inside the init container
+                          items:
+                            description: ConfigMapVolumeMount defines a volume mount
+                              from a Kubernetes ConfigMap.
+                            properties:
+                              configMapName:
+                                description: ConfigMapName is the name of the ConfigMap
+                                  to mount
+                                type: string
+                              mountPath:
+                                description: MountPath is the path inside the container
+                                  where the volume should be mounted
+                                type: string
+                              readOnly:
+                                description: ReadOnly specifies whether the volume
+                                  mount should be read-only
+                                type: boolean
+                              subPath:
+                                description: SubPath is the subdirectory within the
+                                  ConfigMap volume to mount
+                                type: string
+                            required:
+                            - configMapName
+                            - mountPath
+                            type: object
+                          type: array
+                        env:
+                          description: Env is a list of environment variables for
+                            init container
+                          items:
+                            description: EnvVar represents a simple environment variable
+                              key-value pair.
+                            properties:
+                              name:
+                                type: string
+                              value:
+                                type: string
+                            required:
+                            - name
+                            - value
+                            type: object
+                          type: array
+                        image:
+                          description: Image is the init container image
+                          type: string
+                        name:
+                          description: Name is the init container name
+                          type: string
+                        sharedVolumeMounts:
+                          description: SharedVolumeMounts specifies pre-existing generic/shared
+                            PVC mounts inside the init container
+                          items:
+                            description: SharedVolumeMount defines a mount of a pre-existing
+                              generic/shared PVC.
+                            properties:
+                              mountPath:
+                                description: MountPath is the path inside the container
+                                  where the volume should be mounted
+                                type: string
+                              pvcName:
+                                description: PVCName is the name of the pre-existing
+                                  PersistentVolumeClaim to mount
+                                type: string
+                              readOnly:
+                                description: ReadOnly specifies whether the volume
+                                  mount should be read-only
+                                type: boolean
+                              subPath:
+                                description: SubPath is the subdirectory within the
+                                  shared volume to mount
+                                type: string
+                            required:
+                            - mountPath
+                            - pvcName
+                            type: object
+                          type: array
+                        volumeMounts:
+                          description: VolumeMounts specifies custom directory mounts
+                            inside the init container mapping to the workspace storage
+                          items:
+                            description: VolumeMount defines a directory mount point
+                              inside the container mapping to the workspace storage.
+                            properties:
+                              mountPath:
+                                description: MountPath is the path inside the container
+                                  where the volume should be mounted
+                                type: string
+                              subPath:
+                                description: SubPath is the subdirectory within the
+                                  workspace volume to mount
+                                type: string
+                            required:
+                            - mountPath
+                            type: object
+                          type: array
+                      required:
+                      - image
+                      - name
+                      type: object
+                    type: array
                   memory:
                     description: Memory specifies Memory resource limits/requests,
                       e.g. "512Mi", "2Gi"
@@ -163,6 +314,34 @@ spec:
                 required:
                 - image
                 type: object
+              sharedVolumeMounts:
+                description: SharedVolumeMounts specifies pre-existing generic/shared
+                  PVCs to mount
+                items:
+                  description: SharedVolumeMount defines a mount of a pre-existing
+                    generic/shared PVC.
+                  properties:
+                    mountPath:
+                      description: MountPath is the path inside the container where
+                        the volume should be mounted
+                      type: string
+                    pvcName:
+                      description: PVCName is the name of the pre-existing PersistentVolumeClaim
+                        to mount
+                      type: string
+                    readOnly:
+                      description: ReadOnly specifies whether the volume mount should
+                        be read-only
+                      type: boolean
+                    subPath:
+                      description: SubPath is the subdirectory within the shared volume
+                        to mount
+                      type: string
+                  required:
+                  - mountPath
+                  - pvcName
+                  type: object
+                type: array
               stopped:
                 description: Stopped indicates whether the workspace is manually stopped
                   (scaled to 0 replicas)
@@ -252,14 +431,11 @@ spec:
               endpoint:
                 description: Endpoint is the external URL or access path for the workspace
                 type: string
-              expiryTime:
-                description: ExpiryTime indicates the computed time when this workspace
-                  will expire under the TTL policy
-                format: date-time
-                type: string
               lastActiveTime:
-                description: LastActiveTime indicates the timestamp of the last detected
-                  activity
+                description: |-
+                  LastActiveTime is the timestamp used as the start of the IdleTimeout run window.
+                  Updated on first status init, on wake/start via API-Server, and when phase transitions
+                  into Running from Sleeping/Stopped/Pending/Failed. Not updated by Ingress HTTP traffic.
                 format: date-time
                 type: string
               phase:
@@ -345,6 +521,15 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - persistentvolumeclaims
   - services
   verbs:
@@ -354,14 +539,6 @@ rules:
   - list
   - patch
   - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-  - list
   - watch
 - apiGroups:
   - ai.example.com
@@ -611,7 +788,7 @@ spec:
         env:
         - name: WORKSPACE_DOMAIN
           value: bocomcode
-        image: workspace-operator:v1.0.0
+        image: workspace-operator:v1.0.14
         livenessProbe:
           httpGet:
             path: /healthz
