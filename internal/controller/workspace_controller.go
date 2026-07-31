@@ -380,6 +380,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 			configMapVolumeMap[cm.ConfigMapName] = volumeName
 			cmVolCount++
 
+			defaultMode := int32(0755)
 			volumes = append(volumes, corev1.Volume{
 				Name: volumeName,
 				VolumeSource: corev1.VolumeSource{
@@ -387,6 +388,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 						LocalObjectReference: corev1.LocalObjectReference{
 							Name: cm.ConfigMapName,
 						},
+						DefaultMode: &defaultMode,
 					},
 				},
 			})
@@ -483,6 +485,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 				configMapVolumeMap[cm.ConfigMapName] = volumeName
 				cmVolCount++
 
+				defaultMode := int32(0755)
 				volumes = append(volumes, corev1.Volume{
 					Name: volumeName,
 					VolumeSource: corev1.VolumeSource{
@@ -490,6 +493,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 							LocalObjectReference: corev1.LocalObjectReference{
 								Name: cm.ConfigMapName,
 							},
+							DefaultMode: &defaultMode,
 						},
 					},
 				})
