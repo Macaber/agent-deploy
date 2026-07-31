@@ -2,8 +2,8 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: standard
-  annotations:
-    storageclass.kubernetes.io/is-default-class: "true" # Set as default storage class
+  # annotations:
+    # storageclass.kubernetes.io/is-default-class: "true" # Set as default storage class
 provisioner: k8s-sigs.io/nfs-subdir-external-provisioner # Must match deployment's env PROVISIONER_NAME
 volumeBindingMode: WaitForFirstConsumer
 parameters:

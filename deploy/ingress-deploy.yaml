@@ -321,6 +321,20 @@ subjects:
 apiVersion: v1
 data:
   allow-snippet-annotations: "false"
+  max-worker-open-files: "1048576"
+  worker-processes: "auto"
+  worker-connections: "65536"
+  use-reuseport: "true"
+  somaxconn: "65535"
+  upstream-keepalive-connections: "320"
+  upstream-keepalive-requests: "10000"
+  upstream-keepalive-timeout: "60"
+  keep-alive: "75"
+  keep-alive-requests: "10000"
+  client-header-buffer-size: "16k"
+  client-body-buffer-size: "128k"
+  proxy-buffer-size: "16k"
+  proxy-buffers-number: "4"
 kind: ConfigMap
 metadata:
   labels:
@@ -399,6 +413,7 @@ metadata:
   name: ingress-nginx-controller
   namespace: ingress-nginx
 spec:
+  replicas: 2
   minReadySeconds: 0
   revisionHistoryLimit: 10
   selector:
@@ -419,6 +434,18 @@ spec:
         app.kubernetes.io/part-of: ingress-nginx
         app.kubernetes.io/version: 1.9.4
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                  - ingress-nginx
+              topologyKey: "kubernetes.io/hostname"
       hostNetwork: true
       containers:
       - args:
@@ -481,8 +508,11 @@ spec:
           timeoutSeconds: 1
         resources:
           requests:
-            cpu: 100m
-            memory: 90Mi
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: "2"
+            memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: true
           capabilities:

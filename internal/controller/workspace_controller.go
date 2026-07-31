@@ -767,9 +767,14 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 					Namespace: ws.Namespace,
 					Labels:    labels,
 					Annotations: map[string]string{
-						"nginx.ingress.kubernetes.io/proxy-body-size":    "50m",
-						"nginx.ingress.kubernetes.io/proxy-read-timeout": "86400",
-						"nginx.ingress.kubernetes.io/proxy-send-timeout": "86400",
+						"nginx.ingress.kubernetes.io/proxy-body-size":         "100m",
+						"nginx.ingress.kubernetes.io/proxy-read-timeout":      "86400",
+						"nginx.ingress.kubernetes.io/proxy-send-timeout":      "86400",
+						"nginx.ingress.kubernetes.io/proxy-buffering":         "off",
+						"nginx.ingress.kubernetes.io/proxy-http-version":      "1.1",
+						"nginx.ingress.kubernetes.io/limit-connections":       "200",
+						"nginx.ingress.kubernetes.io/proxy-next-upstream":     "error timeout invalid_header http_502 http_503",
+						"nginx.ingress.kubernetes.io/proxy-next-upstream-tries": "3",
 					},
 				},
 				Spec: ingressSpec,
@@ -788,9 +793,14 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 	if ingress.Annotations == nil {
 		ingress.Annotations = make(map[string]string)
 	}
-	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-body-size"] = "50m"
+	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-body-size"] = "100m"
 	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-read-timeout"] = "86400"
 	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-send-timeout"] = "86400"
+	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-buffering"] = "off"
+	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-http-version"] = "1.1"
+	ingress.Annotations["nginx.ingress.kubernetes.io/limit-connections"] = "200"
+	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-next-upstream"] = "error timeout invalid_header http_502 http_503"
+	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-next-upstream-tries"] = "3"
 	ingress.Spec = ingressSpec
 	if err := r.Update(ctx, ingress); err != nil {
 		return "", err
