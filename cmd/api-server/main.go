@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -311,6 +312,14 @@ func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequ
 	return c.Create(ctx, ws)
 }
 
+// isSliceDifferent returns true if two slices are different, treating both empty and nil slices as equal length 0.
+func isSliceDifferent[T any](current []T, req []T) bool {
+	if len(current) == 0 && len(req) == 0 {
+		return false
+	}
+	return !reflect.DeepEqual(current, req)
+}
+
 // updateExistingWorkspace applies spec changes and resets LastActiveTime to resume a workspace.
 func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha1.Workspace, req *workspaceRequest, wsName, namespace string) error {
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -342,7 +351,7 @@ func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha
 			currentWs.Spec.Runtime.Memory = req.Memory
 			needsUpdate = true
 		}
-		if len(req.Env) > 0 {
+		if req.Env != nil && isSliceDifferent(currentWs.Spec.Runtime.Env, req.Env) {
 			currentWs.Spec.Runtime.Env = req.Env
 			needsUpdate = true
 		}
@@ -350,19 +359,19 @@ func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha
 		if len(cmdList) == 0 && len(req.Cmd) > 0 {
 			cmdList = req.Cmd
 		}
-		if len(cmdList) > 0 {
+		if cmdList != nil && isSliceDifferent(currentWs.Spec.Runtime.Command, cmdList) {
 			currentWs.Spec.Runtime.Command = cmdList
 			needsUpdate = true
 		}
-		if len(req.Args) > 0 {
+		if req.Args != nil && isSliceDifferent(currentWs.Spec.Runtime.Args, req.Args) {
 			currentWs.Spec.Runtime.Args = req.Args
 			needsUpdate = true
 		}
-		if len(req.VolumeMounts) > 0 {
+		if req.VolumeMounts != nil && isSliceDifferent(currentWs.Spec.Runtime.VolumeMounts, req.VolumeMounts) {
 			currentWs.Spec.Runtime.VolumeMounts = req.VolumeMounts
 			needsUpdate = true
 		}
-		if req.PostStartScript != "" {
+		if req.PostStartScript != "" && currentWs.Spec.Runtime.PostStartScript != req.PostStartScript {
 			currentWs.Spec.Runtime.PostStartScript = req.PostStartScript
 			needsUpdate = true
 		}
@@ -386,15 +395,15 @@ func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha
 			currentWs.Spec.ExposeSSH = *req.ExposeSSH
 			needsUpdate = true
 		}
-		if len(req.SharedVolumeMounts) > 0 {
+		if req.SharedVolumeMounts != nil && isSliceDifferent(currentWs.Spec.SharedVolumeMounts, req.SharedVolumeMounts) {
 			currentWs.Spec.SharedVolumeMounts = req.SharedVolumeMounts
 			needsUpdate = true
 		}
-		if len(req.ConfigMapVolumeMounts) > 0 {
+		if req.ConfigMapVolumeMounts != nil && isSliceDifferent(currentWs.Spec.ConfigMapVolumeMounts, req.ConfigMapVolumeMounts) {
 			currentWs.Spec.ConfigMapVolumeMounts = req.ConfigMapVolumeMounts
 			needsUpdate = true
 		}
-		if len(req.InitContainers) > 0 {
+		if req.InitContainers != nil && isSliceDifferent(currentWs.Spec.Runtime.InitContainers, req.InitContainers) {
 			currentWs.Spec.Runtime.InitContainers = req.InitContainers
 			needsUpdate = true
 		}
