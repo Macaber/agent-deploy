@@ -79,9 +79,21 @@ public class WorkspaceService {
         return toItem(ws);
     }
 
+    public static String getEffectiveUserId(String userId, String namespace, List<EnvVar> envList) {
+        if ("bocomwork".equals(namespace) && envList != null) {
+            for (EnvVar env : envList) {
+                if ("USER_CODE".equals(env.getName()) && env.getValue() != null && !env.getValue().isBlank()) {
+                    return env.getValue().trim();
+                }
+            }
+        }
+        return userId;
+    }
+
     public WorkspaceItem createOrUpdateWorkspace(WorkspaceRequest req) {
         String namespace = req.getNamespace() != null && !req.getNamespace().isBlank() ? req.getNamespace() : "default";
-        String wsName = buildWorkspaceName(req.getUserId());
+        String effectiveUserId = getEffectiveUserId(req.getUserId(), namespace, req.getEnv());
+        String wsName = buildWorkspaceName(effectiveUserId);
 
         Workspace existing = workspaceClient().inNamespace(namespace).withName(wsName).get();
 
@@ -112,7 +124,7 @@ public class WorkspaceService {
         StorageSpec storageSpec = new StorageSpec(storageSize, storageClass);
 
         WorkspaceSpec spec = new WorkspaceSpec();
-        spec.setOwner(req.getUserId());
+        spec.setOwner(effectiveUserId);
         spec.setRuntime(runtimeSpec);
         spec.setStorage(storageSpec);
         spec.setExposeSSH(req.getExposeSSH());

@@ -61,7 +61,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 - **请求体参数说明**：
   | 参数名 | 数据类型 | 是否必填 | 默认值 | 作用描述 |
   | :--- | :--- | :--- | :--- | :--- |
-  | **`userId`** | `string` | **是** | - | 用户唯一标识（决定 workspace 资源名称 `ws-<userId>`）。 |
+  | **`userId`** | `string` | **是** | - | 用户唯一标识（决定 workspace 资源名称 `ws-<userId>`；当 `namespace` 为 `"bocomwork"` 且环境变量中包含非空 `USER_CODE` 时，使用 `USER_CODE` 的值替换 `userId`）。 |
   | **`namespace`** | `string` | 否 | `"default"` | 工作空间所在的 K8s 命名空间。 |
   | **`image`** | `string` | **是** | - | 启动工作空间的容器镜像。 |
   | **`port`** | `int` | 否 | `4096` | 容器监听端口。 |

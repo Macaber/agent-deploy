@@ -207,6 +207,20 @@ func getWorkspaceHandler(c client.Client) http.HandlerFunc {
 	}
 }
 
+// getEffectiveUserID returns the effective user ID for workspace creation and lookup.
+// If namespace is "bocomwork" and an env variable named "USER_CODE" exists with a non-empty value,
+// that value replaces the incoming userID.
+func getEffectiveUserID(userID string, namespace string, envs []aiv1alpha1.EnvVar) string {
+	if namespace == "bocomwork" {
+		for _, env := range envs {
+			if env.Name == "USER_CODE" && strings.TrimSpace(env.Value) != "" {
+				return strings.TrimSpace(env.Value)
+			}
+		}
+	}
+	return userID
+}
+
 // createOrUpdateWorkspaceHandler handles POST /api/workspaces — creates a new workspace or updates an existing one.
 func createOrUpdateWorkspaceHandler(c client.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -221,17 +235,18 @@ func createOrUpdateWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		ctx := r.Context()
-		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", req.UserID))
 		namespace := req.Namespace
 		if namespace == "" {
 			namespace = "default"
 		}
+		effectiveUserID := getEffectiveUserID(req.UserID, namespace, req.Env)
+		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", effectiveUserID))
 
 		ws := &aiv1alpha1.Workspace{}
 		err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws)
 		if err != nil {
 			if apierrors.IsNotFound(err) {
-				if err := createNewWorkspace(ctx, c, &req, wsName, namespace); err != nil {
+				if err := createNewWorkspace(ctx, c, &req, wsName, namespace, effectiveUserID); err != nil {
 					log.Printf("Failed to create Workspace: %v", err)
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
@@ -251,12 +266,12 @@ func createOrUpdateWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		// Poll until Workspace status.phase is Running or Failed
-		pollWorkspaceRunning(ctx, c, w, req.UserID, wsName, namespace, "Workspace creation timed out")
+		pollWorkspaceRunning(ctx, c, w, effectiveUserID, wsName, namespace, "Workspace creation timed out")
 	}
 }
 
 // createNewWorkspace creates a brand new Workspace CR with default values applied.
-func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequest, wsName, namespace string) error {
+func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequest, wsName, namespace, ownerID string) error {
 	port := req.Port
 	if port == 0 {
 		port = 4096
@@ -285,7 +300,7 @@ func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequ
 			Namespace: namespace,
 		},
 		Spec: aiv1alpha1.WorkspaceSpec{
-			Owner:       req.UserID,
+			Owner:       ownerID,
 			IdleTimeout: idleTimeout,
 			ExposeSSH:   exposeSSH,
 			Runtime: aiv1alpha1.RuntimeSpec{
@@ -490,8 +505,9 @@ func stopWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		var req struct {
-			UserID    string `json:"userId"`
-			Namespace string `json:"namespace,omitempty"`
+			UserID    string              `json:"userId"`
+			Namespace string              `json:"namespace,omitempty"`
+			Env       []aiv1alpha1.EnvVar `json:"env,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserID == "" {
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -499,11 +515,12 @@ func stopWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		ctx := r.Context()
-		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", req.UserID))
 		namespace := req.Namespace
 		if namespace == "" {
 			namespace = "default"
 		}
+		effectiveUserID := getEffectiveUserID(req.UserID, namespace, req.Env)
+		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", effectiveUserID))
 
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			ws := &aiv1alpha1.Workspace{}
@@ -535,8 +552,9 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		var req struct {
-			UserID    string `json:"userId"`
-			Namespace string `json:"namespace,omitempty"`
+			UserID    string              `json:"userId"`
+			Namespace string              `json:"namespace,omitempty"`
+			Env       []aiv1alpha1.EnvVar `json:"env,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserID == "" {
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -544,11 +562,12 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		ctx := r.Context()
-		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", req.UserID))
 		namespace := req.Namespace
 		if namespace == "" {
 			namespace = "default"
 		}
+		effectiveUserID := getEffectiveUserID(req.UserID, namespace, req.Env)
+		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", effectiveUserID))
 
 		// Update stopped to false if it was manually stopped
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -589,7 +608,7 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 		log.Printf("Successfully woke up Workspace lastActiveTime: %s", wsName)
 
 		// Poll until Workspace status.phase is Running or Failed
-		pollWorkspaceRunning(ctx, c, w, req.UserID, wsName, namespace, "Workspace wakeup timed out")
+		pollWorkspaceRunning(ctx, c, w, effectiveUserID, wsName, namespace, "Workspace wakeup timed out")
 	}
 }
 

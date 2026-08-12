@@ -91,7 +91,7 @@ spec:
         # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
         env:
         - name: WORKSPACE_DOMAIN
-          value: "bocomwork"
+          value: "bocomcode"
         resources:
           limits:
             cpu: 500m
