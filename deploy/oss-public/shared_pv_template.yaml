@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: global-oss-share-pv # 共享 OSS PV 名称
+spec:
+  capacity:
+    storage: 100Gi # 声明容量，不影响 OSS 实际无上限使用
+  accessModes:
+    - ReadWriteMany # 必须为 RWX 以支持多个 Workspace Pod 同时挂载
+  persistentVolumeReclaimPolicy: Retain # 删除 PVC 时保留 PV 和 OSS 远程数据
+  csi:
+    driver: ossplugin.csi.alibabacloud.com
+    volumeHandle: global-oss-share-pv-id
+    nodePublishSecretRef:
+      name: oss-secret # 存储 OSS AccessKey 信息的 Secret 名称
+      namespace: default # 统一使用 default 命名空间
+    volumeAttributes:
+      bucket: "your-shared-bucket-name" # 共享的 OSS Bucket 名称
+      url: "oss-cn-hangzhou-internal.aliyuncs.com" # 内网 OSS Endpoint
+      path: "/shared-assets" # 挂载的 OSS 内子路径目录
+      otherOpts: "-o max_stat_cache_size=100000 -o allow_other"

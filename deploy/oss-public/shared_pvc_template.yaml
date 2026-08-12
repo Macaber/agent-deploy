@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: global-oss-share-pvc # 最终在 Workspace 请求中 spec.sharedVolumeMounts[].pvcName 引用的名称
+  namespace: default # 统一使用 default 命名空间，与 NFS 保持一致
+spec:
+  accessModes:
+    - ReadWriteMany # RWX 模式
+  resources:
+    requests:
+      storage: 100Gi
+  volumeName: global-oss-share-pv # 必须精确匹配共享 PV 的名称
+  storageClassName: "" # 静态绑定必须留空 ""，避免动态 StorageClass 干预

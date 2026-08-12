@@ -26,6 +26,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apiresources "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -48,7 +49,9 @@ type WorkspaceReconciler struct {
 // +kubebuilder:rbac:groups=ai.example.com,resources=workspaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ai.example.com,resources=workspaces/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
@@ -192,6 +195,7 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.Workspace) (string, error) {
+	log := logf.FromContext(ctx)
 	pvcName := ws.Name + "-pvc"
 	pvc := &corev1.PersistentVolumeClaim{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: pvcName}, pvc)
@@ -206,23 +210,134 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 				storageClass = &ws.Spec.Storage.StorageClass
 			}
 
-			pvc = &corev1.PersistentVolumeClaim{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      pvcName,
-					Namespace: ws.Namespace,
-				},
-				Spec: corev1.PersistentVolumeClaimSpec{
-					AccessModes: []corev1.PersistentVolumeAccessMode{
-						corev1.ReadWriteOnce,
-					},
-					Resources: corev1.VolumeResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: storageSize,
-						},
-					},
-					StorageClassName: storageClass,
-				},
+			// Check if the requested StorageClass is OSS or uses ossplugin.csi.alibabacloud.com
+			isOSS := false
+			var sc *storagev1.StorageClass
+			if storageClass != nil && *storageClass != "" {
+				scObj := &storagev1.StorageClass{}
+				if err := r.Get(ctx, client.ObjectKey{Name: *storageClass}, scObj); err == nil {
+					if scObj.Provisioner == "ossplugin.csi.alibabacloud.com" || strings.Contains(strings.ToLower(*storageClass), "oss") {
+						isOSS = true
+						sc = scObj
+					}
+				} else if strings.Contains(strings.ToLower(*storageClass), "oss") {
+					isOSS = true
+				}
 			}
+
+			if isOSS {
+				pvName := ws.Name + "-pv"
+				pv := &corev1.PersistentVolume{}
+				pvErr := r.Get(ctx, client.ObjectKey{Name: pvName}, pv)
+				if pvErr != nil && apierrors.IsNotFound(pvErr) {
+					bucket := "your-user-workspaces-bucket"
+					url := "oss-cn-hangzhou-internal.aliyuncs.com"
+					otherOpts := "-o max_stat_cache_size=100000 -o allow_other"
+					secretName := "oss-secret"
+					secretNamespace := "default"
+
+					if sc != nil {
+						if b, ok := sc.Parameters["bucket"]; ok && b != "" {
+							bucket = b
+						}
+						if u, ok := sc.Parameters["url"]; ok && u != "" {
+							url = u
+						}
+						if o, ok := sc.Parameters["otherOpts"]; ok && o != "" {
+							otherOpts = o
+						}
+						if sName, ok := sc.Parameters["csi.storage.k8s.io/provisioner-secret-name"]; ok && sName != "" {
+							secretName = sName
+						} else if sName, ok := sc.Parameters["akIdSecret"]; ok && sName != "" {
+							secretName = sName
+						}
+						if sNs, ok := sc.Parameters["csi.storage.k8s.io/provisioner-secret-namespace"]; ok && sNs != "" {
+							secretNamespace = sNs
+						}
+					}
+
+					subPath := "/workspaces/" + ws.Name
+					scNameStr := ""
+					if storageClass != nil {
+						scNameStr = *storageClass
+					}
+					pv = &corev1.PersistentVolume{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: pvName,
+						},
+						Spec: corev1.PersistentVolumeSpec{
+							Capacity: corev1.ResourceList{
+								corev1.ResourceStorage: storageSize,
+							},
+							AccessModes: []corev1.PersistentVolumeAccessMode{
+								corev1.ReadWriteMany,
+							},
+							PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimRetain,
+							StorageClassName:              scNameStr,
+							PersistentVolumeSource: corev1.PersistentVolumeSource{
+								CSI: &corev1.CSIPersistentVolumeSource{
+									Driver:       "ossplugin.csi.alibabacloud.com",
+									VolumeHandle: pvName + "-handle",
+									NodePublishSecretRef: &corev1.SecretReference{
+										Name:      secretName,
+										Namespace: secretNamespace,
+									},
+									VolumeAttributes: map[string]string{
+										"bucket":    bucket,
+										"url":       url,
+										"path":      subPath,
+										"otherOpts": otherOpts,
+										"fuseType":  "direct",
+									},
+								},
+							},
+						},
+					}
+					log.Info("Auto-provisioning OSS PersistentVolume for workspace", "pvName", pvName, "subPath", subPath)
+					if err := r.Create(ctx, pv); err != nil && !apierrors.IsAlreadyExists(err) {
+						return "", err
+					}
+				}
+
+				// For auto-provisioned OSS PVs, PVC binds explicitly to pvName with matching StorageClassName
+				pvc = &corev1.PersistentVolumeClaim{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      pvcName,
+						Namespace: ws.Namespace,
+					},
+					Spec: corev1.PersistentVolumeClaimSpec{
+						AccessModes: []corev1.PersistentVolumeAccessMode{
+							corev1.ReadWriteMany,
+						},
+						Resources: corev1.VolumeResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceStorage: storageSize,
+							},
+						},
+						VolumeName:       pvName,
+						StorageClassName: storageClass,
+					},
+				}
+			} else {
+				pvc = &corev1.PersistentVolumeClaim{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      pvcName,
+						Namespace: ws.Namespace,
+					},
+					Spec: corev1.PersistentVolumeClaimSpec{
+						AccessModes: []corev1.PersistentVolumeAccessMode{
+							corev1.ReadWriteOnce,
+						},
+						Resources: corev1.VolumeResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceStorage: storageSize,
+							},
+						},
+						StorageClassName: storageClass,
+					},
+				}
+			}
+
 			if err := ctrl.SetControllerReference(ws, pvc, r.Scheme); err != nil {
 				return "", err
 			}

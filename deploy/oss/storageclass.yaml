@@ -1,0 +1,19 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: alicloud-oss # 全集群通用的 StorageClass 名称
+provisioner: ossplugin.csi.alibabacloud.com
+parameters:
+  bucket: "your-user-workspaces-bucket"        # 用于存储个人工作空间数据的 OSS Bucket
+  url: "oss-cn-hangzhou-internal.aliyuncs.com" # 内网 OSS Endpoint
+  otherOpts: "-o max_stat_cache_size=100000 -o allow_other"
+
+  # 保持与 NFS 统一，统一引用 default 命名空间下的 Secret 凭证
+  akIdSecret: "oss-secret"
+  akSecretSecret: "oss-secret"
+  csi.storage.k8s.io/provisioner-secret-name: "oss-secret"
+  csi.storage.k8s.io/provisioner-secret-namespace: "default"
+  csi.storage.k8s.io/node-publish-secret-name: "oss-secret"
+  csi.storage.k8s.io/node-publish-secret-namespace: "default"
+reclaimPolicy: Retain # 保障数据安全
+allowVolumeExpansion: true

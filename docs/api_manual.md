@@ -91,6 +91,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
     "cpu": "1",
     "memory": "1Gi",
     "storageSize": "10Gi",
+    "storageClass": "alicloud-oss",
     "idleTimeout": "30m",
     "exposeSSH": true,
     "env": [
