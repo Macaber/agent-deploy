@@ -288,6 +288,7 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 										"path":      subPath,
 										"otherOpts": otherOpts,
 										"fuseType":  "direct",
+										"direct":    "true",
 									},
 								},
 							},

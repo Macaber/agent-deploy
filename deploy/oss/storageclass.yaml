@@ -7,6 +7,8 @@ parameters:
   bucket: "your-user-workspaces-bucket"        # 用于存储个人工作空间数据的 OSS Bucket
   url: "oss-cn-hangzhou-internal.aliyuncs.com" # 内网 OSS Endpoint
   otherOpts: "-o max_stat_cache_size=100000 -o allow_other"
+  direct: "true"
+  fuseType: "direct"
 
   # 保持与 NFS 统一，统一引用 default 命名空间下的 Secret 凭证
   akIdSecret: "oss-secret"

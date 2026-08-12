@@ -69,7 +69,7 @@ docker save registry.k8s.io/ingress-nginx/controller:v1.9.4 -o ./deploy/ingress-
 docker save registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.4.0 -o ./deploy/ingress-certgen.tar
 docker save rancher/local-path-provisioner:v0.0.30 rancher/library-busybox:1.31.1 -o ./deploy/local-path-provisioner.tar
 docker save registry.k8s.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2 -o ./deploy/nfs-provisioner.tar
-docker save registry.cn-hangzhou.aliyuncs.com/acs/csi-plugin:v1.36.1 registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.8.0 -o ./deploy/oss-csi-plugin.tar
+docker save registry.cn-hangzhou.aliyuncs.com/acs/csi-plugin:v1.26.9-9942088-aliyun registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.8.0 -o ./deploy/oss-csi-plugin.tar
 docker save workspace-operator:v1.0.0 -o ./deploy/workspace-operator.tar
 docker save api-server:v1.0.0 -o ./deploy/api-server.tar
 ```
@@ -246,6 +246,7 @@ stringData:
 ```
 
 执行部署：
+
 ```bash
 kubectl apply -f ./deploy/oss/secret.yaml
 ```
@@ -273,6 +274,7 @@ allowVolumeExpansion: true
 ```
 
 执行部署：
+
 ```bash
 kubectl apply -f ./deploy/oss/storageclass.yaml
 ```
@@ -282,6 +284,7 @@ kubectl apply -f ./deploy/oss/storageclass.yaml
 在 `deploy/oss-public/` 目录下提供了用于共享资产的 PV 与 PVC 模板：
 
 * **`deploy/oss-public/shared_pv_template.yaml`**：
+
   ```yaml
   apiVersion: v1
   kind: PersistentVolume
@@ -307,6 +310,7 @@ kubectl apply -f ./deploy/oss/storageclass.yaml
   ```
 
 * **`deploy/oss-public/shared_pvc_template.yaml`**：
+
   ```yaml
   apiVersion: v1
   kind: PersistentVolumeClaim
@@ -324,6 +328,7 @@ kubectl apply -f ./deploy/oss/storageclass.yaml
   ```
 
 执行部署：
+
 ```bash
 kubectl apply -f ./deploy/oss-public/shared_pv_template.yaml
 kubectl apply -f ./deploy/oss-public/shared_pvc_template.yaml
@@ -419,4 +424,3 @@ spec:
    ```
 
 4. 工作空间进入 `Running` 后，尝试写入数据文件，确认停止并重新启动后数据完美恢复。
-

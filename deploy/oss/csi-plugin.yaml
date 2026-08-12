@@ -19,6 +19,9 @@ rules:
     resources: ["nodes"]
     verbs: ["get", "list", "watch", "update"]
   - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
     resources: ["persistentvolumes"]
     verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
   - apiGroups: [""]
@@ -94,20 +97,14 @@ spec:
           securityContext:
             privileged: true
             allowPrivilegeEscalation: true
-          image: registry.cn-hangzhou.aliyuncs.com/acs/csi-plugin:v1.36.1
+          image: registry.cn-hangzhou.aliyuncs.com/acs/csi-plugin:v1.26.9-9942088-aliyun
           imagePullPolicy: IfNotPresent
           args:
             - "--driver=oss"
             - "--nodeid=$(KUBE_NODE_NAME)"
             - "--endpoint=$(CSI_ENDPOINT)"
           env:
-            - name: SERVICE_TYPE
-              value: "plugin"
             - name: KUBE_NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-            - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
@@ -119,17 +116,16 @@ spec:
             - name: pods-mount-dir
               mountPath: /var/lib/kubelet/pods
               mountPropagation: Bidirectional
+            - name: host-root
+              mountPath: /host
+              mountPropagation: HostToContainer
             - name: host-dev
               mountPath: /dev
               mountPropagation: HostToContainer
             - name: host-sys
               mountPath: /sys
-            - name: etc-csi-plugin
-              mountPath: /etc/csi-plugin
-            - name: run-containerd
-              mountPath: /run/containerd
-            - name: run-docker
-              mountPath: /var/run/docker.sock
+            - name: host-log
+              mountPath: /var/log
       volumes:
         - name: registration-dir
           hostPath:
@@ -143,21 +139,16 @@ spec:
           hostPath:
             path: /var/lib/kubelet/pods
             type: Directory
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
         - name: host-dev
           hostPath:
             path: /dev
         - name: host-sys
           hostPath:
             path: /sys
-        - name: etc-csi-plugin
+        - name: host-log
           hostPath:
-            path: /etc/csi-plugin
-            type: DirectoryOrCreate
-        - name: run-containerd
-          hostPath:
-            path: /run/containerd
-            type: DirectoryOrCreate
-        - name: run-docker
-          hostPath:
-            path: /var/run/docker.sock
-            type: ""
+            path: /var/log

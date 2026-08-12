@@ -39,6 +39,7 @@ graph TD
 整个部署方案由 **CRD 与 Operator**、**Ingress**、**NFS 动态存储** 以及 **API-Server** 四大板块构成，它们各司其职，紧密配合：
 
 ### 🧬 (1) CRD (自定义资源) 与 Workspace Operator
+
 * **组件构成**：自定义资源声明 `workspaces.ai.example.com`（CRD）与后台控制器 `controller-manager`（Operator）。
 * **核心作用**：**整个工作空间生命周期的“大脑”与执行引擎。**
 * **具体职责**：
@@ -48,14 +49,16 @@ graph TD
   * **副本管理**：Deployment 的 `replicas` 始终由 Operator 根据 `stopped` / `idleTimeout` 写入，无需额外扩缩容组件。
 
 ### 🌐 (2) Ingress (网关路由层)
+
 * **组件构成**：`ingress-nginx-controller`（基于 Nginx 的 Kubernetes 官方网关控制器）。
 * **核心作用**：**南北向流量入口与二级域名路由转发。**
 * **具体职责**：
   * **端口绑定与网络透传**：在物理节点上通过 `hostNetwork: true` 模式运行，直接监听集群物理机的 `80` 和 `443` 端口，实现高性能的流量接入。
-  * **动态域名解析**：当 Operator 决定启动一个工作空间时，会为其自动创建一个 Ingress 路由规则。Ingress 监听请求的 `Host` 头（如 `ws-dev-user01.bocomcode`），根据域名将流量精确分发到对应用户的 `Service` 上。
+  * **动态域名解析**：当 Operator 决定启动一个工作空间时，会为其自动创建一个 Ingress 路由规则。Ingress 监听请求的 `Host` 头（如 `ws-dev-user01.bocomwork`），根据域名将流量精确分发到对应用户的 `Service` 上。
   * **长连接（WebSocket）支持**：为开发环境的网页终端（Terminal）、代码热编译等提供持久的、低延迟的 WebSockets 双向通道代理。
 
 ### 💾 (3) NFS 动态卷分配器 (`nfs-client-provisioner`)
+
 * **组件构成**：NFS 物理存储器、Kubernetes NFS 驱动插件及 StorageClass。
 * **核心作用**：**数据持久化与多用户存储物理隔离。**
 * **具体职责**：
@@ -64,6 +67,7 @@ graph TD
   * **无损休眠与重启**：当工作空间因闲置被 Operator 缩容至 0（休眠）或因故障漂移到其他节点重启时，计算资源虽然被销毁重建，但 NFS 持久卷数据不受任何影响。新 Pod 启动时只需重新挂载该目录，开发现场便能 100% 瞬间恢复。
 
 ### 🔌 (4) API-Server (轻量级网关)
+
 * **组件构成**：一个独立编译部署 of Go Web 服务，挂载了专用的 ServiceAccount `api-server-sa`。
 * **核心作用**：**前端 Portal 与 Kubernetes 底层集群之间的通信桥梁。**
 * **具体职责**：
@@ -85,9 +89,9 @@ graph TD
     b. NFS-Provisioner 在 NFS 磁盘上生成文件夹 `/dev-ns-ws-user1-pvc-xxx` 并绑定
     c. Operator 创建 Deployment (注入用户指定的镜像、端口 1234、挂载参数及 postStart 脚本)
     d. Operator 创建 Service (暴露 Deployment 的 http 端口)
-    e. Operator 创建 Ingress (绑定域名 ws-user1.bocomcode，指向 Service 80 端口)
+    e. Operator 创建 Ingress (绑定域名 ws-user1.bocomwork Service 80 端口)
  4. Pod 启动成功 -> 运行后置脚本 (postStartScript) -> 容器服务就绪 (处于 Running)
- 5. Ingress Controller 刷新配置 -> 将 http://ws-user1.bocomcode 接入后端 Pod
- 6. API-Server 轮询检测到 Workspace 状态变为 Running -> 向外部返回 "http://ws-user1.bocomcode" 访问入口
+ 5. Ingress Controller 刷新配置 -> 将 http://ws-user1.bocomwork 接入后端 Pod
+ 6. API-Server 轮询检测到 Workspace 状态变为 Running -> 向外部返回 "http://ws-user1.bocomwork" 访问入口
  7. 开发人员通过配置了 Cookie 转发的外部 Nginx 访问 IP/bocomwork/ws/user1/ -> 开始愉快编码
 ```

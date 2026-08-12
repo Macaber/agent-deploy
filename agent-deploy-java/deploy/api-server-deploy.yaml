@@ -58,7 +58,7 @@ spec:
         - name: PORT
           value: "3000"
         - name: WORKSPACE_DOMAIN
-          value: "bocomcode"
+          value: "bocomwork"
         resources:
           limits:
             cpu: 500m
@@ -89,7 +89,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-  - host: launcher.workspace.bocomcode
+  - host: launcher.workspace.bocomwork
     http:
       paths:
       - path: /

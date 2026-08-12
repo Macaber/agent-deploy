@@ -54,7 +54,7 @@ spec:
         - name: PORT
           value: "3000"
         - name: WORKSPACE_DOMAIN
-          value: "bocomcode"
+          value: "bocomwork"
         - name: WORKSPACE_BASE_URL
           value: "http://12.244.107.214/bocomwork/ws" # 生产可修改为您的主域名
 ---
@@ -87,7 +87,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-  - host: launcher.workspace.bocomcode # 方式二：可通过域名 http://launcher.workspace.bocomcode 访问
+  - host: launcher.workspace.bocomwork # 方式二：可通过域名 http://launcher.workspace.bocomwork 访问
     http:
       paths:
       - path: /
