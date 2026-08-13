@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: workspace-operator
-  newTag: v1.0.21
+  newTag: v1.0.22

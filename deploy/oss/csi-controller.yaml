@@ -1,0 +1,77 @@
+# 阿里云 OSS CSI 控制器（自建集群 / k8s 1.25）
+#
+# 必须部署：csi-plugin v1.30.4+ 起，OSS 卷（含静态卷）的挂载流程为：
+#   1. kubelet 创建 VolumeAttachment（CSIDriver attachRequired: true）
+#   2. external-attacher 调用 ControllerPublishVolume
+#   3. driver controller 在目标节点上创建 FUSE Pod（ack-csi-fuse 命名空间，镜像 acs/csi-ossfs）
+#   4. FUSE Pod 在宿主机完成挂载，NodePublishVolume 通过 socket 绑定到业务 Pod
+#
+# 没有该 Deployment 时，FUSE Pod 永远不会被创建，挂载会失败。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csi-controller-oss
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: csi-controller-oss
+  template:
+    metadata:
+      labels:
+        app: csi-controller-oss
+    spec:
+      serviceAccountName: csi-oss-admin
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: csi-controller
+          image: registry.cn-hangzhou.aliyuncs.com/acs/csi-plugin:v1.36.2
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--driver=oss"
+            - "--run-controller-service=true"
+            - "--run-node-service=false"
+            - "--endpoint=unix://csi/csi.sock"
+            - "--nodeid=$(KUBE_NODE_NAME)"
+          env:
+            # FUSE Pod 镜像默认解析为 registry-cn-hangzhou.ack.aliyuncs.com/acs/csi-ossfs:v1.91.11.ack.1-f3157f4
+            # （公开可拉）。显式指定 DEFAULT_REGISTRY，避免依赖 ECS metadata 推断 region
+            # 而回落到 VPC 内网 registry。
+            # 若节点上 csi-ossfs 镜像重新打过私有仓库 tag，把这里改为私有仓库地址。
+            - name: DEFAULT_REGISTRY
+              value: "registry-cn-hangzhou.ack.aliyuncs.com"
+            # 显式固定 FUSE Pod 镜像 tag，避免依赖 driver 版本特性开关的默认值。
+            # 必须与节点上实际导入的 tag 一致：
+            #   ctr -n k8s.io images list | grep csi-ossfs
+            - name: OSS_FUSE_OSSFS
+              value: "image-tag=v1.91.11.ack.1-f3157f4"
+            # 专有云/内网 OSS 开关：禁止 driver 改写 URL，且不强制 https:// 前缀，
+            # 让 ossfs 使用默认的 http 协议连接内网 OSS（关键：内网环境必须为 true）
+            - name: PRIVATE_CLOUD_TAG
+              value: "true"
+            # 自建集群无 ECS metadata，显式提供 CLUSTER_ID
+            - name: CLUSTER_ID
+              value: "self-managed-cluster"
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+        - name: external-oss-attacher
+          # k8s 1.25 兼容（csi-attacher v4.4.x 支持 k8s 1.22+）
+          image: registry.k8s.io/sig-storage/csi-attacher:v4.4.3
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--v=2"
+            - "--csi-address=/csi/csi.sock"
+            - "--leader-election=true"
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+      volumes:
+        - name: plugin-dir
+          emptyDir: {}

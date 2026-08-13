@@ -233,6 +233,7 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 					bucket := "your-user-workspaces-bucket"
 					url := "oss-cn-hangzhou-internal.aliyuncs.com"
 					otherOpts := "-o max_stat_cache_size=100000 -o allow_other"
+					fuseType := "ossfs"
 					secretName := "oss-secret"
 					secretNamespace := "default"
 
@@ -245,6 +246,9 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 						}
 						if o, ok := sc.Parameters["otherOpts"]; ok && o != "" {
 							otherOpts = o
+						}
+						if f, ok := sc.Parameters["fuseType"]; ok && f != "" {
+							fuseType = f
 						}
 						if sName, ok := sc.Parameters["csi.storage.k8s.io/provisioner-secret-name"]; ok && sName != "" {
 							secretName = sName
@@ -282,13 +286,18 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 										Name:      secretName,
 										Namespace: secretNamespace,
 									},
+									// v1.30.4+ 新架构：FUSE Pod 在 ControllerPublishVolume 阶段创建，
+									// 凭证必须同时提供给 controller 端，否则 FUSE Pod 无法访问 OSS
+									ControllerPublishSecretRef: &corev1.SecretReference{
+										Name:      secretName,
+										Namespace: secretNamespace,
+									},
 									VolumeAttributes: map[string]string{
 										"bucket":    bucket,
 										"url":       url,
 										"path":      subPath,
 										"otherOpts": otherOpts,
-										"fuseType":  "direct",
-										"direct":    "true",
+										"fuseType":  fuseType,
 									},
 								},
 							},

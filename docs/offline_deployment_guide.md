@@ -50,10 +50,13 @@ docker pull --platform linux/amd64 rancher/library-busybox:1.31.1
 # NAS / NFS 动态存储镜像
 docker pull --platform linux/amd64 registry.k8s.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2
 
-# OSS CSI 存储驱动镜像 (阿里云 / 自建 CSI 插件)
-# 注意：阿里云官方 CSI 插件使用正式发布版本 Tag (如 v1.36.1 或特定版本 v1.26.9-9942088-aliyun)
-docker pull --platform linux/amd64 registry.cn-hangzhou.aliyuncs.com/acs/csi-plugin:v1.36.1
+# OSS CSI 存储驱动镜像 (阿里云 / 自建 CSI 插件，v1.36.2 新架构 = 节点插件 + 控制器 + FUSE Pod)
+# 注意：OSS 挂载自 v1.30.4+ 起由独立的 FUSE Pod (csi-ossfs 镜像) 完成，不再依赖宿主机 OpenSSL 等库，
+#       必须同时打包以下 4 个镜像
+docker pull --platform linux/amd64 registry.cn-hangzhou.aliyuncs.com/acs/csi-plugin:v1.36.2
 docker pull --platform linux/amd64 registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.8.0
+docker pull --platform linux/amd64 registry.k8s.io/sig-storage/csi-attacher:v4.4.3
+docker pull --platform linux/amd64 registry-cn-hangzhou.ack.aliyuncs.com/acs/csi-ossfs:v1.91.11.ack.1-f3157f4
 
 # 3. 本地构建 Operator 控制器与 API Server 镜像 (针对生产 x86 架构交叉编译)
 cd /Users/yfsun/mywork/agent-deploy
@@ -69,7 +72,7 @@ docker save registry.k8s.io/ingress-nginx/controller:v1.9.4 -o ./deploy/ingress-
 docker save registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.4.0 -o ./deploy/ingress-certgen.tar
 docker save rancher/local-path-provisioner:v0.0.30 rancher/library-busybox:1.31.1 -o ./deploy/local-path-provisioner.tar
 docker save registry.k8s.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2 -o ./deploy/nfs-provisioner.tar
-docker save registry.cn-hangzhou.aliyuncs.com/acs/csi-plugin:v1.26.9-9942088-aliyun registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.8.0 -o ./deploy/oss-csi-plugin.tar
+docker save registry.cn-hangzhou.aliyuncs.com/acs/csi-plugin:v1.36.2 registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.8.0 registry.k8s.io/sig-storage/csi-attacher:v4.4.3 registry-cn-hangzhou.ack.aliyuncs.com/acs/csi-ossfs:v1.91.11.ack.1-f3157f4 -o ./deploy/oss-csi-plugin.tar
 docker save workspace-operator:v1.0.0 -o ./deploy/workspace-operator.tar
 docker save api-server:v1.0.0 -o ./deploy/api-server.tar
 ```
@@ -222,11 +225,37 @@ kubectl apply -f ./deploy/nfs-public/shared_pvc_template.yaml
 
 #### 1. 离线部署 OSS CSI 驱动（若为 ACK 集群通常已预装）
 
-若为自建/离线集群，需将导出的 `oss-csi-plugin.tar` 镜像推送到私有仓库后部署 CSI 驱动：
+若为自建/离线集群，需将导出的 `oss-csi-plugin.tar`（含 4 个镜像）推送到私有 Harbor 仓库后部署 CSI 驱动。
+**注意：`csi-ossfs`（FUSE Pod）镜像必须保持仓库路径 `acs/csi-ossfs` 与 Tag `v1.91.11.ack.1-f3157f4` 不变地推送到 Harbor**，
+控制器通过 `DEFAULT_REGISTRY` 环境变量将 FUSE Pod 镜像解析为 `{DEFAULT_REGISTRY}/acs/csi-ossfs:v1.91.11.ack.1-f3157f4`。
+
+部署前先按私有仓库地址修改两处：
+
+* `deploy/oss/csi-plugin.yaml`：DaemonSet 中 `csi-plugin` 与 `driver-registrar` 的 `image:` 改为内网 Harbor 地址。
+* `deploy/oss/csi-controller.yaml`：`csi-controller` 与 `external-oss-attacher` 的 `image:` 改为内网地址，并将 `DEFAULT_REGISTRY` 环境变量改为 Harbor 地址（如 `yourharbor.domain.com`）。若节点上导入的 `csi-ossfs` tag 与默认值 `v1.91.11.ack.1-f3157f4` 不同，同步修改 `OSS_FUSE_OSSFS` 环境变量的 `image-tag=` 值（与 `ctr -n k8s.io images list | grep csi-ossfs` 的输出保持一致）。
 
 ```bash
-# 离线应用 CSI Plugin 部署清单 (以驱动名 ossplugin.csi.alibabacloud.com 为准)
+# 部署节点插件 DaemonSet（含 RBAC / Namespace ack-csi-fuse / CSIDriver attachRequired=true）
 kubectl apply -f ./deploy/oss/csi-plugin.yaml
+
+# 部署控制器（v1.30.4+ 必须：FUSE Pod 由 ControllerPublishVolume 创建，缺了它挂载必然失败）
+kubectl apply -f ./deploy/oss/csi-controller.yaml
+```
+
+> **架构说明**：旧版本（v1.26.9）通过 `systemd-run` 在宿主机上直接执行 ossfs，要求宿主机安装 OpenSSL 1.0（`libssl.so.10`）等依赖库，自建集群常见 `libssl.so.10: cannot open shared object file` 挂载失败。
+> v1.36.2 新架构改为在目标节点创建 **FUSE Pod**（`ack-csi-fuse` 命名空间，每个卷一个）在容器内完成挂载，宿主机只需有 `systemd`，无需安装任何 ossfs 依赖库。
+>
+> **内网 http 环境注意**：driver 默认会给不带协议的 URL 强制拼 `https://` 前缀。如果内部 OSS/对象存储只支持 **http**（如专有云 OSS），必须：
+> 1. 在 `csi-controller.yaml` 与 `csi-plugin.yaml` 中保持环境变量 `PRIVATE_CLOUD_TAG: "true"`（专有云开关，禁止 driver 改写 URL 与协议）；
+> 2. StorageClass 与 PV 的 `url` 参数显式写成 `http://oss-cn-xxx.internal...`。
+> 否则挂载报错 `ossfs: Failed to check bucket and directory for mount point: Unable to connect(host=https://...)`。
+
+部署完成后确认组件就绪：
+
+```bash
+kubectl get ds -n default csi-plugin-oss          # 每个节点 1 个 Pod
+kubectl get deploy -n default csi-controller-oss  # 控制器 1 个副本 Ready
+kubectl get csidriver ossplugin.csi.alibabacloud.com -o yaml | grep attachRequired  # 必须为 true
 ```
 
 #### 2. 创建 OSS 凭证 Secret (`deploy/oss/secret.yaml`)
@@ -263,8 +292,9 @@ metadata:
 provisioner: ossplugin.csi.alibabacloud.com
 parameters:
   bucket: "your-user-workspaces-bucket"
-  url: "oss-cn-hangzhou-internal.aliyuncs.com"
+  url: "http://oss-cn-hangzhou-internal.aliyuncs.com"   # 内网/专有云 OSS 显式写 http://（不写会被强制 https://）
   otherOpts: "-o max_stat_cache_size=100000 -o allow_other"
+  fuseType: "ossfs"               # 仅支持 ossfs / ossfs2，不能填 direct（direct 是沙箱专用）
   csi.storage.k8s.io/provisioner-secret-name: "oss-secret"
   csi.storage.k8s.io/provisioner-secret-namespace: "default"
   csi.storage.k8s.io/node-publish-secret-name: "oss-secret"
@@ -302,11 +332,15 @@ kubectl apply -f ./deploy/oss/storageclass.yaml
       nodePublishSecretRef:
         name: oss-secret
         namespace: default
+      controllerPublishSecretRef:   # v1.30.4+ 新架构必需：FUSE Pod 在 ControllerPublish 阶段创建，需要凭证
+        name: oss-secret
+        namespace: default
       volumeAttributes:
         bucket: "your-shared-bucket-name"
-        url: "oss-cn-hangzhou-internal.aliyuncs.com"
+        url: "http://oss-cn-hangzhou-internal.aliyuncs.com"   # 内网 OSS 显式写 http://
         path: "/shared-assets"
         otherOpts: "-o max_stat_cache_size=100000 -o allow_other"
+        fuseType: "ossfs"           # 仅支持 ossfs / ossfs2，不能填 direct
   ```
 
 * **`deploy/oss-public/shared_pvc_template.yaml`**：
@@ -421,6 +455,18 @@ spec:
 
    # 查看自动生成或绑定的 PV 及其存储类名称
    kubectl get pv
+
+   # OSS 方案专属验证：
+   # 1. VolumeAttachment 状态必须为 true（FUSE Pod 创建成功的标志）
+   kubectl get volumeattachments
+
+   # 2. 每个已挂载的 OSS 卷在 ack-csi-fuse 命名空间下对应一个 FUSE Pod
+   kubectl -n ack-csi-fuse get pods -o wide
+
+   # 3. 挂载失败时查看 FUSE Pod 日志（常见原因：凭证缺失、OSS URL 不可达）
+   kubectl -n ack-csi-fuse logs <fuse-pod-name>
    ```
+
+> **存量 PV 迁移提示**：若集群中存在按旧版本创建的 OSS PV（含 `fuseType: direct` 等旧属性），因 PV 的 `volumeAttributes` 不可变，需删除旧 PV/PVC 后由 Operator 重新创建（`Retain` 回收策略下 OSS 数据不受影响）。
 
 4. 工作空间进入 `Running` 后，尝试写入数据文件，确认停止并重新启动后数据完美恢复。

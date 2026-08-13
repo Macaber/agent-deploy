@@ -14,8 +14,14 @@ spec:
     nodePublishSecretRef:
       name: oss-secret # 存储 OSS AccessKey 信息的 Secret 名称
       namespace: default # 统一使用 default 命名空间
+    # v1.30.4+ 新架构：FUSE Pod 在 ControllerPublishVolume 阶段创建，
+    # 凭证必须同时提供给 controller 端，否则 FUSE Pod 无法访问 OSS
+    controllerPublishSecretRef:
+      name: oss-secret
+      namespace: default
     volumeAttributes:
       bucket: "your-shared-bucket-name" # 共享的 OSS Bucket 名称
-      url: "oss-cn-hangzhou-internal.aliyuncs.com" # 内网 OSS Endpoint
+      url: "http://oss-cn-hangzhou-internal.aliyuncs.com" # 内网 OSS Endpoint（专有云走 http，显式写协议）
       path: "/shared-assets" # 挂载的 OSS 内子路径目录
       otherOpts: "-o max_stat_cache_size=100000 -o allow_other"
+      fuseType: "ossfs" # 仅支持 ossfs / ossfs2，不能填 direct

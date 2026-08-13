@@ -1,8 +1,29 @@
+# 阿里云 OSS CSI 节点插件（自建集群 / containerd / k8s 1.25）
+#
+# 架构说明（csi-plugin v1.30.4+）：
+# ossfs 不再通过 systemd-run 直接在宿主机上执行（旧架构依赖宿主机的 libssl.so.10 等库），
+# 而是由 csi-controller 在 ControllerPublishVolume 阶段于 ack-csi-fuse 命名空间创建
+# FUSE Pod（镜像 csi-ossfs），由该 Pod 完成挂载。宿主机只需有 systemd。
+#
+# 配套部署：csi-controller.yaml（必须，提供 controller 服务 + external-attacher）
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: csi-oss-admin
   namespace: default
+---
+# FUSE Pod 运行命名空间（v1.30.4+ 起固定）
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ack-csi-fuse
+---
+# FUSE Pod 使用的 ServiceAccount（RRSA 鉴权时被引用；与官方 chart 保持一致，提前创建）
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: csi-fuse-ossfs
+  namespace: ack-csi-fuse
 ---
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
@@ -11,16 +32,17 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update"]
   - apiGroups: [""]
     resources: ["nodes"]
-    verbs: ["get", "list", "watch", "update"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # controller 在 ack-csi-fuse 中创建/管理 FUSE Pod
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
   - apiGroups: [""]
     resources: ["persistentvolumes"]
     verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
@@ -33,9 +55,20 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # external-attacher
   - apiGroups: ["storage.k8s.io"]
     resources: ["volumeattachments"]
     verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments/status"]
+    verbs: ["patch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["csinodes"]
+    verbs: ["get", "list", "watch"]
+  # external-attacher 选主
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
@@ -55,7 +88,8 @@ kind: CSIDriver
 metadata:
   name: ossplugin.csi.alibabacloud.com
 spec:
-  attachRequired: false
+  # v1.30.4+ 新架构：FUSE Pod 在 ControllerPublishVolume 阶段创建，必须为 true
+  attachRequired: true
   podInfoOnMount: true
   volumeLifecycleModes:
     - Persistent
@@ -97,13 +131,25 @@ spec:
           securityContext:
             privileged: true
             allowPrivilegeEscalation: true
-          image: registry.cn-hangzhou.aliyuncs.com/acs/csi-plugin:v1.26.9-9942088-aliyun
+          image: registry.cn-hangzhou.aliyuncs.com/acs/csi-plugin:v1.36.2
           imagePullPolicy: IfNotPresent
           args:
             - "--driver=oss"
             - "--nodeid=$(KUBE_NODE_NAME)"
             - "--endpoint=$(CSI_ENDPOINT)"
+            # 节点插件只跑 node service；controller service 由 csi-controller 提供
+            - "--run-controller-service=false"
+            - "--run-node-service=true"
           env:
+            # 专有云/内网 OSS 开关：禁止 driver 改写 URL、不强制 https://，
+            # 让 ossfs 使用默认的 http 协议（内网环境必须为 true，与 controller 保持一致）
+            - name: PRIVATE_CLOUD_TAG
+              value: "true"
+            # 自建集群无 ECS metadata，显式提供 CLUSTER_ID 避免 metadata 探测
+            - name: CLUSTER_ID
+              value: "self-managed-cluster"
+            - name: KUBELET_ROOT_DIR
+              value: "/var/lib/kubelet"
             - name: KUBE_NODE_NAME
               valueFrom:
                 fieldRef:
@@ -113,12 +159,13 @@ spec:
           volumeMounts:
             - name: plugin-dir
               mountPath: /var/lib/kubelet/csi-plugins/ossplugin.csi.alibabacloud.com
-            - name: pods-mount-dir
-              mountPath: /var/lib/kubelet/pods
+            - name: kubelet-dir
+              mountPath: /var/lib/kubelet
               mountPropagation: Bidirectional
-            - name: host-root
-              mountPath: /host
-              mountPropagation: HostToContainer
+            # FUSE Pod 的 globalmount/socket 目录（v1.30.4+ 挂载架构）
+            - name: fuse-dir
+              mountPath: /run/fuse.ossfs
+              mountPropagation: Bidirectional
             - name: host-dev
               mountPath: /dev
               mountPropagation: HostToContainer
@@ -126,6 +173,10 @@ spec:
               mountPath: /sys
             - name: host-log
               mountPath: /var/log
+            # 供 /host/etc（mime.types 检查）与 /host/var/run/ossfs（metrics）使用
+            - name: host-root
+              mountPath: /host
+              mountPropagation: Bidirectional
       volumes:
         - name: registration-dir
           hostPath:
@@ -135,14 +186,14 @@ spec:
           hostPath:
             path: /var/lib/kubelet/csi-plugins/ossplugin.csi.alibabacloud.com
             type: DirectoryOrCreate
-        - name: pods-mount-dir
+        - name: kubelet-dir
           hostPath:
-            path: /var/lib/kubelet/pods
+            path: /var/lib/kubelet
             type: Directory
-        - name: host-root
+        - name: fuse-dir
           hostPath:
-            path: /
-            type: Directory
+            path: /run/fuse.ossfs
+            type: DirectoryOrCreate
         - name: host-dev
           hostPath:
             path: /dev
@@ -152,3 +203,7 @@ spec:
         - name: host-log
           hostPath:
             path: /var/log
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory

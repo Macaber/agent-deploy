@@ -5,14 +5,15 @@ metadata:
 provisioner: ossplugin.csi.alibabacloud.com
 parameters:
   bucket: "your-user-workspaces-bucket"        # 用于存储个人工作空间数据的 OSS Bucket
-  url: "oss-cn-hangzhou-internal.aliyuncs.com" # 内网 OSS Endpoint
+  # 内网 OSS Endpoint：显式带 http:// 协议（内网/专有云 OSS 走 http，不写协议会被 driver 强制补 https://）
+  url: "http://oss-cn-hangzhou-internal.aliyuncs.com"
   otherOpts: "-o max_stat_cache_size=100000 -o allow_other"
-  direct: "true"
-  fuseType: "direct"
+  # v1.30.4+ 仅支持 ossfs / ossfs2。不能填 direct：
+  # direct=true 是 rund/coco 沙箱专用，普通 containerd 集群上会跳过 FUSE Pod 创建导致挂载失败
+  fuseType: "ossfs"
 
-  # 保持与 NFS 统一，统一引用 default 命名空间下的 Secret 凭证
-  akIdSecret: "oss-secret"
-  akSecretSecret: "oss-secret"
+  # 凭证统一由 PV 的 controllerPublishSecretRef / nodePublishSecretRef 引用 Secret
+  # （新架构中 akIdSecret/akSecretSecret 参数已被 driver 废弃）
   csi.storage.k8s.io/provisioner-secret-name: "oss-secret"
   csi.storage.k8s.io/provisioner-secret-namespace: "default"
   csi.storage.k8s.io/node-publish-secret-name: "oss-secret"
