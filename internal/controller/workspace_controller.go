@@ -34,10 +34,14 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	aiv1alpha1 "github.com/example/workspace-operator/api/v1alpha1"
 )
+
+// workspaceFinalizer 保证 workspace 删除时有机会清理同名 PV
+const workspaceFinalizer = "ai.example.com/workspace-cleanup"
 
 // WorkspaceReconciler reconciles a Workspace object
 type WorkspaceReconciler struct {
@@ -69,6 +73,33 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// 删除处理：清理 PV 与存储介质数据后移除 finalizer（PVC 由 ownerRef 自动级联删除）。
+	// 语义与 NAS/Local 方案一致：删除 workspace 时 PV、PVC、存储介质数据一并删除。
+	// Local/NFS 的数据由各自 provisioner 在 PVC Delete 回收时清理；
+	// OSS 卷（Retain + CSI DeleteVolume 为空操作）由 cleanupPV 显式清空 OSS 数据。
+	if !ws.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(ws, workspaceFinalizer) {
+			if err := r.cleanupPV(ctx, ws); err != nil {
+				log.Error(err, "Failed to cleanup PV for deleted workspace")
+				return ctrl.Result{}, err
+			}
+			controllerutil.RemoveFinalizer(ws, workspaceFinalizer)
+			if err := r.Update(ctx, ws); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// 首次创建时添加 finalizer，保证后续删除时有机会清理 PV
+	if !controllerutil.ContainsFinalizer(ws, workspaceFinalizer) {
+		controllerutil.AddFinalizer(ws, workspaceFinalizer)
+		if err := r.Update(ctx, ws); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
 	}
 
 	// Initialize status Phase and LastActiveTime if not set
