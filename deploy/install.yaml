@@ -797,7 +797,7 @@ spec:
         env:
         - name: WORKSPACE_DOMAIN
           value: bocomcode
-        image: workspace-operator:v1.0.22
+        image: workspace-operator:v1.0.23
         livenessProbe:
           httpGet:
             path: /healthz

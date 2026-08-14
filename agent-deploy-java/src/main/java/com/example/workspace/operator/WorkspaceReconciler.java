@@ -432,6 +432,7 @@ public class WorkspaceReconciler implements Reconciler<Workspace> {
                     .build();
         }
 
+        Probe startupProbe = getStartupProbe(ws, containerPort);
         Probe readinessProbe = getReadinessProbe(ws, containerPort);
 
         Deployment existing = client.apps().deployments().inNamespace(namespace).withName(deployName).get();
@@ -477,6 +478,7 @@ public class WorkspaceReconciler implements Reconciler<Workspace> {
                                     .withResources(resources)
                                     .withVolumeMounts(volumeMounts)
                                     .withLifecycle(lifecycle)
+                                    .withStartupProbe(startupProbe)
                                     .withReadinessProbe(readinessProbe)
                                 .endContainer()
                                 .withVolumes(volumes)
@@ -585,6 +587,7 @@ public class WorkspaceReconciler implements Reconciler<Workspace> {
                     .withNewMetadata()
                         .withName(ingressName)
                         .withNamespace(namespace)
+                        .addToAnnotations("nginx.ingress.kubernetes.io/proxy-connect-timeout", "10")
                         .addToAnnotations("nginx.ingress.kubernetes.io/proxy-body-size", "100m")
                         .addToAnnotations("nginx.ingress.kubernetes.io/proxy-read-timeout", "86400")
                         .addToAnnotations("nginx.ingress.kubernetes.io/proxy-send-timeout", "86400")
@@ -629,6 +632,30 @@ public class WorkspaceReconciler implements Reconciler<Workspace> {
         return "http://" + host;
     }
 
+    private Probe getStartupProbe(Workspace ws, int containerPort) {
+        String healthPath = ws.getSpec().getRuntime() != null ? ws.getSpec().getRuntime().getHealthPath() : null;
+        if (healthPath != null && !healthPath.isBlank()) {
+            return new ProbeBuilder()
+                    .withNewHttpGet()
+                        .withPath(healthPath)
+                        .withPort(new IntOrString(containerPort))
+                    .endHttpGet()
+                    .withInitialDelaySeconds(1)
+                    .withPeriodSeconds(2)
+                    .withFailureThreshold(30)
+                    .build();
+        } else {
+            return new ProbeBuilder()
+                    .withNewTcpSocket()
+                        .withPort(new IntOrString(containerPort))
+                    .endTcpSocket()
+                    .withInitialDelaySeconds(1)
+                    .withPeriodSeconds(2)
+                    .withFailureThreshold(30)
+                    .build();
+        }
+    }
+
     private Probe getReadinessProbe(Workspace ws, int containerPort) {
         String healthPath = ws.getSpec().getRuntime() != null ? ws.getSpec().getRuntime().getHealthPath() : null;
         if (healthPath != null && !healthPath.isBlank()) {
@@ -637,18 +664,18 @@ public class WorkspaceReconciler implements Reconciler<Workspace> {
                         .withPath(healthPath)
                         .withPort(new IntOrString(containerPort))
                     .endHttpGet()
-                    .withInitialDelaySeconds(5)
-                    .withPeriodSeconds(5)
-                    .withFailureThreshold(30)
+                    .withInitialDelaySeconds(1)
+                    .withPeriodSeconds(2)
+                    .withFailureThreshold(3)
                     .build();
         } else {
             return new ProbeBuilder()
                     .withNewTcpSocket()
                         .withPort(new IntOrString(containerPort))
                     .endTcpSocket()
-                    .withInitialDelaySeconds(5)
-                    .withPeriodSeconds(5)
-                    .withFailureThreshold(30)
+                    .withInitialDelaySeconds(1)
+                    .withPeriodSeconds(2)
+                    .withFailureThreshold(3)
                     .build();
         }
     }

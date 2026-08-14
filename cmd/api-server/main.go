@@ -208,12 +208,12 @@ func getWorkspaceHandler(c client.Client) http.HandlerFunc {
 }
 
 // getEffectiveUserID returns the effective user ID for workspace creation and lookup.
-// If namespace is "bocomwork" and an env variable named "USER_CODE" exists with a non-empty value,
+// If namespace is "bocomwork" and an env variable named "USER_CODE" (case-insensitive) exists with a non-empty value,
 // that value replaces the incoming userID.
 func getEffectiveUserID(userID string, namespace string, envs []aiv1alpha1.EnvVar) string {
 	if namespace == "bocomwork" {
 		for _, env := range envs {
-			if env.Name == "USER_CODE" && strings.TrimSpace(env.Value) != "" {
+			if strings.EqualFold(env.Name, "USER_CODE") && strings.TrimSpace(env.Value) != "" {
 				return strings.TrimSpace(env.Value)
 			}
 		}
@@ -453,7 +453,7 @@ func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha
 }
 
 // pollWorkspaceRunning polls the workspace status until it reaches Running or Failed state,
-// writing the JSON result to the ResponseWriter.
+// and verifies that the Ingress route is healthy and serving before writing the JSON result.
 func pollWorkspaceRunning(ctx context.Context, c client.Client, w http.ResponseWriter, userID, wsName, namespace, timeoutMsg string) {
 	timeout := time.After(90 * time.Second)
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -484,17 +484,158 @@ func pollWorkspaceRunning(ctx context.Context, c client.Client, w http.ResponseW
 			}
 
 			if currentWs.Status.Phase == aiv1alpha1.WorkspaceRunning {
-				url := getWorkspaceURL(userID, wsName, currentWs.Status.Endpoint)
+				if probeWorkspaceViaIngress(ctx, userID, wsName, currentWs) {
+					url := getWorkspaceURL(userID, wsName, currentWs.Status.Endpoint)
 
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]string{
-					"url":   url,
-					"phase": string(currentWs.Status.Phase),
-				})
-				return
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]string{
+						"url":   url,
+						"phase": string(currentWs.Status.Phase),
+					})
+					return
+				}
+				// Ingress route still warming up or 404/503; continue polling until Ingress is ready
 			}
 		}
 	}
+}
+
+// probeWorkspaceViaIngress sends an HTTP GET probe through Ingress to verify route readiness.
+// When namespace is "bocomwork", it sets Cookie: oa=<effectiveID> (where effectiveID respects USER_CODE if configured)
+// and probes the bocomwork Ingress endpoint.
+func probeWorkspaceViaIngress(ctx context.Context, userID, wsName string, ws *aiv1alpha1.Workspace) bool {
+	healthPath := ws.Spec.Runtime.HealthPath
+	if healthPath == "" {
+		healthPath = "/health"
+	}
+	if !strings.HasPrefix(healthPath, "/") {
+		healthPath = "/" + healthPath
+	}
+
+	effectiveID := getEffectiveUserID(userID, ws.Namespace, ws.Spec.Runtime.Env)
+	if effectiveID == "" && ws.Spec.Owner != "" {
+		effectiveID = ws.Spec.Owner
+	}
+
+	var cookieHeader string
+	var probeURL string
+
+	if ws.Namespace == "bocomwork" {
+		// In bocomwork namespace, Ingress routes via Cookie: oa=<effectiveID> (or WorkspaceUser)
+		cookieHeader = fmt.Sprintf("oa=%s; WorkspaceUser=%s", effectiveID, effectiveID)
+
+		var probeBaseURL string
+		if envProbe := os.Getenv("WORKSPACE_INGRESS_PROBE_URL"); envProbe != "" {
+			probeBaseURL = envProbe
+		} else if envBase := os.Getenv("WORKSPACE_BASE_URL"); envBase != "" {
+			probeBaseURL = envBase
+		}
+
+		if probeBaseURL != "" {
+			basePrefix := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(probeBaseURL, "/"), "/ws"), "/")
+			probeURL = fmt.Sprintf("%s%s", basePrefix, healthPath)
+		} else {
+			endpoint := ws.Status.Endpoint
+			if endpoint == "" {
+				domain := os.Getenv("WORKSPACE_DOMAIN")
+				if domain == "" {
+					domain = "localhost"
+				}
+				endpoint = fmt.Sprintf("%s.%s", wsName, domain)
+			}
+			probeURL = fmt.Sprintf("http://%s%s", endpoint, healthPath)
+		}
+	} else {
+		// Non-bocomwork namespace: standard probing
+		cookieHeader = fmt.Sprintf("WorkspaceUser=%s", effectiveID)
+
+		endpoint := ws.Status.Endpoint
+		if endpoint == "" {
+			baseURL := os.Getenv("WORKSPACE_BASE_URL")
+			if baseURL != "" {
+				probeURL = fmt.Sprintf("%s%s", strings.TrimSuffix(baseURL, "/"), healthPath)
+			} else {
+				domain := os.Getenv("WORKSPACE_DOMAIN")
+				if domain == "" {
+					domain = "localhost"
+				}
+				endpoint = fmt.Sprintf("%s.%s", wsName, domain)
+				probeURL = fmt.Sprintf("http://%s%s", endpoint, healthPath)
+			}
+		} else {
+			probeURL = fmt.Sprintf("http://%s%s", endpoint, healthPath)
+		}
+	}
+
+	if doSingleProbe(ctx, probeURL, cookieHeader) {
+		return true
+	}
+
+	// If healthPath was not explicitly specified and returned non-healthy, fallback to probe root "/"
+	if ws.Spec.Runtime.HealthPath == "" && healthPath != "/" {
+		var rootProbeURL string
+		if ws.Namespace == "bocomwork" {
+			var probeBaseURL string
+			if envProbe := os.Getenv("WORKSPACE_INGRESS_PROBE_URL"); envProbe != "" {
+				probeBaseURL = envProbe
+			} else if envBase := os.Getenv("WORKSPACE_BASE_URL"); envBase != "" {
+				probeBaseURL = envBase
+			}
+			if probeBaseURL != "" {
+				basePrefix := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(probeBaseURL, "/"), "/ws"), "/")
+				rootProbeURL = fmt.Sprintf("%s/", basePrefix)
+			} else {
+				rootProbeURL = fmt.Sprintf("http://%s/", ws.Status.Endpoint)
+			}
+		} else {
+			rootProbeURL = fmt.Sprintf("http://%s/", ws.Status.Endpoint)
+		}
+		if doSingleProbe(ctx, rootProbeURL, cookieHeader) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// doSingleProbe sends a single probe request with Cookie header and checks whether Ingress successfully forwarded to the Pod.
+func doSingleProbe(ctx context.Context, probeURL, cookieHeader string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
+	if err != nil {
+		log.Printf("Failed to create Ingress probe request for %s: %v", probeURL, err)
+		return false
+	}
+
+	if cookieHeader != "" {
+		req.Header.Set("Cookie", cookieHeader)
+	}
+	req.Header.Set("User-Agent", "Workspace-Ingress-Probe/1.0")
+
+	probeClient := &http.Client{
+		Timeout: 2 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	resp, err := probeClient.Do(req)
+	if err != nil {
+		log.Printf("Ingress probe to %s failed (network/connect): %v", probeURL, err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		log.Printf("Ingress probe to %s succeeded (status: %d)", probeURL, resp.StatusCode)
+		return true
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		log.Printf("Ingress probe to %s reached target application (status: %d)", probeURL, resp.StatusCode)
+		return true
+	}
+
+	log.Printf("Ingress probe to %s waiting for route sync (status: %d)", probeURL, resp.StatusCode)
+	return false
 }
 
 func stopWorkspaceHandler(c client.Client) http.HandlerFunc {

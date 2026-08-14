@@ -744,6 +744,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 									Resources:       resources,
 									VolumeMounts:    volumeMounts,
 									Lifecycle:       lifecycle,
+									StartupProbe:    getStartupProbe(ws),
 									ReadinessProbe:  getReadinessProbe(ws),
 								},
 							},
@@ -781,6 +782,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	deploy.Spec.Template.Spec.InitContainers = initContainers
 	deploy.Spec.Template.Spec.Containers[0].VolumeMounts = volumeMounts
 	deploy.Spec.Template.Spec.Containers[0].Lifecycle = lifecycle
+	deploy.Spec.Template.Spec.Containers[0].StartupProbe = getStartupProbe(ws)
 	deploy.Spec.Template.Spec.Containers[0].ReadinessProbe = getReadinessProbe(ws)
 	deploy.Spec.Template.Spec.Volumes = volumes
 	deploy.Spec.Template.Spec.TerminationGracePeriodSeconds = int64Ptr(2)
@@ -923,6 +925,7 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 					Namespace: ws.Namespace,
 					Labels:    labels,
 					Annotations: map[string]string{
+						"nginx.ingress.kubernetes.io/proxy-connect-timeout":     "10",
 						"nginx.ingress.kubernetes.io/proxy-body-size":           "100m",
 						"nginx.ingress.kubernetes.io/proxy-read-timeout":        "86400",
 						"nginx.ingress.kubernetes.io/proxy-send-timeout":        "86400",
@@ -949,6 +952,7 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 	if ingress.Annotations == nil {
 		ingress.Annotations = make(map[string]string)
 	}
+	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-connect-timeout"] = "10"
 	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-body-size"] = "100m"
 	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-read-timeout"] = "86400"
 	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-send-timeout"] = "86400"
@@ -991,28 +995,38 @@ func getWorkspaceHost(wsName string) string {
 	return fmt.Sprintf("%s.%s", wsName, domain)
 }
 
-func getReadinessProbe(ws *aiv1alpha1.Workspace) *corev1.Probe {
-	var handler corev1.ProbeHandler
+func getProbeHandler(ws *aiv1alpha1.Workspace) corev1.ProbeHandler {
 	if ws.Spec.Runtime.HealthPath != "" {
-		handler = corev1.ProbeHandler{
+		return corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Path: ws.Spec.Runtime.HealthPath,
 				Port: intstr.FromString("http"),
 			},
 		}
-	} else {
-		handler = corev1.ProbeHandler{
-			TCPSocket: &corev1.TCPSocketAction{
-				Port: intstr.FromString("http"),
-			},
-		}
 	}
+	return corev1.ProbeHandler{
+		TCPSocket: &corev1.TCPSocketAction{
+			Port: intstr.FromString("http"),
+		},
+	}
+}
 
+func getStartupProbe(ws *aiv1alpha1.Workspace) *corev1.Probe {
 	return &corev1.Probe{
-		ProbeHandler:        handler,
-		InitialDelaySeconds: 0,
-		PeriodSeconds:       1,
+		ProbeHandler:        getProbeHandler(ws),
+		InitialDelaySeconds: 1,
+		PeriodSeconds:       2,
 		SuccessThreshold:    1,
 		FailureThreshold:    30,
+	}
+}
+
+func getReadinessProbe(ws *aiv1alpha1.Workspace) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler:        getProbeHandler(ws),
+		InitialDelaySeconds: 1,
+		PeriodSeconds:       2,
+		SuccessThreshold:    1,
+		FailureThreshold:    3,
 	}
 }

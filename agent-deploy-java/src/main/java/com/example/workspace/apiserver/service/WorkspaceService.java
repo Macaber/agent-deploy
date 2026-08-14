@@ -82,7 +82,7 @@ public class WorkspaceService {
     public static String getEffectiveUserId(String userId, String namespace, List<EnvVar> envList) {
         if ("bocomwork".equals(namespace) && envList != null) {
             for (EnvVar env : envList) {
-                if ("USER_CODE".equals(env.getName()) && env.getValue() != null && !env.getValue().isBlank()) {
+                if ("USER_CODE".equalsIgnoreCase(env.getName()) && env.getValue() != null && !env.getValue().isBlank()) {
                     return env.getValue().trim();
                 }
             }
