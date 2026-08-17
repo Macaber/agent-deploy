@@ -36,9 +36,13 @@ graph TD
 
 ```bash
 # 1. 创建统一的离线部署资源目录
-mkdir -p ./deploy/local ./deploy/nfs ./deploy/oss
+mkdir -p ./deploy/local ./deploy/nfs ./deploy/oss ./deploy/kata
 
-# 2. 拉取外部依赖及基础镜像 (注意：开发机为 Mac 时，必须指定 --platform linux/amd64 以确保拉取 x86 镜像)
+# 2. 下载 Kata Containers 静态运行环境包 (针对 x86_64 / amd64 物理节点)
+# 官方下载: wget -P ./deploy/kata/ https://github.com/kata-containers/kata-containers/releases/download/3.23.0/kata-static-3.23.0-amd64.tar.zst
+# 加速下载: curl -Lo ./deploy/kata/kata-static-3.23.0-amd64.tar.zst https://ghfast.top/https://github.com/kata-containers/kata-containers/releases/download/3.23.0/kata-static-3.23.0-amd64.tar.zst
+
+# 3. 拉取外部依赖及基础镜像 (注意：开发机为 Mac 时，必须指定 --platform linux/amd64 以确保拉取 x86 镜像)
 docker pull --platform linux/amd64 smanx/opencode:latest
 docker pull --platform linux/amd64 registry.k8s.io/ingress-nginx/controller:v1.9.4
 docker pull --platform linux/amd64 registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.4.0
@@ -492,19 +496,70 @@ grep -E -c '(vmx|svm)' /proc/cpuinfo
 # 加载宿主机 KVM 内核模块
 modprobe kvm
 modprobe kvm_intel # 若为 AMD CPU 则为 modprobe kvm_amd
-ls -l /dev/kvm     # 确认设备文件存在
+ls -l /dev/kvm     # 确认设备文件存在 (crw-rw---- 1 root kvm ...)
 ```
 
-#### 2. 离线安装 Kata Containers 静态运行环境
-将 `kata-static`（推荐 v3.2.0+ 或 v2.5.x for K8s 1.25）压缩包拷贝至各物理节点解压至 `/opt/kata`：
+#### 2. 离线安装 Kata Containers 静态运行环境 (`kata-static-3.23.0-amd64.tar.zst`)
+
+> 💡 **文件格式说明**：`.tar.zst` 是采用高压缩比与超快解压速度的 **Zstandard (`zstd`)** 压缩格式。解压后文件会自动部署到 `/opt/kata` 目录下。
+
+##### 【情况 A：宿主机已安装 `zstd` 工具（推荐）】
+直接使用以下任一命令解压至根目录 `/`：
+
 ```bash
-tar -xvf kata-static-3.2.0-x86_64.tar.xz -C /
-# kata 相关二进制与 shim 将位于 /opt/kata/bin/
-ln -sf /opt/kata/bin/containerd-shim-kata-v2 /usr/local/bin/containerd-shim-kata-v2
+# 方式 1：tar 直接指定 zstd 解压（tar >= 1.31 默认支持 --zstd 或 -I zstd）
+sudo tar --zstd -xvf kata-static-3.23.0-amd64.tar.zst -C /
+# 或：sudo tar -I zstd -xvf kata-static-3.23.0-amd64.tar.zst -C /
+
+# 方式 2：使用 zstd 管道解压
+zstd -d kata-static-3.23.0-amd64.tar.zst -c | sudo tar -xvf - -C /
+
+# 方式 3：分步解压（先解压为 .tar 文件，再用普通 tar 解压）
+unzstd kata-static-3.23.0-amd64.tar.zst   # 会在当前目录生成 kata-static-3.23.0-amd64.tar
+sudo tar -xvf kata-static-3.23.0-amd64.tar -C /
 ```
+
+##### 【情况 B：离线生产宿主机【未安装 `zstd`】（两种解决方案）】
+
+* **方案 1（最便捷推荐：在有网开发机/跳板机转为普通 `.tar` 再拷贝）**：
+  在能联网的开发机或中转电脑上，将 `.tar.zst` 转解为标准的 `.tar`：
+  ```bash
+  # 开发机上先安装 zstd（Mac: brew install zstd / Linux: apt/yum install zstd）
+  unzstd kata-static-3.23.0-amd64.tar.zst -o kata-static.tar
+  ```
+  然后只需将解出来的 **`kata-static.tar`** 拷贝到离线生产节点，离线节点无需安装任何额外工具，直接使用原生 `tar` 解压即可：
+  ```bash
+  sudo tar -xvf kata-static.tar -C /
+  ```
+
+* **方案 2（离线节点安装 `zstd` 工具包）**：
+  在有网机器上下载对应操作系统的 `zstd` 安装包并拷贝至离线节点安装：
+  ```bash
+  # CentOS / RHEL / Rocky Linux:
+  # 离线下载 zstd rpm: yum install --downloadonly --downloaddir=. zstd
+  sudo rpm -ivh zstd-*.rpm
+
+  # Ubuntu / Debian:
+  # 离线下载 zstd deb: apt-get download zstd
+  sudo dpkg -i zstd_*.deb
+  ```
+
+##### 【配置系统软链接与健康检查】
+解压完成后，在所有 Worker 节点执行：
+```bash
+# 1. 将 containerd-shim 软链接到系统标准 PATH 目录
+sudo ln -sf /opt/kata/bin/containerd-shim-kata-v2 /usr/local/bin/containerd-shim-kata-v2
+
+# 2. 执行 Kata 运行环境自检
+/opt/kata/bin/kata-runtime kata-check
+```
+> 若 `kata-check` 输出末尾显示 `System is capable of running Kata Containers`，即表示该节点的 KVM 硬件虚拟化与内核参数完全就绪！
+
+---
 
 #### 3. 配置 containerd (`/etc/containerd/config.toml`)
-编辑 containerd 配置文件，在 runtimes 中注册 `kata` 运行时：
+编辑 containerd 配置文件（通常位于 `/etc/containerd/config.toml`），在 runtimes 中注册 `kata` 运行时：
+
 ```toml
 [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata]
   runtime_type = "io.containerd.kata.v2"
@@ -512,14 +567,18 @@ ln -sf /opt/kata/bin/containerd-shim-kata-v2 /usr/local/bin/containerd-shim-kata
   [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata.options]
     ConfigPath = "/opt/kata/share/defaults/kata-containers/configuration.toml"
 ```
-重启 containerd 引擎：
+
+重启 containerd 引擎使配置生效：
 ```bash
-systemctl daemon-reload
-systemctl restart containerd
+sudo systemctl daemon-reload
+sudo systemctl restart containerd
 ```
+
+---
 
 #### 4. 在 K8s 集群中创建 `RuntimeClass`
 在 Master 节点执行，注册集群级 `kata` RuntimeClass：
+
 ```yaml
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
@@ -535,6 +594,12 @@ metadata:
   name: kata
 handler: kata
 EOF
+```
+
+验证 RuntimeClass 注册成功：
+```bash
+kubectl get runtimeclass
+# 输出应包含: kata   kata   ...
 ```
 
 ---
