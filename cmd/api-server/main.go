@@ -98,9 +98,11 @@ type workspaceRequest struct {
 	VolumeMounts          []aiv1alpha1.VolumeMount          `json:"volumeMounts,omitempty"`
 	PostStartScript       string                            `json:"postStartScript,omitempty"`
 	HealthPath            string                            `json:"healthPath,omitempty"`
+	RuntimeClassName      *string                           `json:"runtimeClassName,omitempty"`
 	SharedVolumeMounts    []aiv1alpha1.SharedVolumeMount    `json:"sharedVolumeMounts,omitempty"`
 	ConfigMapVolumeMounts []aiv1alpha1.ConfigMapVolumeMount `json:"configMapVolumeMounts,omitempty"`
 	InitContainers        []aiv1alpha1.InitContainerSpec    `json:"initContainers,omitempty"`
+	NetworkPolicy         *aiv1alpha1.WorkspaceNetworkPolicySpec `json:"networkPolicy,omitempty"`
 }
 
 // workspaceItem is the JSON response type for listing workspaces.
@@ -311,10 +313,11 @@ func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequ
 				Env:             req.Env,
 				Command:         cmdList,
 				Args:            req.Args,
-				VolumeMounts:    req.VolumeMounts,
-				PostStartScript: req.PostStartScript,
-				HealthPath:      req.HealthPath,
-				InitContainers:  req.InitContainers,
+				VolumeMounts:     req.VolumeMounts,
+				PostStartScript:  req.PostStartScript,
+				HealthPath:       req.HealthPath,
+				RuntimeClassName: req.RuntimeClassName,
+				InitContainers:   req.InitContainers,
 			},
 			Storage: aiv1alpha1.StorageSpec{
 				Size:         storageSize,
@@ -322,6 +325,7 @@ func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequ
 			},
 			SharedVolumeMounts:    req.SharedVolumeMounts,
 			ConfigMapVolumeMounts: req.ConfigMapVolumeMounts,
+			NetworkPolicy:         req.NetworkPolicy,
 		},
 	}
 	return c.Create(ctx, ws)
@@ -420,6 +424,14 @@ func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha
 		}
 		if req.InitContainers != nil && isSliceDifferent(currentWs.Spec.Runtime.InitContainers, req.InitContainers) {
 			currentWs.Spec.Runtime.InitContainers = req.InitContainers
+			needsUpdate = true
+		}
+		if req.RuntimeClassName != nil && (currentWs.Spec.Runtime.RuntimeClassName == nil || *currentWs.Spec.Runtime.RuntimeClassName != *req.RuntimeClassName) {
+			currentWs.Spec.Runtime.RuntimeClassName = req.RuntimeClassName
+			needsUpdate = true
+		}
+		if req.NetworkPolicy != nil && !reflect.DeepEqual(currentWs.Spec.NetworkPolicy, req.NetworkPolicy) {
+			currentWs.Spec.NetworkPolicy = req.NetworkPolicy
 			needsUpdate = true
 		}
 

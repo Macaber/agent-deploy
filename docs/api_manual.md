@@ -76,8 +76,9 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   | **`args`** | `array` | 否 | - | 自定义容器启动入口命令参数 (对应 `CMD`)，如 `["-g", "daemon off;"]`。 |
   | **`volumeMounts`** | `array` | 否 | - | 自定义持久卷在容器内的挂载路径及卷内子目录映射。如 `[{"mountPath": "/app", "subPath": "app-dir"}]`。 |
   | **`sharedVolumeMounts`** | `array` | 否 | - | 预先存在的共享存储卷 (PVC) 挂载配置列表。支持 `readOnly` 属性，格式为 `[{"pvcName": "shared-pvc", "mountPath": "/shared", "subPath": "subdir", "readOnly": true}]`。 |
-  | **`configMapVolumeMounts`** | `array` | 否 | - | Kubernetes ConfigMap 卷挂载配置列表。支持 `readOnly` 属性，格式为 `[{"configMapName": "bocomwork-config", "mountPath": "/etc/bocomwork", "subPath": "config.yaml", "readOnly": true}]`。 |
   | **`initContainers`** | `array` | 否 | - | **初始化容器配置列表**。在主容器启动前依次运行的初始化容器。支持 `name`, `image`, `command`, `args`, `env`, `volumeMounts`, `sharedVolumeMounts`, `configMapVolumeMounts` 字段。 |
+  | **`runtimeClassName`** | `string` | 否 | - | **容器运行时沙箱名称**（例如 `"kata"`、`"kata-qemu"` 等）。指定后将由 Kata Containers 独立 MicroVM 内核沙箱拉起 Pod，从物理底层彻底防止宿主机内核逃逸。 |
+  | **`networkPolicy`** | `object` | 否 | - | **工作空间专属网络安全策略配置**。包含 `disabled` (是否禁用策略，默认 `false`)、`blockedCIDRs` (自定义禁止出站的私有网段列表，缺省拦截 RFC1918 与云元数据 `169.254.169.254/32`)、`allowedCIDRs` (精准白名单放行的内网 IP/网段列表，如私有 LLM 网关)。 |
   | **`postStartScript`** | `string` | 否 | - | **K8s 原生生命周期钩子**。容器启动后立即在后台异步运行的多行 Shell 脚本。 |
   | **`healthPath`** | `string` | 否 | - | **自定义就绪探针 HTTP 路径**。若指定（例如 `"/health"`），K8s 将使用 HTTP GET 探测此路径；若不指定或为空，默认回退使用 TCP 协议对暴露端口（`port`）进行存活健康探测。 |
 
@@ -94,6 +95,20 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
     "storageClass": "alicloud-oss",
     "idleTimeout": "30m",
     "exposeSSH": true,
+    "runtimeClassName": "kata",
+    "networkPolicy": {
+      "disabled": false,
+      "blockedCIDRs": [
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.169.254/32"
+      ],
+      "allowedCIDRs": [
+        "10.10.20.5/32",
+        "192.168.1.100/32"
+      ]
+    },
     "env": [
       {
         "name": "OPENCODE_RESOURCE_ATTRIBUTES",
@@ -218,3 +233,35 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 - **错误响应**：
   - `400 Bad Request`：请求体 JSON 格式错误或缺失 `userId`。
   - `500 Internal Server Error`：修改 Kubernetes 中资源规格失败。
+
+---
+
+## 附录：Agent Sandbox 三维安全隔离机制说明
+
+针对运行具有代码执行和 Shell 命令运行能力的 AI Agent（如 OpenCode、Pi 等），平台在 API-Server 与底层 Operator 中内置了三层隔离防护体系：
+
+```
+                Agent Sandbox
+                     │
+        ┌────────────┼────────────┐
+        │            │            │
+      Kata          RBAC       NetworkPolicy
+        │            │            │
+        │            │            │
+   Kernel隔离     API隔离       网络隔离
+        │            │            │
+        └────────────┼────────────┘
+                     │
+                 Workspace
+```
+
+1. **Kernel 隔离 (Kata Containers / MicroVM)**：
+   * 在创建请求中指定 `"runtimeClassName": "kata"`，Pod 将运行在轻量级独立虚拟机（MicroVM）内核中，与宿主机内核物理隔离，从底层阻断任何容器逃逸提权。
+2. **API & 环境变量隔离 (RBAC & 阻断服务发现)**：
+   * **阻断环境变量互现 (`EnableServiceLinks: false`)**：默认关闭同 Namespace 下其他 Service 的环境变量注入，彻底解决 `ws-a` 在容器环境变量中嗅探到 `ws-b` 内网路由地址的问题。
+   * **阻断 K8s API 访问 (`AutomountServiceAccountToken: false`)**：默认不挂载 ServiceAccount Token，防止 Agent 容器内调用 K8s API 进行集群侦察。
+3. **网络隔离 (NetworkPolicy 零信任)**：
+   * **南北向入站**：仅允许 Ingress 网关访问当前工作空间端口（8080/80/22）。
+   * **东西向横向**：严禁多个 Agent Pod 之间相互探测与直连通信。
+   * **出站（Egress）管控**：放行 DNS（UDP/TCP 53）与外部公网（`0.0.0.0/0`），默认拦截私网网段（`10/8`, `172.16/12`, `192.168/16`）及云元数据（`169.254.169.254/32`）；同时支持通过 `allowedCIDRs` 精准放行企业私有 LLM 网关。
+

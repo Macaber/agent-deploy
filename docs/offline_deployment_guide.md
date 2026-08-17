@@ -458,7 +458,150 @@ spec:
 
 ---
 
-## 步骤 7：验证运行与持久化
+## 步骤 7：Agent Sandbox 三维安全隔离配置 (Kata + RBAC + NetworkPolicy)
+
+在运行自主型 AI Agent（如 OpenCode、Pi 等具有代码执行、系统 Shell 与网络访问能力的 Agent）时，为了彻底防范容器逃逸、内网横向移动与环境变量凭据泄露，系统已内置三维安全沙箱：
+
+```
+                Agent Sandbox
+                     │
+        ┌────────────┼────────────┐
+        │            │            │
+      Kata          RBAC       NetworkPolicy
+        │            │            │
+        │            │            │
+   Kernel隔离     API隔离       网络隔离
+        │            │            │
+        └────────────┼────────────┘
+                     │
+                 Workspace
+```
+
+---
+
+### 7.1 维度一：Kernel 隔离 (Kata Containers 离线部署与 containerd 配置)
+
+适用于 Kubernetes v1.25.5 + containerd + linux/amd64 生产宿主机环境：
+
+#### 1. 检查物理节点虚拟化支持
+在所有 Worker 物理节点上检查 CPU 硬件虚拟化支持：
+```bash
+# 确认 CPU 开启 VT-x / AMD-V 支持 (输出大于 0 即支持)
+grep -E -c '(vmx|svm)' /proc/cpuinfo
+
+# 加载宿主机 KVM 内核模块
+modprobe kvm
+modprobe kvm_intel # 若为 AMD CPU 则为 modprobe kvm_amd
+ls -l /dev/kvm     # 确认设备文件存在
+```
+
+#### 2. 离线安装 Kata Containers 静态运行环境
+将 `kata-static`（推荐 v3.2.0+ 或 v2.5.x for K8s 1.25）压缩包拷贝至各物理节点解压至 `/opt/kata`：
+```bash
+tar -xvf kata-static-3.2.0-x86_64.tar.xz -C /
+# kata 相关二进制与 shim 将位于 /opt/kata/bin/
+ln -sf /opt/kata/bin/containerd-shim-kata-v2 /usr/local/bin/containerd-shim-kata-v2
+```
+
+#### 3. 配置 containerd (`/etc/containerd/config.toml`)
+编辑 containerd 配置文件，在 runtimes 中注册 `kata` 运行时：
+```toml
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata]
+  runtime_type = "io.containerd.kata.v2"
+  privileged_without_host_devices = true
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata.options]
+    ConfigPath = "/opt/kata/share/defaults/kata-containers/configuration.toml"
+```
+重启 containerd 引擎：
+```bash
+systemctl daemon-reload
+systemctl restart containerd
+```
+
+#### 4. 在 K8s 集群中创建 `RuntimeClass`
+在 Master 节点执行，注册集群级 `kata` RuntimeClass：
+```yaml
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata
+handler: kata
+```
+```bash
+kubectl apply -f - <<EOF
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata
+handler: kata
+EOF
+```
+
+---
+
+### 7.2 维度二：API & 服务发现隔离 (RBAC & 环境变量阻断)
+
+* **环境变量自动注入阻断 (`EnableServiceLinks: false`)**：
+  Kubernetes 默认会在 Pod 启动时将同命名空间下**所有已存在的 Service** 注入为容器的环境变量（例如 `WS_B_SVC_SERVICE_HOST` 等）。Operator 默认在生成的 Pod 中注入 `enableServiceLinks: false`，彻底杜绝 `ws-a` 获取 `ws-b` 的服务内网 IP 与端口。
+* **K8s API 凭据阻断 (`AutomountServiceAccountToken: false`)**：
+  默认关闭 ServiceAccount Token 自动挂载，Agent 容器内无法获取 `/var/run/secrets/kubernetes.io/serviceaccount/token`，杜绝调用 K8s API 进行集群侦察或提权。
+
+---
+
+### 7.3 维度三：网络隔离 (NetworkPolicy 零信任安全网)
+
+Operator 在创建 Workspace 时会自动创建同名的 `<workspace-name>-netpol` 网络策略：
+1. **南北向入站 (Ingress)**：仅放行来自 Ingress 网关发往 Workspace 容器端口（8080/80/22）的流量，拦截同命名空间内其他 Pod 的跨空间直连。
+2. **东西向横向阻断**：严禁 `ws-a` 与 `ws-b` 相互直接探测与通信。
+3. **出站安全出口 (Egress - 动态可配置)**：
+   * 允许访问集群 CoreDNS（UDP/TCP 53）进行正常域名解析；
+   * 允许访问外部公网（`0.0.0.0/0`），方便 Agent 访问 GitHub、拉取包依赖、调用 LLM API；
+   * **出站拦截网段支持【集群全局环境变量】与【工作空间 CR】两级动态配置**：
+     * **方式 A（全局默认配置）**：在 Operator 控制器 Deployment 中配置 `DEFAULT_BLOCKED_EGRESS_CIDRS` 环境变量（逗号分隔，如 `"10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.169.254/32"`）。缺省未配置时自动采用标准的 RFC1918 私网网段 + 云元数据 IP。
+     * **方式 B（工作空间自定义）**：在 Workspace CR 的 `spec.networkPolicy.blockedCIDRs` 中自定义禁止访问的私网网段。
+     * **白名单内网放行（如私有 LLM 代理/内网 GitLab）**：可在 `spec.networkPolicy.allowedCIDRs` 中添加明确放行的内网 IP/CIDR（如 `["10.10.20.5/32", "192.168.1.100/32"]`），在整体拦截内网的同时精准放行企业内部模型服务。
+
+> **CNI 插件要求**：确保集群 CNI 插件支持 NetworkPolicy（如 Calico、Cilium、Kube-router 或阿里云 ACK Terway）。
+
+---
+
+### 7.4 在 Workspace 中启用 Kata 沙箱与自定义网络策略
+
+在提交 Workspace CR 时，通过 `spec.runtime.runtimeClassName: "kata"` 启用 MicroVM 内核沙箱，并在 `spec.networkPolicy` 中灵活指定拦截/放行网段：
+
+```yaml
+apiVersion: ai.example.com/v1alpha1
+kind: Workspace
+metadata:
+  name: ws-agent-secure
+  namespace: default
+spec:
+  owner: "user-001"
+  runtime:
+    image: "smanx/opencode:latest"
+    runtimeClassName: "kata"       # 核心参数：开启 Kata 独立内核沙箱
+    cpu: "2"
+    memory: "4Gi"
+  storage:
+    size: "10Gi"
+    storageClass: "local-path"
+  networkPolicy:
+    disabled: false               # 默认为 false，自动生成 NetworkPolicy
+    # 自定义禁止出站的私有网段（缺省时使用系统默认: 10/8, 172.16/12, 192.168/16, 169.254.169.254/32）
+    blockedCIDRs:
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+      - "192.168.0.0/16"
+      - "169.254.169.254/32"
+    # 精准白名单放行（如公司内网私有大模型网关或内网代码库）
+    allowedCIDRs:
+      - "10.10.20.5/32"           # 内部 LLM Gateway
+      - "192.168.1.100/32"        # 内部私有 GitLab
+```
+
+---
+
+## 步骤 8：验证运行、安全隔离与持久化
 
 1. 打开浏览器访问 API Server Launcher 管理页面 (`http://<节点IP>:30000`)。
 2. 创建或启动一个工作空间，观察 Pod 启动日志。
@@ -466,22 +609,30 @@ spec:
 
    ```bash
    # 查看存储卷声明状态 (Local-path, NFS 或 OSS PVC 应均为 Bound 状态)
-   kubectl get pvc -n bocomwork
+   kubectl get pvc -n default
 
    # 查看自动生成或绑定的 PV 及其存储类名称
    kubectl get pv
-
-   # OSS 方案专属验证：
-   # 1. VolumeAttachment 状态必须为 true（FUSE Pod 创建成功的标志）
-   kubectl get volumeattachments
-
-   # 2. 每个已挂载的 OSS 卷在 ack-csi-fuse 命名空间下对应一个 FUSE Pod
-   kubectl -n ack-csi-fuse get pods -o wide
-
-   # 3. 挂载失败时查看 FUSE Pod 日志（常见原因：凭证缺失、OSS URL 不可达）
-   kubectl -n ack-csi-fuse logs <fuse-pod-name>
    ```
 
-> **存量 PV 迁移提示**：若集群中存在按旧版本创建的 OSS PV（含 `fuseType: direct` 等旧属性），因 PV 的 `volumeAttributes` 不可变，需删除旧 PV/PVC 后由 Operator 重新创建（`Retain` 回收策略下 OSS 数据不受影响）。
+4. **验证 Agent 安全沙箱隔离效果**：
 
-4. 工作空间进入 `Running` 后，尝试写入数据文件，确认停止并重新启动后数据完美恢复。
+   ```bash
+   # 1. 验证独立 Guest OS 内核 (Kata Pod 的内核版本与宿主机独立)
+   kubectl exec -it <workspace-pod-name> -- uname -r
+
+   # 2. 验证环境变量隔离 (确认不再包含其他 Workspace 的 SERVICE_HOST/PORT 变量)
+   kubectl exec -it <workspace-pod-name> -- env | grep _SERVICE_
+
+   # 3. 验证 API Token 阻断 (确认不存在 SA token 挂载)
+   kubectl exec -it <workspace-pod-name> -- ls /var/run/secrets/kubernetes.io/serviceaccount
+
+   # 4. 验证网络策略生效 (确认 NetworkPolicy 正常创建)
+   kubectl get netpol -n default
+
+   # 5. 验证云元数据与内网拦截 (请求 169.254.169.254 与内网 IP 将被丢弃超时)
+   kubectl exec -it <workspace-pod-name> -- curl --connect-timeout 2 http://169.254.169.254/latest/meta-data/
+   ```
+
+5. 工作空间进入 `Running` 后，尝试写入数据文件，确认停止并重新启动后数据完美恢复。
+

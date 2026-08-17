@@ -59,6 +59,7 @@ type WorkspaceReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -144,6 +145,11 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	endpoint, err := r.reconcileIngress(ctx, ws, svcName)
 	if err != nil {
 		log.Error(err, "Failed to reconcile Ingress")
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileNetworkPolicy(ctx, ws); err != nil {
+		log.Error(err, "Failed to reconcile NetworkPolicy")
 		return ctrl.Result{}, err
 	}
 
@@ -729,9 +735,11 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 							Labels: labels,
 						},
 						Spec: corev1.PodSpec{
+							RuntimeClassName:              ws.Spec.Runtime.RuntimeClassName,
 							InitContainers:                initContainers,
 							TerminationGracePeriodSeconds: int64Ptr(2),
 							AutomountServiceAccountToken:  boolPtr(false),
+							EnableServiceLinks:            boolPtr(false),
 							Containers: []corev1.Container{
 								{
 									Name:            "runtime",
@@ -772,6 +780,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	deploy.Spec.Strategy = appsv1.DeploymentStrategy{
 		Type: appsv1.RecreateDeploymentStrategyType,
 	}
+	deploy.Spec.Template.Spec.RuntimeClassName = ws.Spec.Runtime.RuntimeClassName
 	deploy.Spec.Template.Spec.Containers[0].Image = ws.Spec.Runtime.Image
 	deploy.Spec.Template.Spec.Containers[0].ImagePullPolicy = corev1.PullIfNotPresent
 	deploy.Spec.Template.Spec.Containers[0].Command = command
@@ -787,6 +796,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	deploy.Spec.Template.Spec.Volumes = volumes
 	deploy.Spec.Template.Spec.TerminationGracePeriodSeconds = int64Ptr(2)
 	deploy.Spec.Template.Spec.AutomountServiceAccountToken = boolPtr(false)
+	deploy.Spec.Template.Spec.EnableServiceLinks = boolPtr(false)
 
 	if err := r.Update(ctx, deploy); err != nil {
 		return "", 0, err
@@ -968,6 +978,178 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 	return host, nil
 }
 
+func isNetworkPolicyDisabled(ws *aiv1alpha1.Workspace) bool {
+	if ws.Spec.DisableNetworkPolicy {
+		return true
+	}
+	if ws.Spec.NetworkPolicy != nil && ws.Spec.NetworkPolicy.Disabled {
+		return true
+	}
+	return false
+}
+
+func getBlockedEgressCIDRs(ws *aiv1alpha1.Workspace) []string {
+	if ws.Spec.NetworkPolicy != nil && len(ws.Spec.NetworkPolicy.BlockedCIDRs) > 0 {
+		return ws.Spec.NetworkPolicy.BlockedCIDRs
+	}
+
+	envCIDRs := os.Getenv("DEFAULT_BLOCKED_EGRESS_CIDRS")
+	if envCIDRs == "" {
+		envCIDRs = os.Getenv("BLOCKED_EGRESS_CIDRS")
+	}
+	if envCIDRs != "" {
+		parts := strings.Split(envCIDRs, ",")
+		var list []string
+		for _, p := range parts {
+			trimmed := strings.TrimSpace(p)
+			if trimmed != "" {
+				list = append(list, trimmed)
+			}
+		}
+		if len(list) > 0 {
+			return list
+		}
+	}
+
+	// Default fallback: RFC1918 private subnets and cloud metadata endpoint
+	return []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"169.254.169.254/32",
+	}
+}
+
+func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *aiv1alpha1.Workspace) error {
+	log := logf.FromContext(ctx)
+	netpolName := ws.Name + "-netpol"
+	netpol := &networkingv1.NetworkPolicy{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: netpolName}, netpol)
+
+	if isNetworkPolicyDisabled(ws) {
+		if err == nil {
+			log.Info("Deleting NetworkPolicy because NetworkPolicy is disabled", "netpolName", netpolName)
+			return r.Delete(ctx, netpol)
+		}
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+
+	labels := map[string]string{
+		"app":       "workspace",
+		"workspace": ws.Name,
+	}
+
+	containerPort := int32(8080)
+	if ws.Spec.Runtime.Port != 0 {
+		containerPort = ws.Spec.Runtime.Port
+	} else if strings.Contains(ws.Spec.Runtime.Image, "nginx") {
+		containerPort = 80
+	}
+
+	tcpProtocol := corev1.ProtocolTCP
+	udpProtocol := corev1.ProtocolUDP
+
+	ingressPorts := []networkingv1.NetworkPolicyPort{
+		{
+			Protocol: &tcpProtocol,
+			Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: containerPort},
+		},
+	}
+	if ws.Spec.ExposeSSH {
+		ingressPorts = append(ingressPorts, networkingv1.NetworkPolicyPort{
+			Protocol: &tcpProtocol,
+			Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: 22},
+		})
+	}
+
+	blockedCIDRs := getBlockedEgressCIDRs(ws)
+
+	egressRules := []networkingv1.NetworkPolicyEgressRule{
+		// 1. Allow DNS lookups (UDP and TCP on port 53)
+		{
+			Ports: []networkingv1.NetworkPolicyPort{
+				{
+					Protocol: &udpProtocol,
+					Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: 53},
+				},
+				{
+					Protocol: &tcpProtocol,
+					Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: 53},
+				},
+			},
+		},
+		// 2. Allow egress to external Internet (0.0.0.0/0), while blocking the configured/custom CIDRs in Except
+		{
+			To: []networkingv1.NetworkPolicyPeer{
+				{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR:   "0.0.0.0/0",
+						Except: blockedCIDRs,
+					},
+				},
+			},
+		},
+	}
+
+	// 3. Append explicit AllowedCIDRs if specified in ws.Spec.NetworkPolicy (e.g. internal LLM proxy)
+	if ws.Spec.NetworkPolicy != nil {
+		for _, cidr := range ws.Spec.NetworkPolicy.AllowedCIDRs {
+			if trimmed := strings.TrimSpace(cidr); trimmed != "" {
+				egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
+					To: []networkingv1.NetworkPolicyPeer{
+						{
+							IPBlock: &networkingv1.IPBlock{
+								CIDR: trimmed,
+							},
+						},
+					},
+				})
+			}
+		}
+	}
+
+	desiredNetpolSpec := networkingv1.NetworkPolicySpec{
+		PodSelector: metav1.LabelSelector{
+			MatchLabels: labels,
+		},
+		PolicyTypes: []networkingv1.PolicyType{
+			networkingv1.PolicyTypeIngress,
+			networkingv1.PolicyTypeEgress,
+		},
+		Ingress: []networkingv1.NetworkPolicyIngressRule{
+			{
+				Ports: ingressPorts,
+			},
+		},
+		Egress: egressRules,
+	}
+
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			netpol = &networkingv1.NetworkPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      netpolName,
+					Namespace: ws.Namespace,
+					Labels:    labels,
+				},
+				Spec: desiredNetpolSpec,
+			}
+			if err := ctrl.SetControllerReference(ws, netpol, r.Scheme); err != nil {
+				return err
+			}
+			log.Info("Creating NetworkPolicy for workspace", "netpolName", netpolName, "blockedCIDRs", blockedCIDRs)
+			return r.Create(ctx, netpol)
+		}
+		return err
+	}
+
+	netpol.Spec = desiredNetpolSpec
+	return r.Update(ctx, netpol)
+}
+
 func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&aiv1alpha1.Workspace{}).
@@ -975,6 +1157,7 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.Service{}).
 		Owns(&networkingv1.Ingress{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Named("workspace").
 		Complete(r)
 }

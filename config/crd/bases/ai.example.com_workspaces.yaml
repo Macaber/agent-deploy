@@ -76,6 +76,11 @@ spec:
                   - mountPath
                   type: object
                 type: array
+              disableNetworkPolicy:
+                description: |-
+                  DisableNetworkPolicy disables automatic NetworkPolicy generation for the workspace.
+                  Deprecated: use NetworkPolicy.Disabled instead.
+                type: boolean
               exposeSSH:
                 description: ExposeSSH enables SSH access to the workspace container
                 type: boolean
@@ -88,6 +93,28 @@ spec:
                   When empty, the workspace will not auto-sleep by this rule.
                   e.g. "30m", "1h"
                 type: string
+              networkPolicy:
+                description: NetworkPolicy specifies customizable network isolation
+                  rules (blocked/allowed CIDRs) for the workspace.
+                properties:
+                  allowedCIDRs:
+                    description: AllowedCIDRs specifies additional explicit CIDR blocks
+                      allowed for egress traffic (e.g. internal LLM API gateway "10.10.20.5/32").
+                    items:
+                      type: string
+                    type: array
+                  blockedCIDRs:
+                    description: |-
+                      BlockedCIDRs specifies CIDR blocks blocked from egress traffic (e.g. ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.169.254/32"]).
+                      If omitted, falls back to the Operator cluster-level DEFAULT_BLOCKED_EGRESS_CIDRS env or RFC1918 defaults.
+                    items:
+                      type: string
+                    type: array
+                  disabled:
+                    description: Disabled disables automatic NetworkPolicy generation
+                      for this workspace.
+                    type: boolean
+                type: object
               owner:
                 description: Owner indicates the user ID owning this workspace
                 type: string
@@ -283,6 +310,11 @@ spec:
                   postStartScript:
                     description: PostStartScript is a multiline shell script executed
                       as a postStart lifecycle hook immediately after container start
+                    type: string
+                  runtimeClassName:
+                    description: |-
+                      RuntimeClassName specifies the Container RuntimeClass (e.g. "kata", "kata-qemu", "sandboxed-containers").
+                      When specified, the Pod will run using this RuntimeClass (e.g. Kata MicroVM kernel sandbox).
                     type: string
                   volumeMounts:
                     description: VolumeMounts specifies custom directory mounts inside

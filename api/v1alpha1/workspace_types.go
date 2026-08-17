@@ -96,6 +96,11 @@ type RuntimeSpec struct {
 	// +optional
 	HealthPath string `json:"healthPath,omitempty"`
 
+	// RuntimeClassName specifies the Container RuntimeClass (e.g. "kata", "kata-qemu", "sandboxed-containers").
+	// When specified, the Pod will run using this RuntimeClass (e.g. Kata MicroVM kernel sandbox).
+	// +optional
+	RuntimeClassName *string `json:"runtimeClassName,omitempty"`
+
 	// InitContainers specifies custom init containers executed before the main container starts
 	// +optional
 	InitContainers []InitContainerSpec `json:"initContainers,omitempty"`
@@ -195,6 +200,31 @@ type WorkspaceSpec struct {
 	// ConfigMapVolumeMounts specifies ConfigMaps to mount as volumes inside the workspace container
 	// +optional
 	ConfigMapVolumeMounts []ConfigMapVolumeMount `json:"configMapVolumeMounts,omitempty"`
+
+	// DisableNetworkPolicy disables automatic NetworkPolicy generation for the workspace.
+	// Deprecated: use NetworkPolicy.Disabled instead.
+	// +optional
+	DisableNetworkPolicy bool `json:"disableNetworkPolicy,omitempty"`
+
+	// NetworkPolicy specifies customizable network isolation rules (blocked/allowed CIDRs) for the workspace.
+	// +optional
+	NetworkPolicy *WorkspaceNetworkPolicySpec `json:"networkPolicy,omitempty"`
+}
+
+// WorkspaceNetworkPolicySpec defines customizable network security isolation rules for the workspace.
+type WorkspaceNetworkPolicySpec struct {
+	// Disabled disables automatic NetworkPolicy generation for this workspace.
+	// +optional
+	Disabled bool `json:"disabled,omitempty"`
+
+	// BlockedCIDRs specifies CIDR blocks blocked from egress traffic (e.g. ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.169.254/32"]).
+	// If omitted, falls back to the Operator cluster-level DEFAULT_BLOCKED_EGRESS_CIDRS env or RFC1918 defaults.
+	// +optional
+	BlockedCIDRs []string `json:"blockedCIDRs,omitempty"`
+
+	// AllowedCIDRs specifies additional explicit CIDR blocks allowed for egress traffic (e.g. internal LLM API gateway "10.10.20.5/32").
+	// +optional
+	AllowedCIDRs []string `json:"allowedCIDRs,omitempty"`
 }
 
 // SharedVolumeMount defines a mount of a pre-existing generic/shared PVC.

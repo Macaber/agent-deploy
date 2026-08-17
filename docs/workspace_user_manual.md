@@ -59,6 +59,7 @@ spec:
 | **`port`** | `int32` | 否 | 容器内开发服务监听的端口号。<br>若缺省：对于 `nginx` 镜像自动使用 `80`，对于其他镜像自动使用 `8080`（API-Server 创建 `opencode` 时会设为 `4096`）。 | `4096`, `8080` |
 | **`cpu`** | `string` | 否 | 分配给该容器的 CPU 计算配额。限制和请求配额设为一致（保证 QOS 等级）。<br>若缺省：默认为 `"500m"` (0.5核)。 | `"500m"` (0.5核)<br>`"2"` (2核) |
 | **`memory`** | `string` | 否 | 分配给该容器的内存配额。限制和请求设为一致。<br>若缺省：默认为 `"1Gi"` (1G)。 | `"512Mi"`, `"4Gi"` |
+| **`runtimeClassName`** | `string` | 否 | **容器运行时沙箱名称**（例如 `"kata"`、`"kata-qemu"` 等）。指定后由 Kata Containers 独立 MicroVM 内核沙箱运行 Pod，从物理底层彻底防止宿主机内核逃逸。 | `"kata"`, `"kata-qemu"` |
 | **`env`** | `array` | 否 | 注入该开发容器中的环境变量键值对列表。常用于传递 API Key、初始化密码或系统配置。 | 见下文示例 |
 
 #### Env 变量配置语法示例：
@@ -103,6 +104,32 @@ configMapVolumeMounts:
   - configMapName: "bocomwork-config"
     mountPath: "/etc/bocomwork"
     readOnly: true
+```
+
+---
+
+### E. 网络隔离策略配置 (Spec.NetworkPolicy)
+
+Operator 会为每个 Workspace 自动创建同名的专属 NetworkPolicy。您可以在 `spec.networkPolicy` 中灵活控制网络隔离规则：
+
+| 参数名 | 数据类型 | 是否必填 | 作用描述 | 示例值 |
+| :--- | :--- | :--- | :--- | :--- |
+| **`disabled`** | `boolean` | 否 | 是否禁用自动生成 NetworkPolicy。默认为 `false`（启用安全隔离）。 | `false`, `true` |
+| **`blockedCIDRs`** | `array` | 否 | **自定义禁止出站的私有网段列表**。缺省时自动使用集群全局配置（`DEFAULT_BLOCKED_EGRESS_CIDRS`）或标准 RFC1918 私网网段及云元数据 IP。 | `["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.169.254/32"]` |
+| **`allowedCIDRs`** | `array` | 否 | **精准白名单放行的内网 IP/网段列表**。用于在整体屏蔽内网大网段的同时，特批放行企业内部大模型推理服务（LLM Gateway）或内网 GitLab。 | `["10.10.20.5/32", "192.168.1.100/32"]` |
+
+#### 网络策略配置示例：
+```yaml
+networkPolicy:
+  disabled: false
+  blockedCIDRs:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+    - "169.254.169.254/32"
+  allowedCIDRs:
+    - "10.10.20.5/32"      # 企业私有大模型网关
+    - "192.168.1.100/32"   # 内网自建 GitLab
 ```
 
 ---

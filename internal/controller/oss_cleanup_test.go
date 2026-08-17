@@ -29,15 +29,15 @@ func TestWorkspaceOSSPrefix(t *testing.T) {
 func TestFilterWorkspaceKeys(t *testing.T) {
 	prefix := "workspaces/ws-aikc"
 	keys := []string{
-		"workspaces/ws-aikc",                    // 目录占位对象，应删除
-		"workspaces/ws-aikc/.bashrc",            // 属于本 workspace，应删除
-		"workspaces/ws-aikc/data/model.bin",     // 属于本 workspace，应删除
-		"workspaces/ws-aikc-dev/main.py",        // 同名前缀的其他 workspace，必须保留
-		"workspaces/ws-aikc-dev",                // 同名前缀的其他 workspace 目录，必须保留
-		"workspaces/ws-aikc-tmp/note.txt",       // 同名前缀的其他 workspace，必须保留
-		"workspaces/ws-other/data.bin",          // 其他 workspace，必须保留
-		"shared-assets/tools.tar.gz",            // 公共共享目录，必须保留
-		"",                                      // 异常 key（理论不会出现），必须保留
+		"workspaces/ws-aikc",                // 目录占位对象，应删除
+		"workspaces/ws-aikc/.bashrc",        // 属于本 workspace，应删除
+		"workspaces/ws-aikc/data/model.bin", // 属于本 workspace，应删除
+		"workspaces/ws-aikc-dev/main.py",    // 同名前缀的其他 workspace，必须保留
+		"workspaces/ws-aikc-dev",            // 同名前缀的其他 workspace 目录，必须保留
+		"workspaces/ws-aikc-tmp/note.txt",   // 同名前缀的其他 workspace，必须保留
+		"workspaces/ws-other/data.bin",      // 其他 workspace，必须保留
+		"shared-assets/tools.tar.gz",        // 公共共享目录，必须保留
+		"",                                  // 异常 key（理论不会出现），必须保留
 	}
 	want := []string{
 		"workspaces/ws-aikc",
