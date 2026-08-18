@@ -38,9 +38,9 @@ graph TD
 # 1. 创建统一的离线部署资源目录
 mkdir -p ./deploy/local ./deploy/nfs ./deploy/oss ./deploy/kata
 
-# 2. 下载 Kata Containers 静态运行环境包 (针对 x86_64 / amd64 物理节点)
-# 官方下载: wget -P ./deploy/kata/ https://github.com/kata-containers/kata-containers/releases/download/3.23.0/kata-static-3.23.0-amd64.tar.zst
-# 加速下载: curl -Lo ./deploy/kata/kata-static-3.23.0-amd64.tar.zst https://ghfast.top/https://github.com/kata-containers/kata-containers/releases/download/3.23.0/kata-static-3.23.0-amd64.tar.zst
+# 2. 下载 Kata Containers 静态运行环境包 (针对 x86_64 / amd64 物理节点，388MB 兼容 glibc 2.17+)
+# 官方下载: wget -P ./deploy/kata/ https://github.com/kata-containers/kata-containers/releases/download/3.2.0/kata-static-3.2.0-amd64.tar.xz
+# 加速下载: curl -Lo ./deploy/kata/kata-static-3.2.0-amd64.tar.xz https://ghfast.top/https://github.com/kata-containers/kata-containers/releases/download/3.2.0/kata-static-3.2.0-amd64.tar.xz
 
 # 3. 拉取外部依赖及基础镜像 (注意：开发机为 Mac 时，必须指定 --platform linux/amd64 以确保拉取 x86 镜像)
 docker pull --platform linux/amd64 smanx/opencode:latest
@@ -499,73 +499,69 @@ modprobe kvm_intel # 若为 AMD CPU 则为 modprobe kvm_amd
 ls -l /dev/kvm     # 确认设备文件存在 (crw-rw---- 1 root kvm ...)
 ```
 
-#### 2. 离线安装 Kata Containers 静态运行环境 (`kata-static-3.23.0-amd64.tar.zst`)
+#### 2. 离线安装 Kata Containers 静态运行环境 (`kata-static-3.2.0-amd64.tar.xz`)
 
-> 💡 **文件格式说明**：`.tar.zst` 是采用高压缩比与超快解压速度的 **Zstandard (`zstd`)** 压缩格式。解压后文件会自动部署到 `/opt/kata` 目录下。
+> 💡 **版本与兼容性说明**：`kata-static-3.2.0-amd64.tar.xz`（体积仅 388MB）兼容各主流企业 Linux 系统（CentOS 7/8、RHEL 7/8、Ubuntu 等，兼容 glibc 2.17+），与 K8s v1.25.5 + containerd 深度适配，且解压使用系统原生 `tar` 即可，无需额外安装其他工具。
 
-##### 【情况 A：宿主机已安装 `zstd` 工具（推荐）】
-直接使用以下任一命令解压至根目录 `/`：
+##### 【步骤 1：解压部署到根目录】
+将 `kata-static-3.2.0-amd64.tar.xz` 拷贝至目标节点，执行解压（文件会自动释放到 `/opt/kata/`）：
 
 ```bash
-# 方式 1：tar 直接指定 zstd 解压（tar >= 1.31 默认支持 --zstd 或 -I zstd）
-sudo tar --zstd -xvf kata-static-3.23.0-amd64.tar.zst -C /
-# 或：sudo tar -I zstd -xvf kata-static-3.23.0-amd64.tar.zst -C /
-
-# 方式 2：使用 zstd 管道解压
-zstd -d kata-static-3.23.0-amd64.tar.zst -c | sudo tar -xvf - -C /
-
-# 方式 3：分步解压（先解压为 .tar 文件，再用普通 tar 解压）
-unzstd kata-static-3.23.0-amd64.tar.zst   # 会在当前目录生成 kata-static-3.23.0-amd64.tar
-sudo tar -xvf kata-static-3.23.0-amd64.tar -C /
+sudo tar -xvf kata-static-3.2.0-amd64.tar.xz -C /
 ```
 
-##### 【情况 B：离线生产宿主机【未安装 `zstd`】（两种解决方案）】
-
-* **方案 1（最便捷推荐：在有网开发机/跳板机转为普通 `.tar` 再拷贝）**：
-  在能联网的开发机或中转电脑上，将 `.tar.zst` 转解为标准的 `.tar`：
-  ```bash
-  # 开发机上先安装 zstd（Mac: brew install zstd / Linux: apt/yum install zstd）
-  unzstd kata-static-3.23.0-amd64.tar.zst -o kata-static.tar
-  ```
-  然后只需将解出来的 **`kata-static.tar`** 拷贝到离线生产节点，离线节点无需安装任何额外工具，直接使用原生 `tar` 解压即可：
-  ```bash
-  sudo tar -xvf kata-static.tar -C /
-  ```
-
-* **方案 2（离线节点安装 `zstd` 工具包）**：
-  在有网机器上下载对应操作系统的 `zstd` 安装包并拷贝至离线节点安装：
-  ```bash
-  # CentOS / RHEL / Rocky Linux:
-  # 离线下载 zstd rpm: yum install --downloadonly --downloaddir=. zstd
-  sudo rpm -ivh zstd-*.rpm
-
-  # Ubuntu / Debian:
-  # 离线下载 zstd deb: apt-get download zstd
-  sudo dpkg -i zstd_*.deb
-  ```
-
-##### 【配置系统软链接与健康检查】
-解压完成后，在所有 Worker 节点执行：
+##### 【步骤 2：配置 containerd-shim 软链接】
 ```bash
-# 1. 将 containerd-shim 软链接到系统标准 PATH 目录
 sudo ln -sf /opt/kata/bin/containerd-shim-kata-v2 /usr/local/bin/containerd-shim-kata-v2
+```
 
-# 2. 执行 Kata 运行环境自检
+##### 【步骤 3：执行 Kata 运行环境健康自检】
+```bash
 /opt/kata/bin/kata-runtime kata-check
 ```
-> 若 `kata-check` 输出末尾显示 `System is capable of running Kata Containers`，即表示该节点的 KVM 硬件虚拟化与内核参数完全就绪！
+
+**自检成功标志（标准输出）**：
+```text
+WARN[0000] Not running network checks as super user      arch=amd64 name=kata-runtime pid=632626 source=runtime
+System is capable of running Kata Containers
+System can currently create Kata Containers
+```
+> 📌 **输出说明**：
+> * `System is capable of running Kata Containers` 和 `System can currently create Kata Containers` 表示该物理节点的 CPU 硬件虚拟化（VT-x / AMD-V）、宿主机 `/dev/kvm` 驱动以及 glibc 依赖已 **100% 就绪**！
+> * 开头的 `WARN... Not running network checks as super user` 是因为未以 root 权限检查底层网桥，对实际运行没有任何影响。
+
+##### 【步骤 4：配置 Kata 运行参数 (`/opt/kata/share/defaults/kata-containers/configuration.toml`)】
+编辑 `/opt/kata/share/defaults/kata-containers/configuration.toml` 文件，在 `[hypervisor.qemu]` 段配置高性能 `virtio-fs` 与 chroot 安全沙箱参数（避开 namespace 限制并确保启动稳定）：
+
+```toml
+[hypervisor.qemu]
+shared_fs = "virtio-fs"
+virtio_fs_daemon = "/opt/kata/libexec/virtiofsd"
+
+# 关键配置：指定 4 线程与 chroot 沙箱模式（避开 Linux user namespace 限制，确保 virtiofsd 稳定启动）
+virtio_fs_extra_args = ["--thread-pool-size=4", "--sandbox=chroot"]
+
+# 设为 0 或注释掉（避开 QEMU 静态版本的 DAX 内存申请冲突）
+virtio_fs_cache_size = 0
+```
 
 ---
 
 #### 3. 配置 containerd (`/etc/containerd/config.toml`)
-编辑 containerd 配置文件（通常位于 `/etc/containerd/config.toml`），在 runtimes 中注册 `kata` 运行时：
+编辑 containerd 配置文件（通常位于 `/etc/containerd/config.toml`），找到原有的 `runc` 配置段，在其下方**平级对齐**注册 `kata` 运行时：
 
 ```toml
-[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata]
-  runtime_type = "io.containerd.kata.v2"
-  privileged_without_host_devices = true
-  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata.options]
-    ConfigPath = "/opt/kata/share/defaults/kata-containers/configuration.toml"
+        # 1. 宿主机原有的 runc
+        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+          runtime_type = "io.containerd.runc.v2"
+          privileged_without_host_devices = false
+
+        # 2. 紧随 runc 下方注册 kata 运行时（层级平级对齐）
+        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata]
+          runtime_type = "io.containerd.kata.v2"
+          privileged_without_host_devices = true
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata.options]
+            ConfigPath = "/opt/kata/share/defaults/kata-containers/configuration.toml"
 ```
 
 重启 containerd 引擎使配置生效：
@@ -615,16 +611,14 @@ kubectl get runtimeclass
 
 ### 7.3 维度三：网络隔离 (NetworkPolicy 零信任安全网)
 
-Operator 在创建 Workspace 时会自动创建同名的 `<workspace-name>-netpol` 网络策略：
-1. **南北向入站 (Ingress)**：仅放行来自 Ingress 网关发往 Workspace 容器端口（8080/80/22）的流量，拦截同命名空间内其他 Pod 的跨空间直连。
-2. **东西向横向阻断**：严禁 `ws-a` 与 `ws-b` 相互直接探测与通信。
-3. **出站安全出口 (Egress - 动态可配置)**：
+当用户在 Workspace 中声明 `spec.networkPolicy` 时，Operator 会自动创建专属的 `<workspace-name>-netpol` 网络策略：
+1. **入站 (Ingress) 全放行**：放行来自 Ingress 网关、Kubelet 探针及外部用户的访问流量，保证外部 Web 访问 100% 畅通。
+2. **东西向横向阻断**：严禁 `ws-a` 与 `ws-b` 等多个 Agent Pod 之间相互直接探测与直连通信。
+3. **出站安全出口 (Egress - 纯自定义配置，无隐式默认值)**：
    * 允许访问集群 CoreDNS（UDP/TCP 53）进行正常域名解析；
-   * 允许访问外部公网（`0.0.0.0/0`），方便 Agent 访问 GitHub、拉取包依赖、调用 LLM API；
-   * **出站拦截网段支持【集群全局环境变量】与【工作空间 CR】两级动态配置**：
-     * **方式 A（全局默认配置）**：在 Operator 控制器 Deployment 中配置 `DEFAULT_BLOCKED_EGRESS_CIDRS` 环境变量（逗号分隔，如 `"10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.169.254/32"`）。缺省未配置时自动采用标准的 RFC1918 私网网段 + 云元数据 IP。
-     * **方式 B（工作空间自定义）**：在 Workspace CR 的 `spec.networkPolicy.blockedCIDRs` 中自定义禁止访问的私网网段。
-     * **白名单内网放行（如私有 LLM 代理/内网 GitLab）**：可在 `spec.networkPolicy.allowedCIDRs` 中添加明确放行的内网 IP/CIDR（如 `["10.10.20.5/32", "192.168.1.100/32"]`），在整体拦截内网的同时精准放行企业内部模型服务。
+   * 允许与 Ingress 网关进行双向响应回包；
+   * **按需声明禁止网段 (`blockedCIDRs`)**：仅拦截在 `spec.networkPolicy.blockedCIDRs` 中显式填写的网段；未填则不拦截公网与任何网段。
+   * **白名单放行 (`allowedCIDRs`)**：可在 `spec.networkPolicy.allowedCIDRs` 中添加明确放行的 IP/CIDR（如私有 LLM 网关 `10.10.20.5/32`、内网自建 GitLab `192.168.1.100/32`）。
 
 > **CNI 插件要求**：确保集群 CNI 插件支持 NetworkPolicy（如 Calico、Cilium、Kube-router 或阿里云 ACK Terway）。
 
@@ -651,13 +645,10 @@ spec:
     size: "10Gi"
     storageClass: "local-path"
   networkPolicy:
-    disabled: false               # 默认为 false，自动生成 NetworkPolicy
-    # 自定义禁止出站的私有网段（缺省时使用系统默认: 10/8, 172.16/12, 192.168/16, 169.254.169.254/32）
+    # 纯自定义禁止出站的私有网段（仅拦截此处显式列出的网段，无任何隐式默认拦截）
     blockedCIDRs:
       - "10.0.0.0/8"
-      - "172.16.0.0/12"
       - "192.168.0.0/16"
-      - "169.254.169.254/32"
     # 精准白名单放行（如公司内网私有大模型网关或内网代码库）
     allowedCIDRs:
       - "10.10.20.5/32"           # 内部 LLM Gateway

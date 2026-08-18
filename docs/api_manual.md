@@ -78,7 +78,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   | **`sharedVolumeMounts`** | `array` | 否 | - | 预先存在的共享存储卷 (PVC) 挂载配置列表。支持 `readOnly` 属性，格式为 `[{"pvcName": "shared-pvc", "mountPath": "/shared", "subPath": "subdir", "readOnly": true}]`。 |
   | **`initContainers`** | `array` | 否 | - | **初始化容器配置列表**。在主容器启动前依次运行的初始化容器。支持 `name`, `image`, `command`, `args`, `env`, `volumeMounts`, `sharedVolumeMounts`, `configMapVolumeMounts` 字段。 |
   | **`runtimeClassName`** | `string` | 否 | - | **容器运行时沙箱名称**（例如 `"kata"`、`"kata-qemu"` 等）。指定后将由 Kata Containers 独立 MicroVM 内核沙箱拉起 Pod，从物理底层彻底防止宿主机内核逃逸。 |
-  | **`networkPolicy`** | `object` | 否 | - | **工作空间专属网络安全策略配置**。包含 `disabled` (是否禁用策略，默认 `false`)、`blockedCIDRs` (自定义禁止出站的私有网段列表，缺省拦截 RFC1918 与云元数据 `169.254.169.254/32`)、`allowedCIDRs` (精准白名单放行的内网 IP/网段列表，如私有 LLM 网关)。 |
+  | **`networkPolicy`** | `object` | 否 | - | **工作空间专属网络安全策略配置**。包含 `disabled` (是否禁用策略，默认 `false`)、`blockedCIDRs` (自定义禁止出站的网段列表，仅拦截用户显式声明的网段，无任何隐式默认拦截)、`allowedCIDRs` (精准白名单放行的 IP/网段列表，如私有 LLM 网关)。 |
   | **`postStartScript`** | `string` | 否 | - | **K8s 原生生命周期钩子**。容器启动后立即在后台异步运行的多行 Shell 脚本。 |
   | **`healthPath`** | `string` | 否 | - | **自定义就绪探针 HTTP 路径**。若指定（例如 `"/health"`），K8s 将使用 HTTP GET 探测此路径；若不指定或为空，默认回退使用 TCP 协议对暴露端口（`port`）进行存活健康探测。 |
 
@@ -260,8 +260,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 2. **API & 环境变量隔离 (RBAC & 阻断服务发现)**：
    * **阻断环境变量互现 (`EnableServiceLinks: false`)**：默认关闭同 Namespace 下其他 Service 的环境变量注入，彻底解决 `ws-a` 在容器环境变量中嗅探到 `ws-b` 内网路由地址的问题。
    * **阻断 K8s API 访问 (`AutomountServiceAccountToken: false`)**：默认不挂载 ServiceAccount Token，防止 Agent 容器内调用 K8s API 进行集群侦察。
-3. **网络隔离 (NetworkPolicy 零信任)**：
-   * **南北向入站**：仅允许 Ingress 网关访问当前工作空间端口（8080/80/22）。
-   * **东西向横向**：严禁多个 Agent Pod 之间相互探测与直连通信。
-   * **出站（Egress）管控**：放行 DNS（UDP/TCP 53）与外部公网（`0.0.0.0/0`），默认拦截私网网段（`10/8`, `172.16/12`, `192.168/16`）及云元数据（`169.254.169.254/32`）；同时支持通过 `allowedCIDRs` 精准放行企业私有 LLM 网关。
+3. **网络隔离 (NetworkPolicy 自定义管控)**：
+   * **入站（Ingress）全通**：所有外部用户、浏览器访问、Ingress 网关、Kubelet 就绪探针完全畅通；
+   * **出站（Egress）管控**：放行 DNS（UDP/TCP 53）与 Ingress 网关回包；仅拦截用户在 `blockedCIDRs` 中自定义声明的网段（无任何隐式默认拦截）；支持通过 `allowedCIDRs` 精准放行特定白名单。
 

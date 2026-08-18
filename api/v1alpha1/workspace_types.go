@@ -218,11 +218,11 @@ type WorkspaceNetworkPolicySpec struct {
 	Disabled bool `json:"disabled,omitempty"`
 
 	// BlockedCIDRs specifies CIDR blocks blocked from egress traffic (e.g. ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.169.254/32"]).
-	// If omitted, falls back to the Operator cluster-level DEFAULT_BLOCKED_EGRESS_CIDRS env or RFC1918 defaults.
+	// Only the CIDRs explicitly listed here will be blocked from egress.
 	// +optional
 	BlockedCIDRs []string `json:"blockedCIDRs,omitempty"`
 
-	// AllowedCIDRs specifies additional explicit CIDR blocks allowed for egress traffic (e.g. internal LLM API gateway "10.10.20.5/32").
+	// AllowedCIDRs specifies explicit CIDR blocks allowed for egress traffic (e.g. internal LLM API gateway "10.10.20.5/32").
 	// +optional
 	AllowedCIDRs []string `json:"allowedCIDRs,omitempty"`
 }

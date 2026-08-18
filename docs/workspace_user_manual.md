@@ -110,23 +110,20 @@ configMapVolumeMounts:
 
 ### E. 网络隔离策略配置 (Spec.NetworkPolicy)
 
-Operator 会为每个 Workspace 自动创建同名的专属 NetworkPolicy。您可以在 `spec.networkPolicy` 中灵活控制网络隔离规则：
+您可以在 `spec.networkPolicy` 中按需声明该工作空间的网络隔离规则：
 
 | 参数名 | 数据类型 | 是否必填 | 作用描述 | 示例值 |
 | :--- | :--- | :--- | :--- | :--- |
-| **`disabled`** | `boolean` | 否 | 是否禁用自动生成 NetworkPolicy。默认为 `false`（启用安全隔离）。 | `false`, `true` |
-| **`blockedCIDRs`** | `array` | 否 | **自定义禁止出站的私有网段列表**。缺省时自动使用集群全局配置（`DEFAULT_BLOCKED_EGRESS_CIDRS`）或标准 RFC1918 私网网段及云元数据 IP。 | `["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.169.254/32"]` |
-| **`allowedCIDRs`** | `array` | 否 | **精准白名单放行的内网 IP/网段列表**。用于在整体屏蔽内网大网段的同时，特批放行企业内部大模型推理服务（LLM Gateway）或内网 GitLab。 | `["10.10.20.5/32", "192.168.1.100/32"]` |
+| **`disabled`** | `boolean` | 否 | 是否禁用 NetworkPolicy。设为 `true` 时不创建策略。 | `false`, `true` |
+| **`blockedCIDRs`** | `array` | 否 | **自定义禁止出站的网段列表**。仅拦截列表中显式指定的网段（无任何隐式默认拦截）。 | `["10.0.0.0/8", "192.168.0.0/16"]` |
+| **`allowedCIDRs`** | `array` | 否 | **精准白名单放行的 IP/网段列表**。用于特批放行企业内部大模型推理服务（LLM Gateway）或内网 GitLab。 | `["10.10.20.5/32", "192.168.1.100/32"]` |
 
 #### 网络策略配置示例：
 ```yaml
 networkPolicy:
-  disabled: false
   blockedCIDRs:
     - "10.0.0.0/8"
-    - "172.16.0.0/12"
     - "192.168.0.0/16"
-    - "169.254.169.254/32"
   allowedCIDRs:
     - "10.10.20.5/32"      # 企业私有大模型网关
     - "192.168.1.100/32"   # 内网自建 GitLab

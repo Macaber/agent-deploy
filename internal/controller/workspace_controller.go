@@ -982,42 +982,17 @@ func isNetworkPolicyDisabled(ws *aiv1alpha1.Workspace) bool {
 	if ws.Spec.DisableNetworkPolicy {
 		return true
 	}
-	if ws.Spec.NetworkPolicy != nil && ws.Spec.NetworkPolicy.Disabled {
+	if ws.Spec.NetworkPolicy == nil {
 		return true
 	}
-	return false
+	return ws.Spec.NetworkPolicy.Disabled
 }
 
 func getBlockedEgressCIDRs(ws *aiv1alpha1.Workspace) []string {
 	if ws.Spec.NetworkPolicy != nil && len(ws.Spec.NetworkPolicy.BlockedCIDRs) > 0 {
 		return ws.Spec.NetworkPolicy.BlockedCIDRs
 	}
-
-	envCIDRs := os.Getenv("DEFAULT_BLOCKED_EGRESS_CIDRS")
-	if envCIDRs == "" {
-		envCIDRs = os.Getenv("BLOCKED_EGRESS_CIDRS")
-	}
-	if envCIDRs != "" {
-		parts := strings.Split(envCIDRs, ",")
-		var list []string
-		for _, p := range parts {
-			trimmed := strings.TrimSpace(p)
-			if trimmed != "" {
-				list = append(list, trimmed)
-			}
-		}
-		if len(list) > 0 {
-			return list
-		}
-	}
-
-	// Default fallback: RFC1918 private subnets and cloud metadata endpoint
-	return []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"169.254.169.254/32",
-	}
+	return nil
 }
 
 func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *aiv1alpha1.Workspace) error {
@@ -1042,28 +1017,8 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 		"workspace": ws.Name,
 	}
 
-	containerPort := int32(8080)
-	if ws.Spec.Runtime.Port != 0 {
-		containerPort = ws.Spec.Runtime.Port
-	} else if strings.Contains(ws.Spec.Runtime.Image, "nginx") {
-		containerPort = 80
-	}
-
 	tcpProtocol := corev1.ProtocolTCP
 	udpProtocol := corev1.ProtocolUDP
-
-	ingressPorts := []networkingv1.NetworkPolicyPort{
-		{
-			Protocol: &tcpProtocol,
-			Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: containerPort},
-		},
-	}
-	if ws.Spec.ExposeSSH {
-		ingressPorts = append(ingressPorts, networkingv1.NetworkPolicyPort{
-			Protocol: &tcpProtocol,
-			Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: 22},
-		})
-	}
 
 	blockedCIDRs := getBlockedEgressCIDRs(ws)
 
@@ -1081,8 +1036,39 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 				},
 			},
 		},
-		// 2. Allow egress to external Internet (0.0.0.0/0), while blocking the configured/custom CIDRs in Except
+		// 2. Allow communication/return traffic to Ingress Controller and system services (ensures external web access and route sync)
 		{
+			To: []networkingv1.NetworkPolicyPeer{
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{
+							{
+								Key:      "kubernetes.io/metadata.name",
+								Operator: metav1.LabelSelectorOpIn,
+								Values:   []string{"ingress-nginx", "kube-system"},
+							},
+						},
+					},
+				},
+				{
+					NamespaceSelector: &metav1.LabelSelector{},
+					PodSelector: &metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{
+							{
+								Key:      "app.kubernetes.io/name",
+								Operator: metav1.LabelSelectorOpIn,
+								Values:   []string{"ingress-nginx", "ingress-controller", "traefik"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// 3. Egress rule for external/public network traffic (applies custom blockedCIDRs if provided)
+	if len(blockedCIDRs) > 0 {
+		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
 			To: []networkingv1.NetworkPolicyPeer{
 				{
 					IPBlock: &networkingv1.IPBlock{
@@ -1091,10 +1077,20 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 					},
 				},
 			},
-		},
+		})
+	} else {
+		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
+			To: []networkingv1.NetworkPolicyPeer{
+				{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR: "0.0.0.0/0",
+					},
+				},
+			},
+		})
 	}
 
-	// 3. Append explicit AllowedCIDRs if specified in ws.Spec.NetworkPolicy (e.g. internal LLM proxy)
+	// 4. Append explicit AllowedCIDRs if specified in ws.Spec.NetworkPolicy (e.g. internal LLM proxy)
 	if ws.Spec.NetworkPolicy != nil {
 		for _, cidr := range ws.Spec.NetworkPolicy.AllowedCIDRs {
 			if trimmed := strings.TrimSpace(cidr); trimmed != "" {
@@ -1119,10 +1115,9 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 			networkingv1.PolicyTypeIngress,
 			networkingv1.PolicyTypeEgress,
 		},
+		// Allow all inbound ingress traffic from external clients, Ingress controllers, and Kubelet
 		Ingress: []networkingv1.NetworkPolicyIngressRule{
-			{
-				Ports: ingressPorts,
-			},
+			{},
 		},
 		Egress: egressRules,
 	}

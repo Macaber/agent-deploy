@@ -106,15 +106,15 @@ spec:
                   rules (blocked/allowed CIDRs) for the workspace.
                 properties:
                   allowedCIDRs:
-                    description: AllowedCIDRs specifies additional explicit CIDR blocks
-                      allowed for egress traffic (e.g. internal LLM API gateway "10.10.20.5/32").
+                    description: AllowedCIDRs specifies explicit CIDR blocks allowed
+                      for egress traffic (e.g. internal LLM API gateway "10.10.20.5/32").
                     items:
                       type: string
                     type: array
                   blockedCIDRs:
                     description: |-
                       BlockedCIDRs specifies CIDR blocks blocked from egress traffic (e.g. ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.169.254/32"]).
-                      If omitted, falls back to the Operator cluster-level DEFAULT_BLOCKED_EGRESS_CIDRS env or RFC1918 defaults.
+                      Only the CIDRs explicitly listed here will be blocked from egress.
                     items:
                       type: string
                     type: array
@@ -830,7 +830,7 @@ spec:
         env:
         - name: WORKSPACE_DOMAIN
           value: bocomcode
-        image: workspace-operator:v1.0.0
+        image: workspace-operator:v1.0.25
         livenessProbe:
           httpGet:
             path: /healthz

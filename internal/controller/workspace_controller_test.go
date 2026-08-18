@@ -66,6 +66,7 @@ var _ = Describe("Workspace Controller", func() {
 						Storage: aiv1alpha1.StorageSpec{
 							Size: "1Gi",
 						},
+						NetworkPolicy: &aiv1alpha1.WorkspaceNetworkPolicySpec{},
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -142,9 +143,9 @@ var _ = Describe("Workspace Controller", func() {
 				Name:      resourceName + "-netpol",
 				Namespace: resourceNamespace,
 			}, netpol)).To(Succeed())
-			Expect(netpol.Spec.Egress[1].To[0].IPBlock.Except).To(ConsistOf("192.168.1.0/24", "10.0.0.0/16"))
-			Expect(len(netpol.Spec.Egress)).To(Equal(3))
-			Expect(netpol.Spec.Egress[2].To[0].IPBlock.CIDR).To(Equal("10.0.1.100/32"))
+			Expect(netpol.Spec.Egress[2].To[0].IPBlock.Except).To(ConsistOf("192.168.1.0/24", "10.0.0.0/16"))
+			Expect(len(netpol.Spec.Egress)).To(Equal(4))
+			Expect(netpol.Spec.Egress[3].To[0].IPBlock.CIDR).To(Equal("10.0.1.100/32"))
 
 			By("Disabling NetworkPolicy via NetworkPolicy.Disabled and verifying deletion")
 			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
