@@ -555,6 +555,7 @@ rules:
   resources:
   - configmaps
   - pods
+  - secrets
   verbs:
   - get
   - list
@@ -830,7 +831,7 @@ spec:
         env:
         - name: WORKSPACE_DOMAIN
           value: bocomcode
-        image: workspace-operator:v1.0.25
+        image: workspace-operator:v1.0.26
         livenessProbe:
           httpGet:
             path: /healthz

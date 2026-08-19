@@ -32,6 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -58,6 +59,7 @@ type WorkspaceReconciler struct {
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
@@ -83,21 +85,48 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !ws.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(ws, workspaceFinalizer) {
 			if err := r.cleanupPV(ctx, ws); err != nil {
-				log.Error(err, "Failed to cleanup PV for deleted workspace")
+				log.Error(err, "Failed to cleanup PV for deleted workspace", "workspace", ws.Name)
+			}
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				latestWs := &aiv1alpha1.Workspace{}
+				if err := r.Get(ctx, req.NamespacedName, latestWs); err != nil {
+					if apierrors.IsNotFound(err) {
+						return nil
+					}
+					return err
+				}
+				if !controllerutil.ContainsFinalizer(latestWs, workspaceFinalizer) {
+					return nil
+				}
+				controllerutil.RemoveFinalizer(latestWs, workspaceFinalizer)
+				return r.Update(ctx, latestWs)
+			})
+			if err != nil {
+				log.Error(err, "Failed to remove finalizer from Workspace", "workspace", ws.Name)
 				return ctrl.Result{}, err
 			}
-			controllerutil.RemoveFinalizer(ws, workspaceFinalizer)
-			if err := r.Update(ctx, ws); err != nil {
-				return ctrl.Result{}, err
-			}
+			log.Info("Successfully removed finalizer for Workspace", "workspace", ws.Name)
 		}
 		return ctrl.Result{}, nil
 	}
 
 	// 首次创建时添加 finalizer，保证后续删除时有机会清理 PV
 	if !controllerutil.ContainsFinalizer(ws, workspaceFinalizer) {
-		controllerutil.AddFinalizer(ws, workspaceFinalizer)
-		if err := r.Update(ctx, ws); err != nil {
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latestWs := &aiv1alpha1.Workspace{}
+			if err := r.Get(ctx, req.NamespacedName, latestWs); err != nil {
+				return err
+			}
+			if !latestWs.DeletionTimestamp.IsZero() {
+				return nil
+			}
+			if controllerutil.ContainsFinalizer(latestWs, workspaceFinalizer) {
+				return nil
+			}
+			controllerutil.AddFinalizer(latestWs, workspaceFinalizer)
+			return r.Update(ctx, latestWs)
+		})
+		if err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil

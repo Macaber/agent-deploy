@@ -30,20 +30,29 @@ func (r *WorkspaceReconciler) cleanupPV(ctx context.Context, ws *aiv1alpha1.Work
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
-		return err
+		log.Error(err, "Could not get PV for workspace, skipping PV cleanup", "pvName", pvName)
+		return nil
 	}
 
-	if pv.Spec.CSI != nil && pv.Spec.CSI.Driver == ossCSIDriver {
-		if err := r.cleanupOSSData(ctx, ws, pv); err != nil {
-			// 数据清理失败不阻塞 workspace 删除（与 PVC 已删而 provisioner 清理失败的行为一致），
-			// 记录错误日志供人工介入
-			log.Error(err, "Failed to delete OSS data, PV will still be removed", "pvName", pvName)
-		}
+	// 严格限制：只有当 PV 明确为 OSS CSI 驱动（ossplugin.csi.alibabacloud.com）时，
+	// 才由 operator 执行 OSS 数据清空与 PV 对象删除。
+	// 对于 NFS、Local-path、HostPath 等其他存储类型的 PV，绝不执行删除操作，完全交由对应的 provisioner 管理。
+	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != ossCSIDriver {
+		log.Info("PV is not an OSS CSI volume, skipping deletion to avoid affecting other storage types", "pvName", pvName)
+		return nil
+	}
+
+	if err := r.cleanupOSSData(ctx, ws, pv); err != nil {
+		// 数据清理失败不阻塞 workspace 删除（与 PVC 已删而 provisioner 清理失败的行为一致），
+		// 记录错误日志供人工介入
+		log.Error(err, "Failed to delete OSS data, PV will still be removed", "pvName", pvName)
 	}
 
 	if err := r.Delete(ctx, pv); err != nil && !apierrors.IsNotFound(err) {
-		return err
+		log.Error(err, "Failed to delete OSS PV during workspace cleanup", "pvName", pvName)
+		return nil
 	}
+	log.Info("Successfully deleted OSS PV for workspace", "pvName", pvName)
 	return nil
 }
 
