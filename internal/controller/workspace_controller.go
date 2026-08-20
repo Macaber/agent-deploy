@@ -964,6 +964,7 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 					Namespace: ws.Namespace,
 					Labels:    labels,
 					Annotations: map[string]string{
+						"nginx.ingress.kubernetes.io/ssl-redirect":              "false",
 						"nginx.ingress.kubernetes.io/proxy-connect-timeout":     "10",
 						"nginx.ingress.kubernetes.io/proxy-body-size":           "100m",
 						"nginx.ingress.kubernetes.io/proxy-read-timeout":        "86400",
@@ -991,6 +992,7 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 	if ingress.Annotations == nil {
 		ingress.Annotations = make(map[string]string)
 	}
+	ingress.Annotations["nginx.ingress.kubernetes.io/ssl-redirect"] = "false"
 	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-connect-timeout"] = "10"
 	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-body-size"] = "100m"
 	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-read-timeout"] = "86400"

@@ -779,7 +779,10 @@ func getWorkspaceURL(userID string, wsName string, endpoint string) string {
 		}
 		endpoint = fmt.Sprintf("%s.%s", wsName, domain)
 	}
-	return fmt.Sprintf("http://%s", endpoint)
+	endpoint = strings.TrimPrefix(endpoint, "http://")
+	endpoint = strings.TrimPrefix(endpoint, "https://")
+	endpoint = strings.TrimSuffix(endpoint, "/")
+	return fmt.Sprintf("http://%s/", endpoint)
 }
 
 // sanitizeK8sName converts a raw string into a valid Kubernetes resource name (RFC 1123).

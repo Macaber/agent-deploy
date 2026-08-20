@@ -587,6 +587,7 @@ public class WorkspaceReconciler implements Reconciler<Workspace> {
                     .withNewMetadata()
                         .withName(ingressName)
                         .withNamespace(namespace)
+                        .addToAnnotations("nginx.ingress.kubernetes.io/ssl-redirect", "false")
                         .addToAnnotations("nginx.ingress.kubernetes.io/proxy-connect-timeout", "10")
                         .addToAnnotations("nginx.ingress.kubernetes.io/proxy-body-size", "100m")
                         .addToAnnotations("nginx.ingress.kubernetes.io/proxy-read-timeout", "86400")
@@ -629,7 +630,7 @@ public class WorkspaceReconciler implements Reconciler<Workspace> {
 
             client.network().v1().ingresses().inNamespace(namespace).resource(ingress).create();
         }
-        return "http://" + host;
+        return "http://" + host + "/";
     }
 
     private Probe getStartupProbe(Workspace ws, int containerPort) {
