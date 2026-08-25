@@ -109,11 +109,30 @@ type workspaceRequest struct {
 type workspaceItem struct {
 	UserID string `json:"userId"`
 	Name   string `json:"name"`
+	OA     string `json:"oa,omitempty"`
 	Phase  string `json:"phase"`
 	URL    string `json:"url"`
 	Image  string `json:"image"`
 	CPU    string `json:"cpu"`
 	Memory string `json:"memory"`
+}
+
+// getOAValue extracts the OA value from environment variables if present.
+func getOAValue(envs []aiv1alpha1.EnvVar) string {
+	for _, env := range envs {
+		if strings.EqualFold(env.Name, "OA") && strings.TrimSpace(env.Value) != "" {
+			return strings.TrimSpace(env.Value)
+		}
+	}
+	return ""
+}
+
+// getOAFromWorkspace returns the OA value from Workspace labels or environment variables.
+func getOAFromWorkspace(ws *aiv1alpha1.Workspace) string {
+	if ws.Labels != nil && ws.Labels["oa"] != "" {
+		return ws.Labels["oa"]
+	}
+	return getOAValue(ws.Spec.Runtime.Env)
 }
 
 // workspaceRouter dispatches /api/workspaces requests to the appropriate handler by HTTP method.
@@ -156,9 +175,11 @@ func listWorkspacesHandler(c client.Client) http.HandlerFunc {
 		items := []workspaceItem{}
 		for _, ws := range wsList.Items {
 			url := getWorkspaceURL(ws.Spec.Owner, ws.Name, ws.Status.Endpoint)
+			oa := getOAFromWorkspace(&ws)
 			items = append(items, workspaceItem{
 				UserID: ws.Spec.Owner,
 				Name:   ws.Name,
+				OA:     oa,
 				Phase:  string(ws.Status.Phase),
 				URL:    url,
 				Image:  ws.Spec.Runtime.Image,
@@ -200,27 +221,15 @@ func getWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		url := getWorkspaceURL(userID, wsName, ws.Status.Endpoint)
+		oa := getOAFromWorkspace(ws)
 		json.NewEncoder(w).Encode(map[string]any{
 			"exists": true,
 			"phase":  ws.Status.Phase,
 			"url":    url,
+			"oa":     oa,
 			"spec":   ws.Spec,
 		})
 	}
-}
-
-// getEffectiveUserID returns the effective user ID for workspace creation and lookup.
-// If namespace is "bocomwork" and an env variable named "USER_CODE" (case-insensitive) exists with a non-empty value,
-// that value replaces the incoming userID.
-func getEffectiveUserID(userID string, namespace string, envs []aiv1alpha1.EnvVar) string {
-	if namespace == "bocomwork" {
-		for _, env := range envs {
-			if strings.EqualFold(env.Name, "USER_CODE") && strings.TrimSpace(env.Value) != "" {
-				return strings.TrimSpace(env.Value)
-			}
-		}
-	}
-	return userID
 }
 
 // createOrUpdateWorkspaceHandler handles POST /api/workspaces — creates a new workspace or updates an existing one.
@@ -241,14 +250,13 @@ func createOrUpdateWorkspaceHandler(c client.Client) http.HandlerFunc {
 		if namespace == "" {
 			namespace = "default"
 		}
-		effectiveUserID := getEffectiveUserID(req.UserID, namespace, req.Env)
-		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", effectiveUserID))
+		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", req.UserID))
 
 		ws := &aiv1alpha1.Workspace{}
 		err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, ws)
 		if err != nil {
 			if apierrors.IsNotFound(err) {
-				if err := createNewWorkspace(ctx, c, &req, wsName, namespace, effectiveUserID); err != nil {
+				if err := createNewWorkspace(ctx, c, &req, wsName, namespace, req.UserID); err != nil {
 					log.Printf("Failed to create Workspace: %v", err)
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
@@ -268,7 +276,7 @@ func createOrUpdateWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		// Poll until Workspace status.phase is Running or Failed
-		pollWorkspaceRunning(ctx, c, w, effectiveUserID, wsName, namespace, "Workspace creation timed out")
+		pollWorkspaceRunning(ctx, c, w, req.UserID, wsName, namespace, "Workspace creation timed out")
 	}
 }
 
@@ -296,10 +304,18 @@ func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequ
 		cmdList = req.Cmd
 	}
 
+	labels := make(map[string]string)
+	if namespace == "bocomwork" {
+		if oa := getOAValue(req.Env); oa != "" {
+			labels["oa"] = oa
+		}
+	}
+
 	ws := &aiv1alpha1.Workspace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      wsName,
 			Namespace: namespace,
+			Labels:    labels,
 		},
 		Spec: aiv1alpha1.WorkspaceSpec{
 			Owner:       ownerID,
@@ -434,6 +450,17 @@ func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha
 			currentWs.Spec.NetworkPolicy = req.NetworkPolicy
 			needsUpdate = true
 		}
+		if namespace == "bocomwork" {
+			if oa := getOAValue(req.Env); oa != "" {
+				if currentWs.Labels == nil {
+					currentWs.Labels = make(map[string]string)
+				}
+				if currentWs.Labels["oa"] != oa {
+					currentWs.Labels["oa"] = oa
+					needsUpdate = true
+				}
+			}
+		}
 
 		if needsUpdate {
 			if err := c.Update(ctx, currentWs); err != nil {
@@ -467,14 +494,25 @@ func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha
 // pollWorkspaceRunning polls the workspace status until it reaches Running or Failed state,
 // and verifies that the Ingress route is healthy and serving before writing the JSON result.
 func pollWorkspaceRunning(ctx context.Context, c client.Client, w http.ResponseWriter, userID, wsName, namespace, timeoutMsg string) {
-	timeout := time.After(90 * time.Second)
+	timeoutDuration := 20 * time.Second
+	if envTimeout := os.Getenv("WORKSPACE_POLL_TIMEOUT"); envTimeout != "" {
+		if d, err := time.ParseDuration(envTimeout); err == nil {
+			timeoutDuration = d
+		}
+	}
+	timeout := time.After(timeoutDuration)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-timeout:
-			http.Error(w, timeoutMsg, http.StatusGatewayTimeout)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusGatewayTimeout)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": timeoutMsg,
+				"phase": "Timeout",
+			})
 			return
 		case <-ctx.Done():
 			return
@@ -513,8 +551,7 @@ func pollWorkspaceRunning(ctx context.Context, c client.Client, w http.ResponseW
 }
 
 // probeWorkspaceViaIngress sends an HTTP GET probe through Ingress to verify route readiness.
-// When namespace is "bocomwork", it sets Cookie: oa=<effectiveID> (where effectiveID respects USER_CODE if configured)
-// and probes the bocomwork Ingress endpoint.
+// When namespace is "bocomwork", it sets Cookie: oa=<effectiveOA> and probes the bocomwork Ingress endpoint.
 func probeWorkspaceViaIngress(ctx context.Context, userID, wsName string, ws *aiv1alpha1.Workspace) bool {
 	healthPath := ws.Spec.Runtime.HealthPath
 	if healthPath == "" {
@@ -524,17 +561,21 @@ func probeWorkspaceViaIngress(ctx context.Context, userID, wsName string, ws *ai
 		healthPath = "/" + healthPath
 	}
 
-	effectiveID := getEffectiveUserID(userID, ws.Namespace, ws.Spec.Runtime.Env)
-	if effectiveID == "" && ws.Spec.Owner != "" {
-		effectiveID = ws.Spec.Owner
+	targetUser := userID
+	if targetUser == "" && ws.Spec.Owner != "" {
+		targetUser = ws.Spec.Owner
 	}
 
 	var cookieHeader string
 	var probeURL string
 
 	if ws.Namespace == "bocomwork" {
-		// In bocomwork namespace, Ingress routes via Cookie: oa=<effectiveID> (or WorkspaceUser)
-		cookieHeader = fmt.Sprintf("oa=%s; WorkspaceUser=%s", effectiveID, effectiveID)
+		oaVal := targetUser
+		if wsOA := getOAFromWorkspace(ws); wsOA != "" {
+			oaVal = wsOA
+		}
+		// In bocomwork namespace, Ingress routes via Cookie: oa=<oaVal> (or WorkspaceUser)
+		cookieHeader = fmt.Sprintf("oa=%s; WorkspaceUser=%s", oaVal, targetUser)
 
 		var probeBaseURL string
 		if envProbe := os.Getenv("WORKSPACE_INGRESS_PROBE_URL"); envProbe != "" {
@@ -544,8 +585,10 @@ func probeWorkspaceViaIngress(ctx context.Context, userID, wsName string, ws *ai
 		}
 
 		if probeBaseURL != "" {
-			basePrefix := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(probeBaseURL, "/"), "/ws"), "/")
-			probeURL = fmt.Sprintf("%s%s", basePrefix, healthPath)
+			probeBaseURL = strings.TrimSuffix(probeBaseURL, "/")
+			probeBaseURL = strings.TrimSuffix(probeBaseURL, "/ws")
+			probeBaseURL = strings.TrimSuffix(probeBaseURL, "/")
+			probeURL = fmt.Sprintf("%s%s", probeBaseURL, healthPath)
 		} else {
 			endpoint := ws.Status.Endpoint
 			if endpoint == "" {
@@ -559,7 +602,7 @@ func probeWorkspaceViaIngress(ctx context.Context, userID, wsName string, ws *ai
 		}
 	} else {
 		// Non-bocomwork namespace: standard probing
-		cookieHeader = fmt.Sprintf("WorkspaceUser=%s", effectiveID)
+		cookieHeader = fmt.Sprintf("WorkspaceUser=%s", targetUser)
 
 		endpoint := ws.Status.Endpoint
 		if endpoint == "" {
@@ -579,35 +622,7 @@ func probeWorkspaceViaIngress(ctx context.Context, userID, wsName string, ws *ai
 		}
 	}
 
-	if doSingleProbe(ctx, probeURL, cookieHeader) {
-		return true
-	}
-
-	// If healthPath was not explicitly specified and returned non-healthy, fallback to probe root "/"
-	if ws.Spec.Runtime.HealthPath == "" && healthPath != "/" {
-		var rootProbeURL string
-		if ws.Namespace == "bocomwork" {
-			var probeBaseURL string
-			if envProbe := os.Getenv("WORKSPACE_INGRESS_PROBE_URL"); envProbe != "" {
-				probeBaseURL = envProbe
-			} else if envBase := os.Getenv("WORKSPACE_BASE_URL"); envBase != "" {
-				probeBaseURL = envBase
-			}
-			if probeBaseURL != "" {
-				basePrefix := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(probeBaseURL, "/"), "/ws"), "/")
-				rootProbeURL = fmt.Sprintf("%s/", basePrefix)
-			} else {
-				rootProbeURL = fmt.Sprintf("http://%s/", ws.Status.Endpoint)
-			}
-		} else {
-			rootProbeURL = fmt.Sprintf("http://%s/", ws.Status.Endpoint)
-		}
-		if doSingleProbe(ctx, rootProbeURL, cookieHeader) {
-			return true
-		}
-	}
-
-	return false
+	return doSingleProbe(ctx, probeURL, cookieHeader)
 }
 
 // doSingleProbe sends a single probe request with Cookie header and checks whether Ingress successfully forwarded to the Pod.
@@ -658,9 +673,8 @@ func stopWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		var req struct {
-			UserID    string              `json:"userId"`
-			Namespace string              `json:"namespace,omitempty"`
-			Env       []aiv1alpha1.EnvVar `json:"env,omitempty"`
+			UserID    string `json:"userId"`
+			Namespace string `json:"namespace,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserID == "" {
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -672,8 +686,7 @@ func stopWorkspaceHandler(c client.Client) http.HandlerFunc {
 		if namespace == "" {
 			namespace = "default"
 		}
-		effectiveUserID := getEffectiveUserID(req.UserID, namespace, req.Env)
-		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", effectiveUserID))
+		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", req.UserID))
 
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			ws := &aiv1alpha1.Workspace{}
@@ -705,9 +718,8 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		var req struct {
-			UserID    string              `json:"userId"`
-			Namespace string              `json:"namespace,omitempty"`
-			Env       []aiv1alpha1.EnvVar `json:"env,omitempty"`
+			UserID    string `json:"userId"`
+			Namespace string `json:"namespace,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserID == "" {
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -719,8 +731,7 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 		if namespace == "" {
 			namespace = "default"
 		}
-		effectiveUserID := getEffectiveUserID(req.UserID, namespace, req.Env)
-		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", effectiveUserID))
+		wsName := sanitizeK8sName(fmt.Sprintf("ws-%s", req.UserID))
 
 		// Update stopped to false if it was manually stopped
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -761,7 +772,7 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 		log.Printf("Successfully woke up Workspace lastActiveTime: %s", wsName)
 
 		// Poll until Workspace status.phase is Running or Failed
-		pollWorkspaceRunning(ctx, c, w, effectiveUserID, wsName, namespace, "Workspace wakeup timed out")
+		pollWorkspaceRunning(ctx, c, w, req.UserID, wsName, namespace, "Workspace wakeup timed out")
 	}
 }
 

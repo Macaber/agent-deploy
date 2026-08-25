@@ -717,9 +717,17 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		})
 	}
 
+	selectorLabels := map[string]string{
+		"app":       "workspace",
+		"workspace": ws.Name,
+	}
+
 	labels := map[string]string{
 		"app":       "workspace",
 		"workspace": ws.Name,
+	}
+	for k, v := range ws.Labels {
+		labels[k] = v
 	}
 
 	var command []string
@@ -757,7 +765,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 						Type: appsv1.RecreateDeploymentStrategyType,
 					},
 					Selector: &metav1.LabelSelector{
-						MatchLabels: labels,
+						MatchLabels: selectorLabels,
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
@@ -809,6 +817,8 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	deploy.Spec.Strategy = appsv1.DeploymentStrategy{
 		Type: appsv1.RecreateDeploymentStrategyType,
 	}
+	deploy.Labels = labels
+	deploy.Spec.Template.Labels = labels
 	deploy.Spec.Template.Spec.RuntimeClassName = ws.Spec.Runtime.RuntimeClassName
 	deploy.Spec.Template.Spec.Containers[0].Image = ws.Spec.Runtime.Image
 	deploy.Spec.Template.Spec.Containers[0].ImagePullPolicy = corev1.PullIfNotPresent
@@ -878,9 +888,17 @@ func (r *WorkspaceReconciler) reconcileService(ctx context.Context, ws *aiv1alph
 		})
 	}
 
+	selectorLabels := map[string]string{
+		"app":       "workspace",
+		"workspace": ws.Name,
+	}
+
 	labels := map[string]string{
 		"app":       "workspace",
 		"workspace": ws.Name,
+	}
+	for k, v := range ws.Labels {
+		labels[k] = v
 	}
 
 	if err != nil {
@@ -892,7 +910,7 @@ func (r *WorkspaceReconciler) reconcileService(ctx context.Context, ws *aiv1alph
 					Labels:    labels,
 				},
 				Spec: corev1.ServiceSpec{
-					Selector: labels,
+					Selector: selectorLabels,
 					Ports:    ports,
 					Type:     corev1.ServiceTypeClusterIP,
 				},
@@ -908,6 +926,8 @@ func (r *WorkspaceReconciler) reconcileService(ctx context.Context, ws *aiv1alph
 		return "", err
 	}
 
+	svc.Labels = labels
+	svc.Spec.Selector = selectorLabels
 	svc.Spec.Ports = ports
 	if err := r.Update(ctx, svc); err != nil {
 		return "", err
@@ -955,6 +975,9 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 		"app":       "workspace",
 		"workspace": ws.Name,
 	}
+	for k, v := range ws.Labels {
+		labels[k] = v
+	}
 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -989,6 +1012,7 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 		return "", err
 	}
 
+	ingress.Labels = labels
 	if ingress.Annotations == nil {
 		ingress.Annotations = make(map[string]string)
 	}

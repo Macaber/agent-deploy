@@ -27,27 +27,44 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 - **请求方法**：`GET`
 - **请求路径**：`/api/workspaces`
 - **请求参数 (Query Params)**：
-  - `userId` (string, 必填)：要查询的用户 ID，例如 `alice`。
+  - `userId` (string, 选填)：要查询的用户 ID，例如 `alice`。若不提供 `userId`，则查询并返回该命名空间下的所有工作空间列表。
   - `namespace` (string, 选填)：工作空间所在的 K8s 命名空间，默认为 `"default"`。
 - **返回响应 (HTTP 200 OK)**：
-  - **如果工作空间不存在 (尚未创建过)**:
+  - **单个工作空间查询 (`userId` 存在)**:
+    - 若不存在:
+      ```json
+      {
+        "exists": false,
+        "phase": "",
+        "url": ""
+      }
+      ```
+    - 若已创建:
+      ```json
+      {
+        "exists": true,
+        "phase": "Running",
+        "url": "http://ws-alice.localhost",
+        "oa": "alice_oa",
+        "spec": { ... }
+      }
+      ```
+  - **工作空间列表查询 (不传 `userId`)**:
     ```json
-    {
-      "exists": false,
-      "phase": "",
-      "url": ""
-    }
-    ```
-  - **如果工作空间已创建**:
-    ```json
-    {
-      "exists": true,
-      "phase": "Running",  // 可能是 Running, Sleeping, Stopped, Pending 等
-      "url": "http://ws-alice.localhost"
-    }
+    [
+      {
+        "userId": "alice",
+        "name": "ws-alice",
+        "oa": "alice_oa",
+        "phase": "Running",
+        "url": "http://ws-alice.localhost",
+        "image": "docker.io/library/bocomwork:v1.0.2",
+        "cpu": "0.5",
+        "memory": "1Gi"
+      }
+    ]
     ```
 - **错误响应**：
-  - `400 Bad Request`：缺失 `userId` 参数（`Missing userId parameter`）。
   - `500 Internal Server Error`：获取 Kubernetes 集群状态异常。
 
 ---
@@ -61,7 +78,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 - **请求体参数说明**：
   | 参数名 | 数据类型 | 是否必填 | 默认值 | 作用描述 |
   | :--- | :--- | :--- | :--- | :--- |
-  | **`userId`** | `string` | **是** | - | 用户唯一标识（决定 workspace 资源名称 `ws-<userId>`；当 `namespace` 为 `"bocomwork"` 且环境变量中包含非空 `USER_CODE` 时，使用 `USER_CODE` 的值替换 `userId`）。 |
+  | **`userId`** | `string` | **是** | - | 用户唯一标识（决定 workspace 资源名称 `ws-<userId>`）。 |
   | **`namespace`** | `string` | 否 | `"default"` | 工作空间所在的 K8s 命名空间。 |
   | **`image`** | `string` | **是** | - | 启动工作空间的容器镜像。 |
   | **`port`** | `int` | 否 | `4096` | 容器监听端口。 |
@@ -71,7 +88,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   | **`storageClass`** | `string`| 否 | - | 指定使用的 StorageClass 名称。 |
   | **`idleTimeout`** | `string` | 否 | `"5m"` (API 创建默认) | 自 `lastActiveTime` 起的最长运行窗口，超时后 Operator 将工作空间缩容为 `Sleeping`。**不是**实时“无操作闲置”检测；唤醒/再次创建会刷新 `lastActiveTime`。Go 持续时间格式，如 `"30m"`。 |
   | **`exposeSSH`** | `boolean` | 否 | `false` | 是否开启并暴露 SSH 默认 22 端口。 |
-  | **`env`** | `array` | 否 | - | 环境变量列表，格式为 `[{"name": "KEY", "value": "VAL"}]`。 |
+  | **`env`** | `array` | 否 | - | 环境变量列表，格式为 `[{"name": "KEY", "value": "VAL"}]`。当命名空间为 `bocomwork` 且包含 `OA` 环境变量时，会自动为 Workspace 资源打上 `oa=<value>` 标签（支持 `-l oa=xxx` 检索）。 |
   | **`command`** 或 **`cmd`** | `array` | 否 | - | 自定义容器的启动入口命令 (对应 `ENTRYPOINT`)，如 `["bocomwork-entrypoint"]` 或 `["/bin/bash"]`。 |
   | **`args`** | `array` | 否 | - | 自定义容器启动入口命令参数 (对应 `CMD`)，如 `["-g", "daemon off;"]`。 |
   | **`volumeMounts`** | `array` | 否 | - | 自定义持久卷在容器内的挂载路径及卷内子目录映射。如 `[{"mountPath": "/app", "subPath": "app-dir"}]`。 |

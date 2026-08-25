@@ -850,12 +850,13 @@
                     <table class="dyn-table" id="directoryTable">
                         <thead>
                             <tr>
-                                <th style="width: 15%;">用户 ID</th>
-                                <th style="width: 15%;">实例名称</th>
-                                <th style="width: 30%;">运行镜像</th>
-                                <th style="width: 15%;">资源规格</th>
-                                <th style="width: 10%;">状态</th>
-                                <th style="width: 15%; text-align: center;">操作</th>
+                                <th style="width: 14%;">用户 ID</th>
+                                <th style="width: 12%;">OA 账号</th>
+                                <th style="width: 14%;">实例名称</th>
+                                <th style="width: 26%;">运行镜像</th>
+                                <th style="width: 14%;">资源规格</th>
+                                <th style="width: 8%;">状态</th>
+                                <th style="width: 12%; text-align: center;">操作</th>
                             </tr>
                         </thead>
                         <tbody id="directoryBody">
@@ -1092,7 +1093,7 @@
             const emptyState = document.getElementById('directoryEmptyState');
             const table = document.getElementById('directoryTable');
             
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 24px; color: var(--text-muted);">正在加载工作空间列表，请稍候...</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 24px; color: var(--text-muted);">正在加载工作空间列表，请稍候...</td></tr>';
             emptyState.style.display = 'none';
             table.style.display = 'table';
             
@@ -1132,8 +1133,13 @@
                     // Modify button
                     actionButtons += '<button class="btn-inline-action btn-load" onclick="loadWorkspaceToForm(\'' + escapeHtml(item.userId) + '\')">载入修改</button>';
                     
+                    const oaDisplay = item.oa 
+                        ? '<span class="oa-badge" style="display: inline-block; background: rgba(99, 102, 241, 0.12); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.25); padding: 2px 7px; border-radius: 4px; font-family: monospace; font-size: 12px; font-weight: 500;">' + escapeHtml(item.oa) + '</span>' 
+                        : '<span style="color: var(--text-muted); font-size: 12px;">-</span>';
+
                     tr.innerHTML = 
                         '<td>' + escapeHtml(item.userId) + '</td>' +
+                        '<td>' + oaDisplay + '</td>' +
                         '<td>' + escapeHtml(item.name) + '</td>' +
                         '<td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="' + escapeHtml(item.image) + '">' + escapeHtml(item.image) + '</td>' +
                         '<td>CPU: ' + escapeHtml(item.cpu || '-') + ' / 内存: ' + escapeHtml(item.memory || '-') + '</td>' +
@@ -1143,7 +1149,7 @@
                     tbody.appendChild(tr);
                 });
             } catch (err) {
-                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 24px; color: #ef4444;">' + escapeHtml(err.message) + '</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 24px; color: #ef4444;">' + escapeHtml(err.message) + '</td></tr>';
             }
         }
 
