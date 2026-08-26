@@ -152,6 +152,30 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
+	// Auto-populate 'oa' label on Workspace CR if namespace is bocomwork and OA exists in Env
+	if ws.Namespace == "bocomwork" {
+		oaVal := getOAValueFromEnv(ws.Spec.Runtime.Env)
+		if oaVal != "" && (ws.Labels == nil || ws.Labels["oa"] != oaVal) {
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				latestWs := &aiv1alpha1.Workspace{}
+				if err := r.Get(ctx, req.NamespacedName, latestWs); err != nil {
+					return err
+				}
+				if latestWs.Labels == nil {
+					latestWs.Labels = make(map[string]string)
+				}
+				latestWs.Labels["oa"] = oaVal
+				return r.Update(ctx, latestWs)
+			})
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.Get(ctx, req.NamespacedName, ws); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
 	// 2. Reconcile children (PVC, Deployment, Service, Ingress)
 	pvcName, err := r.reconcilePVC(ctx, ws)
 	if err != nil {
@@ -729,6 +753,11 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	for k, v := range ws.Labels {
 		labels[k] = v
 	}
+	if _, ok := labels["oa"]; !ok && ws.Namespace == "bocomwork" {
+		if oa := getOAValueFromEnv(ws.Spec.Runtime.Env); oa != "" {
+			labels["oa"] = oa
+		}
+	}
 
 	var command []string
 	var containerArgs []string
@@ -900,6 +929,11 @@ func (r *WorkspaceReconciler) reconcileService(ctx context.Context, ws *aiv1alph
 	for k, v := range ws.Labels {
 		labels[k] = v
 	}
+	if _, ok := labels["oa"]; !ok && ws.Namespace == "bocomwork" {
+		if oa := getOAValueFromEnv(ws.Spec.Runtime.Env); oa != "" {
+			labels["oa"] = oa
+		}
+	}
 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -977,6 +1011,11 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 	}
 	for k, v := range ws.Labels {
 		labels[k] = v
+	}
+	if _, ok := labels["oa"]; !ok && ws.Namespace == "bocomwork" {
+		if oa := getOAValueFromEnv(ws.Spec.Runtime.Env); oa != "" {
+			labels["oa"] = oa
+		}
 	}
 
 	if err != nil {
@@ -1263,3 +1302,14 @@ func getReadinessProbe(ws *aiv1alpha1.Workspace) *corev1.Probe {
 		FailureThreshold:    3,
 	}
 }
+
+// getOAValueFromEnv extracts the OA value from environment variables if present.
+func getOAValueFromEnv(envs []aiv1alpha1.EnvVar) string {
+	for _, env := range envs {
+		if strings.EqualFold(env.Name, "OA") && strings.TrimSpace(env.Value) != "" {
+			return strings.TrimSpace(env.Value)
+		}
+	}
+	return ""
+}
+

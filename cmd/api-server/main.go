@@ -81,27 +81,27 @@ func serveHome(w http.ResponseWriter, r *http.Request) {
 
 // workspaceRequest is the shared request body for workspace create/update operations.
 type workspaceRequest struct {
-	UserID                string                            `json:"userId"`
-	Namespace             string                            `json:"namespace,omitempty"`
-	Image                 string                            `json:"image,omitempty"`
-	Port                  int32                             `json:"port,omitempty"`
-	CPU                   string                            `json:"cpu,omitempty"`
-	Memory                string                            `json:"memory,omitempty"`
-	StorageSize           string                            `json:"storageSize,omitempty"`
-	StorageClass          string                            `json:"storageClass,omitempty"`
-	IdleTimeout           string                            `json:"idleTimeout,omitempty"`
-	ExposeSSH             *bool                             `json:"exposeSSH,omitempty"`
-	Env                   []aiv1alpha1.EnvVar               `json:"env,omitempty"`
-	Command               []string                          `json:"command,omitempty"`
-	Cmd                   []string                          `json:"cmd,omitempty"`
-	Args                  []string                          `json:"args,omitempty"`
-	VolumeMounts          []aiv1alpha1.VolumeMount          `json:"volumeMounts,omitempty"`
-	PostStartScript       string                            `json:"postStartScript,omitempty"`
-	HealthPath            string                            `json:"healthPath,omitempty"`
-	RuntimeClassName      *string                           `json:"runtimeClassName,omitempty"`
-	SharedVolumeMounts    []aiv1alpha1.SharedVolumeMount    `json:"sharedVolumeMounts,omitempty"`
-	ConfigMapVolumeMounts []aiv1alpha1.ConfigMapVolumeMount `json:"configMapVolumeMounts,omitempty"`
-	InitContainers        []aiv1alpha1.InitContainerSpec    `json:"initContainers,omitempty"`
+	UserID                string                                 `json:"userId"`
+	Namespace             string                                 `json:"namespace,omitempty"`
+	Image                 string                                 `json:"image,omitempty"`
+	Port                  int32                                  `json:"port,omitempty"`
+	CPU                   string                                 `json:"cpu,omitempty"`
+	Memory                string                                 `json:"memory,omitempty"`
+	StorageSize           string                                 `json:"storageSize,omitempty"`
+	StorageClass          string                                 `json:"storageClass,omitempty"`
+	IdleTimeout           string                                 `json:"idleTimeout,omitempty"`
+	ExposeSSH             *bool                                  `json:"exposeSSH,omitempty"`
+	Env                   []aiv1alpha1.EnvVar                    `json:"env,omitempty"`
+	Command               []string                               `json:"command,omitempty"`
+	Cmd                   []string                               `json:"cmd,omitempty"`
+	Args                  []string                               `json:"args,omitempty"`
+	VolumeMounts          []aiv1alpha1.VolumeMount               `json:"volumeMounts,omitempty"`
+	PostStartScript       string                                 `json:"postStartScript,omitempty"`
+	HealthPath            string                                 `json:"healthPath,omitempty"`
+	RuntimeClassName      *string                                `json:"runtimeClassName,omitempty"`
+	SharedVolumeMounts    []aiv1alpha1.SharedVolumeMount         `json:"sharedVolumeMounts,omitempty"`
+	ConfigMapVolumeMounts []aiv1alpha1.ConfigMapVolumeMount      `json:"configMapVolumeMounts,omitempty"`
+	InitContainers        []aiv1alpha1.InitContainerSpec         `json:"initContainers,omitempty"`
 	NetworkPolicy         *aiv1alpha1.WorkspaceNetworkPolicySpec `json:"networkPolicy,omitempty"`
 }
 
@@ -322,13 +322,13 @@ func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequ
 			IdleTimeout: idleTimeout,
 			ExposeSSH:   exposeSSH,
 			Runtime: aiv1alpha1.RuntimeSpec{
-				Image:           req.Image,
-				Port:            port,
-				CPU:             req.CPU,
-				Memory:          req.Memory,
-				Env:             req.Env,
-				Command:         cmdList,
-				Args:            req.Args,
+				Image:            req.Image,
+				Port:             port,
+				CPU:              req.CPU,
+				Memory:           req.Memory,
+				Env:              req.Env,
+				Command:          cmdList,
+				Args:             req.Args,
 				VolumeMounts:     req.VolumeMounts,
 				PostStartScript:  req.PostStartScript,
 				HealthPath:       req.HealthPath,
@@ -494,7 +494,7 @@ func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha
 // pollWorkspaceRunning polls the workspace status until it reaches Running or Failed state,
 // and verifies that the Ingress route is healthy and serving before writing the JSON result.
 func pollWorkspaceRunning(ctx context.Context, c client.Client, w http.ResponseWriter, userID, wsName, namespace, timeoutMsg string) {
-	timeoutDuration := 20 * time.Second
+	timeoutDuration := 30 * time.Second
 	if envTimeout := os.Getenv("WORKSPACE_POLL_TIMEOUT"); envTimeout != "" {
 		if d, err := time.ParseDuration(envTimeout); err == nil {
 			timeoutDuration = d
@@ -561,21 +561,12 @@ func probeWorkspaceViaIngress(ctx context.Context, userID, wsName string, ws *ai
 		healthPath = "/" + healthPath
 	}
 
-	targetUser := userID
-	if targetUser == "" && ws.Spec.Owner != "" {
-		targetUser = ws.Spec.Owner
-	}
-
 	var cookieHeader string
 	var probeURL string
 
 	if ws.Namespace == "bocomwork" {
-		oaVal := targetUser
-		if wsOA := getOAFromWorkspace(ws); wsOA != "" {
-			oaVal = wsOA
-		}
 		// In bocomwork namespace, Ingress routes via Cookie: oa=<oaVal> (or WorkspaceUser)
-		cookieHeader = fmt.Sprintf("oa=%s; WorkspaceUser=%s", oaVal, targetUser)
+		cookieHeader = fmt.Sprintf("oa=%s; WorkspaceUser=%s", userID, userID)
 
 		var probeBaseURL string
 		if envProbe := os.Getenv("WORKSPACE_INGRESS_PROBE_URL"); envProbe != "" {
@@ -602,7 +593,7 @@ func probeWorkspaceViaIngress(ctx context.Context, userID, wsName string, ws *ai
 		}
 	} else {
 		// Non-bocomwork namespace: standard probing
-		cookieHeader = fmt.Sprintf("WorkspaceUser=%s", targetUser)
+		cookieHeader = fmt.Sprintf("oa=%s; WorkspaceUser=%s", userID, userID)
 
 		endpoint := ws.Status.Endpoint
 		if endpoint == "" {
