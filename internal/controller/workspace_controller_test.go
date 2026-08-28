@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -199,6 +200,197 @@ var _ = Describe("Workspace Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should preserve selector integrity when user provides custom labels", func() {
+			By("updating the resource with user custom labels that attempt to override app and workspace")
+			resource := &aiv1alpha1.Workspace{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+			resource.Labels = map[string]string{
+				"app":       "user-custom-app",
+				"workspace": "override-ws",
+				"custom":    "my-value",
+			}
+			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+
+			By("Reconciling the workspace with conflicting user labels")
+			controllerReconciler := &WorkspaceReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying Deployment labels and selector compatibility")
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName + "-deploy",
+				Namespace: resourceNamespace,
+			}, deploy)).To(Succeed())
+
+			Expect(deploy.Spec.Selector.MatchLabels["app"]).To(Equal("workspace"))
+			Expect(deploy.Spec.Selector.MatchLabels["workspace"]).To(Equal(resourceName))
+			Expect(deploy.Spec.Template.Labels["app"]).To(Equal("workspace"))
+			Expect(deploy.Spec.Template.Labels["workspace"]).To(Equal(resourceName))
+			Expect(deploy.Spec.Template.Labels["custom"]).To(Equal("my-value"))
+			Expect(deploy.Labels["app"]).To(Equal("workspace"))
+			Expect(deploy.Labels["workspace"]).To(Equal(resourceName))
+			Expect(deploy.Labels["custom"]).To(Equal("my-value"))
+
+			By("Verifying Service labels and selector compatibility")
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName + "-svc",
+				Namespace: resourceNamespace,
+			}, svc)).To(Succeed())
+
+			Expect(svc.Spec.Selector["app"]).To(Equal("workspace"))
+			Expect(svc.Spec.Selector["workspace"]).To(Equal(resourceName))
+			Expect(svc.Labels["app"]).To(Equal("workspace"))
+			Expect(svc.Labels["workspace"]).To(Equal(resourceName))
+			Expect(svc.Labels["custom"]).To(Equal("my-value"))
+
+			By("Verifying Ingress labels")
+			ingress := &networkingv1.Ingress{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName + "-ingress",
+				Namespace: resourceNamespace,
+			}, ingress)).To(Succeed())
+
+			Expect(ingress.Labels["app"]).To(Equal("workspace"))
+			Expect(ingress.Labels["workspace"]).To(Equal(resourceName))
+			Expect(ingress.Labels["custom"]).To(Equal("my-value"))
+		})
+	})
+
+	Context("When testing label helpers unit logic", func() {
+		It("should properly construct workspace labels and selector labels", func() {
+			ws := &aiv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-ws",
+					Namespace: "default",
+					Labels: map[string]string{
+						"app":       "custom-app",
+						"workspace": "override-name",
+						"team":      "data",
+					},
+				},
+			}
+
+			selector := buildSelectorLabels(ws)
+			Expect(selector).To(Equal(map[string]string{
+				"app":       "workspace",
+				"workspace": "my-ws",
+			}))
+
+			labels := buildWorkspaceLabels(ws)
+			Expect(labels["app"]).To(Equal("workspace"))
+			Expect(labels["workspace"]).To(Equal("my-ws"))
+			Expect(labels["team"]).To(Equal("data"))
+
+			// In bocomwork namespace, OA from env should be added if not present
+			bocomWs := &aiv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bocom-ws",
+					Namespace: "bocomwork",
+				},
+				Spec: aiv1alpha1.WorkspaceSpec{
+					Runtime: aiv1alpha1.RuntimeSpec{
+						Env: []aiv1alpha1.EnvVar{
+							{Name: "OA", Value: "zhangsan"},
+						},
+					},
+				},
+			}
+			bocomLabels := buildWorkspaceLabels(bocomWs)
+			Expect(bocomLabels["oa"]).To(Equal("zhangsan"))
+			Expect(bocomLabels["app"]).To(Equal("workspace"))
+			Expect(bocomLabels["workspace"]).To(Equal("bocom-ws"))
+		})
+	})
+
+	Context("When reconciling storage changes", func() {
+		const (
+			storageWsName      = "test-storage-ws"
+			storageWsNamespace = "default"
+		)
+
+		ctx := context.Background()
+		storageKey := types.NamespacedName{
+			Name:      storageWsName,
+			Namespace: storageWsNamespace,
+		}
+
+		BeforeEach(func() {
+			ws := &aiv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      storageWsName,
+					Namespace: storageWsNamespace,
+				},
+				Spec: aiv1alpha1.WorkspaceSpec{
+					Owner: "storage-owner",
+					Runtime: aiv1alpha1.RuntimeSpec{
+						Image: "nginx:alpine",
+					},
+					Storage: aiv1alpha1.StorageSpec{
+						Size: "1Gi",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			ws := &aiv1alpha1.Workspace{}
+			if err := k8sClient.Get(ctx, storageKey, ws); err == nil {
+				_ = k8sClient.Delete(ctx, ws)
+			}
+		})
+
+		It("should expand PVC storage size when requested size is larger", func() {
+			controllerReconciler := &WorkspaceReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// First reconcile adds finalizer, second creates resources
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: storageKey})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: storageKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			pvc := &corev1.PersistentVolumeClaim{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: storageWsName + "-pvc", Namespace: storageWsNamespace}, pvc)).To(Succeed())
+			Expect(pvc.Spec.Resources.Requests.Storage().String()).To(Equal("1Gi"))
+
+			By("Updating Workspace spec.storage.size to 5Gi")
+			ws := &aiv1alpha1.Workspace{}
+			Expect(k8sClient.Get(ctx, storageKey, ws)).To(Succeed())
+			ws.Spec.Storage.Size = "5Gi"
+			Expect(k8sClient.Update(ctx, ws)).To(Succeed())
+
+			By("Reconciling the expanded storage")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: storageKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: storageWsName + "-pvc", Namespace: storageWsNamespace}, pvc)).To(Succeed())
+			Expect(pvc.Spec.Resources.Requests.Storage().String()).To(Equal("5Gi"))
+
+			By("Attempting to shrink Workspace spec.storage.size to 2Gi")
+			Expect(k8sClient.Get(ctx, storageKey, ws)).To(Succeed())
+			ws.Spec.Storage.Size = "2Gi"
+			Expect(k8sClient.Update(ctx, ws)).To(Succeed())
+
+			By("Reconciling the shrunk storage request")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: storageKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			// PVC storage should remain 5Gi (shrink is ignored/unsupported)
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: storageWsName + "-pvc", Namespace: storageWsNamespace}, pvc)).To(Succeed())
+			Expect(pvc.Spec.Resources.Requests.Storage().String()).To(Equal("5Gi"))
 		})
 	})
 })

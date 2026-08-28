@@ -32,6 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,7 +48,8 @@ const workspaceFinalizer = "ai.example.com/workspace-cleanup"
 // WorkspaceReconciler reconciles a Workspace object
 type WorkspaceReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=ai.example.com,resources=workspaces,verbs=get;list;watch;create;update;patch;delete
@@ -63,6 +65,8 @@ type WorkspaceReconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -448,6 +452,64 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 		}
 		return "", err
 	}
+
+	// PVC already exists: handle volume expansion / size reconciliation
+	desiredSize, err := apiresources.ParseQuantity(ws.Spec.Storage.Size)
+	if err != nil {
+		log.Error(err, "Invalid storage size in workspace spec", "size", ws.Spec.Storage.Size)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(ws, corev1.EventTypeWarning, "InvalidStorageSize", "Failed to parse storage size %q: %v", ws.Spec.Storage.Size, err)
+		}
+		return pvc.Name, nil
+	}
+
+	currentReq, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	if !ok {
+		if pvc.Spec.Resources.Requests == nil {
+			pvc.Spec.Resources.Requests = make(corev1.ResourceList)
+		}
+		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = desiredSize
+		log.Info("Setting storage request on existing PVC", "pvcName", pvcName, "size", desiredSize.String())
+		if err := r.Update(ctx, pvc); err != nil {
+			return "", err
+		}
+	} else {
+		cmp := desiredSize.Cmp(currentReq)
+		if cmp > 0 {
+			log.Info("Expanding PVC storage size", "pvcName", pvcName, "oldSize", currentReq.String(), "newSize", desiredSize.String())
+			pvc.Spec.Resources.Requests[corev1.ResourceStorage] = desiredSize
+			if err := r.Update(ctx, pvc); err != nil {
+				log.Error(err, "Failed to update PVC for expansion", "pvcName", pvcName)
+				if r.Recorder != nil {
+					r.Recorder.Eventf(ws, corev1.EventTypeWarning, "VolumeExpansionFailed", "Failed to expand PVC %s from %s to %s: %v", pvcName, currentReq.String(), desiredSize.String(), err)
+				}
+				return "", err
+			}
+			if r.Recorder != nil {
+				r.Recorder.Eventf(ws, corev1.EventTypeNormal, "VolumeExpanded", "Expanded PVC %s from %s to %s", pvcName, currentReq.String(), desiredSize.String())
+			}
+
+			// For auto-provisioned OSS PVs, update PV capacity to match
+			pvName := ws.Name + "-pv"
+			pv := &corev1.PersistentVolume{}
+			if pvErr := r.Get(ctx, client.ObjectKey{Name: pvName}, pv); pvErr == nil {
+				if curCap, ok := pv.Spec.Capacity[corev1.ResourceStorage]; !ok || desiredSize.Cmp(curCap) > 0 {
+					if pv.Spec.Capacity == nil {
+						pv.Spec.Capacity = make(corev1.ResourceList)
+					}
+					pv.Spec.Capacity[corev1.ResourceStorage] = desiredSize
+					log.Info("Expanding OSS PV capacity", "pvName", pvName, "newSize", desiredSize.String())
+					_ = r.Update(ctx, pv)
+				}
+			}
+		} else if cmp < 0 {
+			log.Info("Storage size reduction requested but not supported by Kubernetes", "pvcName", pvcName, "currentSize", currentReq.String(), "requestedSize", desiredSize.String())
+			if r.Recorder != nil {
+				r.Recorder.Eventf(ws, corev1.EventTypeWarning, "VolumeShrinkNotSupported", "Shrinking storage from %s to %s is not supported by Kubernetes; ignoring size update", currentReq.String(), desiredSize.String())
+			}
+		}
+	}
+
 	return pvc.Name, nil
 }
 
@@ -504,9 +566,6 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 
 	ports := []corev1.ContainerPort{
 		{Name: "http", ContainerPort: containerPort},
-	}
-	if ws.Spec.ExposeSSH {
-		ports = append(ports, corev1.ContainerPort{Name: "ssh", ContainerPort: 22})
 	}
 
 	// Volumes and Mounts: Detect if running inside K8s (production PVC mode) or locally (developer HostPath mode)
@@ -741,23 +800,8 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		})
 	}
 
-	selectorLabels := map[string]string{
-		"app":       "workspace",
-		"workspace": ws.Name,
-	}
-
-	labels := map[string]string{
-		"app":       "workspace",
-		"workspace": ws.Name,
-	}
-	for k, v := range ws.Labels {
-		labels[k] = v
-	}
-	if _, ok := labels["oa"]; !ok && ws.Namespace == "bocomwork" {
-		if oa := getOAValueFromEnv(ws.Spec.Runtime.Env); oa != "" {
-			labels["oa"] = oa
-		}
-	}
+	selectorLabels := buildSelectorLabels(ws)
+	labels := buildWorkspaceLabels(ws)
 
 	var command []string
 	var containerArgs []string
@@ -909,31 +953,9 @@ func (r *WorkspaceReconciler) reconcileService(ctx context.Context, ws *aiv1alph
 			TargetPort: intstr.FromString("http"),
 		},
 	}
-	if ws.Spec.ExposeSSH {
-		ports = append(ports, corev1.ServicePort{
-			Name:       "ssh",
-			Port:       22,
-			TargetPort: intstr.FromString("ssh"),
-		})
-	}
 
-	selectorLabels := map[string]string{
-		"app":       "workspace",
-		"workspace": ws.Name,
-	}
-
-	labels := map[string]string{
-		"app":       "workspace",
-		"workspace": ws.Name,
-	}
-	for k, v := range ws.Labels {
-		labels[k] = v
-	}
-	if _, ok := labels["oa"]; !ok && ws.Namespace == "bocomwork" {
-		if oa := getOAValueFromEnv(ws.Spec.Runtime.Env); oa != "" {
-			labels["oa"] = oa
-		}
-	}
+	selectorLabels := buildSelectorLabels(ws)
+	labels := buildWorkspaceLabels(ws)
 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -1005,18 +1027,7 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 		},
 	}
 
-	labels := map[string]string{
-		"app":       "workspace",
-		"workspace": ws.Name,
-	}
-	for k, v := range ws.Labels {
-		labels[k] = v
-	}
-	if _, ok := labels["oa"]; !ok && ws.Namespace == "bocomwork" {
-		if oa := getOAValueFromEnv(ws.Spec.Runtime.Env); oa != "" {
-			labels["oa"] = oa
-		}
-	}
+	labels := buildWorkspaceLabels(ws)
 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -1106,10 +1117,8 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 		return err
 	}
 
-	labels := map[string]string{
-		"app":       "workspace",
-		"workspace": ws.Name,
-	}
+	selectorLabels := buildSelectorLabels(ws)
+	labels := buildWorkspaceLabels(ws)
 
 	tcpProtocol := corev1.ProtocolTCP
 	udpProtocol := corev1.ProtocolUDP
@@ -1203,7 +1212,7 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 
 	desiredNetpolSpec := networkingv1.NetworkPolicySpec{
 		PodSelector: metav1.LabelSelector{
-			MatchLabels: labels,
+			MatchLabels: selectorLabels,
 		},
 		PolicyTypes: []networkingv1.PolicyType{
 			networkingv1.PolicyTypeIngress,
@@ -1235,6 +1244,7 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 		return err
 	}
 
+	netpol.Labels = labels
 	netpol.Spec = desiredNetpolSpec
 	return r.Update(ctx, netpol)
 }
@@ -1313,3 +1323,29 @@ func getOAValueFromEnv(envs []aiv1alpha1.EnvVar) string {
 	return ""
 }
 
+// buildSelectorLabels returns the immutable selector labels used to identify workspace pods.
+func buildSelectorLabels(ws *aiv1alpha1.Workspace) map[string]string {
+	return map[string]string{
+		"app":       "workspace",
+		"workspace": ws.Name,
+	}
+}
+
+// buildWorkspaceLabels returns the labels for child resources (Deployment, Pods, Service, Ingress, NetworkPolicy).
+// User-provided labels from the Workspace CR are copied first, and system/built-in labels ("app", "workspace", "oa")
+// are applied afterwards to ensure selector consistency and prevent user labels from breaking Deployment/Service selectors.
+func buildWorkspaceLabels(ws *aiv1alpha1.Workspace) map[string]string {
+	labels := make(map[string]string, len(ws.Labels)+3)
+	for k, v := range ws.Labels {
+		labels[k] = v
+	}
+	// Enforce built-in reserved keys
+	labels["app"] = "workspace"
+	labels["workspace"] = ws.Name
+	if _, ok := labels["oa"]; !ok && ws.Namespace == "bocomwork" {
+		if oa := getOAValueFromEnv(ws.Spec.Runtime.Env); oa != "" {
+			labels["oa"] = oa
+		}
+	}
+	return labels
+}

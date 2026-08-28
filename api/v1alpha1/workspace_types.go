@@ -176,10 +176,6 @@ type WorkspaceSpec struct {
 	// +kubebuilder:validation:Required
 	Storage StorageSpec `json:"storage"`
 
-	// ExposeSSH enables SSH access to the workspace container
-	// +optional
-	ExposeSSH bool `json:"exposeSSH,omitempty"`
-
 	// IdleTimeout is the max run window after status.lastActiveTime before the Operator
 	// scales the workspace to 0 (Sleeping). It is NOT live traffic idle detection:
 	// lastActiveTime is set on create and when the user starts/wakes the workspace via API

@@ -14,4 +14,4 @@ mountOptions:
   - tcp
   - noatime
   - noresvport
-
+allowVolumeExpansion: true

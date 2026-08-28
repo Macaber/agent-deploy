@@ -89,9 +89,6 @@ spec:
                   DisableNetworkPolicy disables automatic NetworkPolicy generation for the workspace.
                   Deprecated: use NetworkPolicy.Disabled instead.
                 type: boolean
-              exposeSSH:
-                description: ExposeSSH enables SSH access to the workspace container
-                type: boolean
               idleTimeout:
                 description: |-
                   IdleTimeout is the max run window after status.lastActiveTime before the Operator
@@ -575,6 +572,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - ""
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
   - ai.example.com
   resources:
   - workspaces
@@ -831,7 +836,7 @@ spec:
         env:
         - name: WORKSPACE_DOMAIN
           value: bocomcode
-        image: workspace-operator:v1.0.28
+        image: controller:latest
         livenessProbe:
           httpGet:
             path: /healthz

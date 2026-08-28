@@ -87,7 +87,6 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   | **`storageSize`** | `string` | 否 | `"1Gi"` | 持久化 PVC 大小规格，例如 `"10Gi"`。 |
   | **`storageClass`** | `string`| 否 | - | 指定使用的 StorageClass 名称。 |
   | **`idleTimeout`** | `string` | 否 | `"5m"` (API 创建默认) | 自 `lastActiveTime` 起的最长运行窗口，超时后 Operator 将工作空间缩容为 `Sleeping`。**不是**实时“无操作闲置”检测；唤醒/再次创建会刷新 `lastActiveTime`。Go 持续时间格式，如 `"30m"`。 |
-  | **`exposeSSH`** | `boolean` | 否 | `false` | 是否开启并暴露 SSH 默认 22 端口。 |
   | **`env`** | `array` | 否 | - | 环境变量列表，格式为 `[{"name": "KEY", "value": "VAL"}]`。当命名空间为 `bocomwork` 且包含 `OA` 环境变量时，会自动为 Workspace 资源打上 `oa=<value>` 标签（支持 `-l oa=xxx` 检索）。 |
   | **`command`** 或 **`cmd`** | `array` | 否 | - | 自定义容器的启动入口命令 (对应 `ENTRYPOINT`)，如 `["bocomwork-entrypoint"]` 或 `["/bin/bash"]`。 |
   | **`args`** | `array` | 否 | - | 自定义容器启动入口命令参数 (对应 `CMD`)，如 `["-g", "daemon off;"]`。 |
@@ -111,7 +110,6 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
     "storageSize": "10Gi",
     "storageClass": "alicloud-oss",
     "idleTimeout": "30m",
-    "exposeSSH": true,
     "runtimeClassName": "kata",
     "networkPolicy": {
       "disabled": false,

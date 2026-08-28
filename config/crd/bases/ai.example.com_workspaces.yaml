@@ -81,9 +81,6 @@ spec:
                   DisableNetworkPolicy disables automatic NetworkPolicy generation for the workspace.
                   Deprecated: use NetworkPolicy.Disabled instead.
                 type: boolean
-              exposeSSH:
-                description: ExposeSSH enables SSH access to the workspace container
-                type: boolean
               idleTimeout:
                 description: |-
                   IdleTimeout is the max run window after status.lastActiveTime before the Operator

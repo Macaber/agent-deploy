@@ -90,7 +90,6 @@ type workspaceRequest struct {
 	StorageSize           string                                 `json:"storageSize,omitempty"`
 	StorageClass          string                                 `json:"storageClass,omitempty"`
 	IdleTimeout           string                                 `json:"idleTimeout,omitempty"`
-	ExposeSSH             *bool                                  `json:"exposeSSH,omitempty"`
 	Env                   []aiv1alpha1.EnvVar                    `json:"env,omitempty"`
 	Command               []string                               `json:"command,omitempty"`
 	Cmd                   []string                               `json:"cmd,omitempty"`
@@ -294,10 +293,6 @@ func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequ
 	if idleTimeout == "" {
 		idleTimeout = "5m"
 	}
-	exposeSSH := false
-	if req.ExposeSSH != nil {
-		exposeSSH = *req.ExposeSSH
-	}
 
 	cmdList := req.Command
 	if len(cmdList) == 0 && len(req.Cmd) > 0 {
@@ -320,7 +315,6 @@ func createNewWorkspace(ctx context.Context, c client.Client, req *workspaceRequ
 		Spec: aiv1alpha1.WorkspaceSpec{
 			Owner:       ownerID,
 			IdleTimeout: idleTimeout,
-			ExposeSSH:   exposeSSH,
 			Runtime: aiv1alpha1.RuntimeSpec{
 				Image:            req.Image,
 				Port:             port,
@@ -424,10 +418,6 @@ func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha
 		}
 		if req.IdleTimeout != "" && currentWs.Spec.IdleTimeout != req.IdleTimeout {
 			currentWs.Spec.IdleTimeout = req.IdleTimeout
-			needsUpdate = true
-		}
-		if req.ExposeSSH != nil && currentWs.Spec.ExposeSSH != *req.ExposeSSH {
-			currentWs.Spec.ExposeSSH = *req.ExposeSSH
 			needsUpdate = true
 		}
 		if req.SharedVolumeMounts != nil && isSliceDifferent(currentWs.Spec.SharedVolumeMounts, req.SharedVolumeMounts) {

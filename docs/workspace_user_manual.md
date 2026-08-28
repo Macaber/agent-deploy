@@ -17,9 +17,8 @@ metadata:
 spec:
   owner: alice                 # 3. 拥有者用户 ID
   idleTimeout: 30m             # 4. 自 lastActiveTime 起的最长运行窗口（到时休眠）
-  exposeSSH: true              # 5. 是否暴露 SSH 端口
-  stopped: false               # 6. 手动启停状态位
-  runtime:                     # 7. 容器运行规格定义
+  stopped: false               # 5. 手动启停状态位
+  runtime:                     # 6. 容器运行规格定义
     image: smanx/opencode:latest
     port: 4096
     cpu: "1"
@@ -45,7 +44,6 @@ spec:
 | **`owner`** | `string` | **是** | 声明该独立工作空间归属的用户 ID。 | `"alice"`, `"user_1001"` |
 | **`stopped`** | `boolean` | 否 | 手动启停控制开关。<br>设为 `true`：触发手动挂起，副本数降为 0（容器销毁以释放 CPU/内存算力，数据保存在 PVC/NAS 磁盘中）。<br>设为 `false` 或不填：处于正常激活运行状态。 | `true`, `false` |
 | **`idleTimeout`** | `string` | 否 | **会话/最大运行窗口**：自 `status.lastActiveTime` 起经过该时长后自动缩容至 0（`Sleeping`）。**不是**“检测用户停止操作后的闲置”。`lastActiveTime` 在创建、API 唤醒/创建更新、以及从 Sleeping/Stopped 等进入 Running 时刷新；**不会**因业务 HTTP 流量自动刷新。省略则不会按该规则自动休眠。Go 时长格式。 | `"15m"` (15分钟)<br>`"2h"` (2小时) |
-| **`exposeSSH`** | `boolean` | 否 | 是否在容器中额外开启并暴露 SSH 端口（22 端口）。如果设为 `true`，Service 和 Ingress 将自动代理 SSH 流量。默认为 `false`。 | `true`, `false` |
 
 ---
 
