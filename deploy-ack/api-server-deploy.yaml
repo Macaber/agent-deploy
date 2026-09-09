@@ -1,0 +1,105 @@
+# API-Server 网关（ACK 版）：与 deploy/api-server-deploy.yaml 的差异仅两处——
+#   1. image 改为 ACR 地址（同 Region 走 VPC 内网拉取）
+#   2. WORKSPACE_DOMAIN / WORKSPACE_BASE_URL 按 ACK 环境的 SLB IP / 域名修改
+# 对外暴露：保留 NodePort 30000（需在 ACK 控制台为节点安全组放通 30000）；
+#          生产推荐将下方 Service 改为 LoadBalancer 类型（自动关联 SLB）。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-server-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: api-server-clusterrole
+rules:
+- apiGroups: ["ai.example.com"]
+  resources: ["workspaces", "workspaces/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: api-server-clusterrolebinding
+subjects:
+- kind: ServiceAccount
+  name: api-server-sa
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: api-server-clusterrole
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  namespace: default
+  labels:
+    app: api-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-server
+  template:
+    metadata:
+      labels:
+        app: api-server
+    spec:
+      serviceAccountName: api-server-sa
+      containers:
+      - name: api-server
+        image: registry.cn-hangzhou.aliyuncs.com/<your-namespace>/api-server:v1.0.0 # 替换为实际 ACR 地址
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+        env:
+        - name: PORT
+          value: "3000"
+        - name: WORKSPACE_DOMAIN
+          value: "yourdomain.com" # Workspace 泛域名后缀，与 DNS 泛域名解析保持一致
+        - name: WORKSPACE_BASE_URL
+          value: "http://<SLB-IP or 域名>/bocomwork/ws" # API-Server 拼接 Workspace 访问入口与探活地址的基址
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-server-svc
+  namespace: default
+spec:
+  type: NodePort # 生产推荐改为 LoadBalancer（自动关联 SLB）
+  ports:
+  - port: 3000
+    targetPort: 3000
+    nodePort: 30000 # 方式一：http://<节点IP>:30000（需放通安全组）
+  selector:
+    app: api-server
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-server-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/limit-connections: "200"
+    nginx.ingress.kubernetes.io/proxy-next-upstream: "error timeout invalid_header http_502 http_503"
+    nginx.ingress.kubernetes.io/proxy-next-upstream-tries: "3"
+spec:
+  ingressClassName: nginx # ACK Nginx Ingress 组件的 IngressClass 名称（Operator 创建的 Workspace Ingress 同样硬编码 nginx）
+  rules:
+  - host: launcher.workspace.yourdomain.com # 方式二：通过域名访问（泛域名解析到 SLB IP 后自动生效）
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-server-svc
+            port:
+              number: 3000

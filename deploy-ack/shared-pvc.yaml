@@ -1,0 +1,14 @@
+# 公共共享 PVC：在 Workspace 的 spec.sharedVolumeMounts[].pvcName 中引用（global-oss-share-pvc）。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: global-oss-share-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  volumeName: global-oss-share-pv  # 精确绑定 shared-pv.yaml 创建的 PV
+  storageClassName: ""             # 静态绑定必须留空 ""

@@ -55,8 +55,8 @@ spec:
 | :--- | :--- | :--- | :--- | :--- |
 | **`image`** | `string` | **是** | 启动开发空间所用的基础容器镜像。 | `"smanx/opencode:latest"`<br>`"codercom/code-server:v2"` |
 | **`port`** | `int32` | 否 | 容器内开发服务监听的端口号。<br>若缺省：对于 `nginx` 镜像自动使用 `80`，对于其他镜像自动使用 `8080`（API-Server 创建 `opencode` 时会设为 `4096`）。 | `4096`, `8080` |
-| **`cpu`** | `string` | 否 | 分配给该容器的 CPU 计算配额。限制和请求配额设为一致（保证 QOS 等级）。<br>若缺省：默认为 `"500m"` (0.5核)。 | `"500m"` (0.5核)<br>`"2"` (2核) |
-| **`memory`** | `string` | 否 | 分配给该容器的内存配额。限制和请求设为一致。<br>若缺省：默认为 `"1Gi"` (1G)。 | `"512Mi"`, `"4Gi"` |
+| **`cpu`** | `string` | 否 | 分配给该容器的 CPU 计算限额（Limit）。请求配额（Request）自动设为限额的 50%（Burstable QoS，支持超卖弹性调度）。<br>若缺省：默认为 `"500m"` (0.5核 limit / 0.25核 request)。 | `"1"` (1核 limit / 0.5核 request)<br>`"2"` (2核 limit / 1核 request) |
+| **`memory`** | `string` | 否 | 分配给该容器的内存计算限额（Limit）。请求配额（Request）自动设为限额的 50%（Burstable QoS，支持超卖弹性调度）。支持纯数字（自动补齐 Gi）或带单位。<br>若缺省：默认为 `"1Gi"` (1Gi limit / 512Mi request)。 | `"2"` 或 `"2Gi"` (2Gi limit / 1Gi request)<br>`"4Gi"` |
 | **`runtimeClassName`** | `string` | 否 | **容器运行时沙箱名称**（例如 `"kata"`、`"kata-qemu"` 等）。指定后由 Kata Containers 独立 MicroVM 内核沙箱运行 Pod，从物理底层彻底防止宿主机内核逃逸。 | `"kata"`, `"kata-qemu"` |
 | **`env`** | `array` | 否 | 注入该开发容器中的环境变量键值对列表。常用于传递 API Key、初始化密码或系统配置。 | 见下文示例 |
 

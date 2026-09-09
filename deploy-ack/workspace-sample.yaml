@@ -1,0 +1,20 @@
+# Workspace 示例（OSS 存储方案）：验证 deploy-ack 部署是否成功。
+# 创建后按 README.md「验证清单」逐项确认。
+apiVersion: ai.example.com/v1alpha1
+kind: Workspace
+metadata:
+  name: ws-ack-oss-test
+  namespace: default
+spec:
+  owner: "user-001"
+  runtime:
+    image: "registry.cn-hangzhou.aliyuncs.com/<your-namespace>/opencode:latest" # 替换为实际 ACR 地址
+    cpu: "2"
+    memory: "4Gi"
+  storage:
+    size: "10Gi"
+    storageClass: "alicloud-oss"        # 命中 OSS 方案的关键参数（Operator 自动创建静态 PV）
+  sharedVolumeMounts:
+    - pvcName: "global-oss-share-pvc"   # 公共共享 OSS 卷（shared-pvc.yaml）
+      mountPath: "/data/oss-shared"
+      readOnly: false

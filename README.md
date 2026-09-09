@@ -52,7 +52,9 @@
 ├── docs/                   # 项目主要系统设计与操作文档
 │   ├── api_manual.md          # API-Server 网关接口调用手册 (Curl 示例)
 │   ├── workspace_user_manual.md # 工作空间使用与规格定义手册
-│   └── deployment_architecture.md # 系统整体架构设计与组件协作说明
+│   ├── deployment_architecture.md # 系统整体架构设计与组件协作说明
+│   ├── offline_deployment_guide.md # 离线生产环境部署指南 (Local Path / NFS / OSS 三方案)
+│   └── ../deploy-ack/README.md  # 阿里云 ACK 部署包与手册 (OSS / ossfs 1.0 方案)
 │
 ├── bin/                    # 内部编译出的可执行文件及 envtest 环境包 (K8s API 本地模拟)
 ├── test/                   # 集群端到端 (E2E) 测试代码
@@ -142,14 +144,14 @@ GOWORK=off make undeploy
 GOWORK=off make build-installer IMG=<your-registry>/agent-deploy:tag
 ```
 
-> **注意**: 上述命令将在 `dist` 目录下自动生成一个 `install.yaml` 文件。该文件包含了通过 Kustomize 打包好的所有资源声明（CRD、RBAC、Deployment 等），用户无需安装其他依赖即可一键安装本项目。
+> **注意**: 上述命令将在 `deploy` 目录下自动生成一个 `install.yaml` 文件。该文件包含了通过 Kustomize 打包好的所有资源声明（CRD、RBAC、Deployment 等），用户无需安装其他依赖即可一键安装本项目。
 
 1. 使用部署包安装
 
 最终用户只需运行以下 `kubectl` 命令即可一键安装该项目：
 
 ```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/agent-deploy/<tag or branch>/dist/install.yaml
+kubectl apply -f https://raw.githubusercontent.com/<org>/agent-deploy/<tag or branch>/deploy/install.yaml
 ```
 
 ### 方式二：提供 Helm Chart 包

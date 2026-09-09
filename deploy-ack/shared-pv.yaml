@@ -1,0 +1,32 @@
+# 公共共享 OSS PV：存放公共工具包等共享资产（读多写少）。
+# 默认 ossfs 1.0，与个人工作空间存储保持一致、降低组件版本要求；
+# 若确认为纯读多写少且 csi-plugin >= v1.33.1，可自行切换 fuseType: ossfs2（otherOpts 需同步换 2.0 参数）。
+# 部署前修改：bucket / region / url 三处。
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: global-oss-share-pv
+spec:
+  capacity:
+    storage: 100Gi                       # 声明容量，不影响 OSS 实际无上限使用
+  accessModes:
+    - ReadWriteMany                      # 多 Workspace Pod 同时挂载
+  persistentVolumeReclaimPolicy: Retain  # 删除 PVC 不删除 OSS 远端数据
+  csi:
+    driver: ossplugin.csi.alibabacloud.com
+    volumeHandle: global-oss-share-pv-id
+    nodePublishSecretRef:
+      name: oss-secret
+      namespace: default
+    # v1.30.4+ 新架构：FUSE Pod 在 ControllerPublishVolume 阶段由控制器创建，凭证必须同时提供给 controller 端
+    controllerPublishSecretRef:
+      name: oss-secret
+      namespace: default
+    volumeAttributes:
+      bucket: "your-shared-bucket-name"                      # 公共共享 Bucket
+      region: "cn-hangzhou"                                  # Bucket 所在 Region（V4 签名必填）
+      url: "https://oss-cn-hangzhou-internal.aliyuncs.com"   # 同 Region 内网 Endpoint
+      path: "/shared-assets"                                 # OSS 内共享资产子目录
+      otherOpts: "-o max_stat_cache_size=100000 -o allow_other"  # ossfs 1.0 参数
+      fuseType: "ossfs"                                          # ossfs 1.0 客户端（随机写安全）
+      sigVersion: "v4"                                           # 新建 Bucket 强制 V4 签名

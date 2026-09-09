@@ -1,0 +1,30 @@
+# ACK 全集群通用 OSS StorageClass（默认 ossfs 1.0 客户端）。
+#
+# 本 SC 不是普通动态供给模板：Operator 检测到 Workspace 的 storageClass 命中本 SC 后，
+# 会读取以下参数自动创建静态 PV（子路径 /workspaces/<workspace-name>）并绑定 PVC。
+# 换 Bucket / 换 Region 只需修改本文件，无需改动 Operator。
+#
+# 为什么默认 ossfs 1.0：Agent（opencode）存在大量 edit / 编译 / 依赖安装等随机写操作，
+# ossfs 2.0 官方明示随机写场景不建议使用；ossfs 1.0 对随机写成熟稳定。
+# 读多写少场景（共享工具包、模型资产）可选 storageclass-ossfs2.yaml（需 csi-plugin >= v1.33.1）。
+#
+# 签名要求：2025-09-01 起阿里云新建 Bucket 强制 V4 签名，sigVersion/region 必填，
+#           Operator(v1.1.0+) 会将二者透传到 PV；存量专有云 Bucket 可留空走 V1。
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: alicloud-oss
+provisioner: ossplugin.csi.alibabacloud.com
+parameters:
+  bucket: "your-user-workspaces-bucket"                 # 个人工作空间 Bucket（与集群同 Region）
+  region: "cn-hangzhou"                                 # Bucket 所在 Region（V4 签名必填）
+  url: "https://oss-cn-hangzhou-internal.aliyuncs.com"  # 同 Region 内网 Endpoint（免流费、低延迟）
+  otherOpts: "-o max_stat_cache_size=100000 -o allow_other"  # ossfs 1.0 参数
+  fuseType: "ossfs"                                     # ossfs 1.0 客户端（随机写安全）
+  sigVersion: "v4"                                      # V4 签名（新建 Bucket 必填）
+  csi.storage.k8s.io/provisioner-secret-name: "oss-secret"
+  csi.storage.k8s.io/provisioner-secret-namespace: "default"
+  csi.storage.k8s.io/node-publish-secret-name: "oss-secret"
+  csi.storage.k8s.io/node-publish-secret-namespace: "default"
+reclaimPolicy: Retain
+allowVolumeExpansion: true

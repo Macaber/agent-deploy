@@ -24,8 +24,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -80,6 +82,10 @@ var _ = Describe("Workspace Controller", func() {
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			if err == nil {
 				By("Cleanup the specific resource instance Workspace")
+				if controllerutil.ContainsFinalizer(resource, workspaceFinalizer) {
+					controllerutil.RemoveFinalizer(resource, workspaceFinalizer)
+					_ = k8sClient.Update(ctx, resource)
+				}
 				_ = k8sClient.Delete(ctx, resource)
 			}
 		})
@@ -115,6 +121,13 @@ var _ = Describe("Workspace Controller", func() {
 			Expect(deploy.Spec.Template.Spec.AutomountServiceAccountToken).NotTo(BeNil())
 			Expect(*deploy.Spec.Template.Spec.AutomountServiceAccountToken).To(BeFalse())
 
+			By("Verifying Deployment container resources (50% request ratio)")
+			Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(deploy.Spec.Template.Spec.Containers[0].Resources.Limits.Cpu().String()).To(Equal("500m"))
+			Expect(deploy.Spec.Template.Spec.Containers[0].Resources.Requests.Cpu().String()).To(Equal("250m"))
+			Expect(deploy.Spec.Template.Spec.Containers[0].Resources.Limits.Memory().String()).To(Equal("1Gi"))
+			Expect(deploy.Spec.Template.Spec.Containers[0].Resources.Requests.Memory().String()).To(Equal("512Mi"))
+
 			By("Verifying NetworkPolicy creation and isolation rules")
 			netpol := &networkingv1.NetworkPolicy{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -145,7 +158,7 @@ var _ = Describe("Workspace Controller", func() {
 				Namespace: resourceNamespace,
 			}, netpol)).To(Succeed())
 			Expect(netpol.Spec.Egress[2].To[0].IPBlock.Except).To(ConsistOf("192.168.1.0/24", "10.0.0.0/16"))
-			Expect(len(netpol.Spec.Egress)).To(Equal(4))
+			Expect(netpol.Spec.Egress).To(HaveLen(4))
 			Expect(netpol.Spec.Egress[3].To[0].IPBlock.CIDR).To(Equal("10.0.1.100/32"))
 
 			By("Disabling NetworkPolicy via NetworkPolicy.Disabled and verifying deletion")
@@ -219,7 +232,12 @@ var _ = Describe("Workspace Controller", func() {
 				Scheme: k8sClient.Scheme(),
 			}
 
+			// First reconcile adds finalizer, second reconcile creates/updates child resources
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -346,11 +364,25 @@ var _ = Describe("Workspace Controller", func() {
 		AfterEach(func() {
 			ws := &aiv1alpha1.Workspace{}
 			if err := k8sClient.Get(ctx, storageKey, ws); err == nil {
+				if controllerutil.ContainsFinalizer(ws, workspaceFinalizer) {
+					controllerutil.RemoveFinalizer(ws, workspaceFinalizer)
+					_ = k8sClient.Update(ctx, ws)
+				}
 				_ = k8sClient.Delete(ctx, ws)
 			}
 		})
 
 		It("should expand PVC storage size when requested size is larger", func() {
+			allowExpansion := true
+			sc := &storagev1.StorageClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "expandable-sc",
+				},
+				Provisioner:          "kubernetes.io/no-provisioner",
+				AllowVolumeExpansion: &allowExpansion,
+			}
+			_ = k8sClient.Create(ctx, sc)
+
 			controllerReconciler := &WorkspaceReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -365,6 +397,19 @@ var _ = Describe("Workspace Controller", func() {
 			pvc := &corev1.PersistentVolumeClaim{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: storageWsName + "-pvc", Namespace: storageWsNamespace}, pvc)).To(Succeed())
 			Expect(pvc.Spec.Resources.Requests.Storage().String()).To(Equal("1Gi"))
+
+			// Mark PVC as dynamically provisioned and bound so K8s admission allows expanding requests.storage
+			scName := "expandable-sc"
+			pvc.Spec.StorageClassName = &scName
+			if pvc.Annotations == nil {
+				pvc.Annotations = make(map[string]string)
+			}
+			pvc.Annotations["volume.beta.kubernetes.io/storage-provisioner"] = "kubernetes.io/no-provisioner"
+			pvc.Annotations["volume.kubernetes.io/storage-provisioner"] = "kubernetes.io/no-provisioner"
+			Expect(k8sClient.Update(ctx, pvc)).To(Succeed())
+
+			pvc.Status.Phase = corev1.ClaimBound
+			Expect(k8sClient.Status().Update(ctx, pvc)).To(Succeed())
 
 			By("Updating Workspace spec.storage.size to 5Gi")
 			ws := &aiv1alpha1.Workspace{}
@@ -391,6 +436,52 @@ var _ = Describe("Workspace Controller", func() {
 			// PVC storage should remain 5Gi (shrink is ignored/unsupported)
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: storageWsName + "-pvc", Namespace: storageWsNamespace}, pvc)).To(Succeed())
 			Expect(pvc.Spec.Resources.Requests.Storage().String()).To(Equal("5Gi"))
+		})
+	})
+
+	Context("When computing container resource requirements", func() {
+		It("should set limit equal to specified CPU/Memory and request equal to 50% limit", func() {
+			// Test case: cpu: "1", memory: "2" (plain int for memory, should be treated as 2Gi)
+			res1 := buildResourceRequirements("1", "2")
+			Expect(res1.Limits.Cpu().String()).To(Equal("1"))
+			Expect(res1.Requests.Cpu().String()).To(Equal("500m"))
+			Expect(res1.Limits.Memory().String()).To(Equal("2Gi"))
+			Expect(res1.Requests.Memory().String()).To(Equal("1Gi"))
+
+			// Test case: cpu: "1", memory: "2Gi" (explicit unit)
+			res2 := buildResourceRequirements("1", "2Gi")
+			Expect(res2.Limits.Cpu().String()).To(Equal("1"))
+			Expect(res2.Requests.Cpu().String()).To(Equal("500m"))
+			Expect(res2.Limits.Memory().String()).To(Equal("2Gi"))
+			Expect(res2.Requests.Memory().String()).To(Equal("1Gi"))
+
+			// Test case: cpu: "2", memory: "4Gi"
+			res3 := buildResourceRequirements("2", "4Gi")
+			Expect(res3.Limits.Cpu().String()).To(Equal("2"))
+			Expect(res3.Requests.Cpu().String()).To(Equal("1"))
+			Expect(res3.Limits.Memory().String()).To(Equal("4Gi"))
+			Expect(res3.Requests.Memory().String()).To(Equal("2Gi"))
+
+			// Test case: cpu: "500m", memory: "1Gi"
+			res4 := buildResourceRequirements("500m", "1Gi")
+			Expect(res4.Limits.Cpu().String()).To(Equal("500m"))
+			Expect(res4.Requests.Cpu().String()).To(Equal("250m"))
+			Expect(res4.Limits.Memory().String()).To(Equal("1Gi"))
+			Expect(res4.Requests.Memory().String()).To(Equal("512Mi"))
+
+			// Test case: empty (defaults: 500m / 1Gi)
+			resDef := buildResourceRequirements("", "")
+			Expect(resDef.Limits.Cpu().String()).To(Equal("500m"))
+			Expect(resDef.Requests.Cpu().String()).To(Equal("250m"))
+			Expect(resDef.Limits.Memory().String()).To(Equal("1Gi"))
+			Expect(resDef.Requests.Memory().String()).To(Equal("512Mi"))
+
+			// Test case: memory: "512Mi"
+			resMi := buildResourceRequirements("1", "512Mi")
+			Expect(resMi.Limits.Cpu().String()).To(Equal("1"))
+			Expect(resMi.Requests.Cpu().String()).To(Equal("500m"))
+			Expect(resMi.Limits.Memory().String()).To(Equal("512Mi"))
+			Expect(resMi.Requests.Memory().String()).To(Equal("256Mi"))
 		})
 	})
 })

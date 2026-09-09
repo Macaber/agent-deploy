@@ -1,0 +1,32 @@
+# ossfs 2.0 可选 StorageClass：与默认 storageclass.yaml（ossfs 1.0）二选一，按需启用。
+#
+# 适用场景：只读 / 顺序读写为主的数据（模型资产、数据集、只读工具包分发），
+#           顺序读写吞吐显著优于 ossfs 1.0。
+# ⚠️ 不适用于 Agent 工作空间（opencode 的 edit / 编译会产生随机写，ossfs 2.0 官方不建议）。
+#
+# 版本要求：集群 K8s >= 1.26，ACK 托管 csi-plugin >= v1.33.1。
+#
+# 切换方式（仅影响之后新创建的 Workspace，存量 PV 不受影响）：
+#   kubectl delete sc alicloud-oss
+#   kubectl apply -f storageclass-ossfs2.yaml
+#
+# ⚠️ 不要删除 otherOpts：Operator 在 SC 未提供 otherOpts 时会回退到 ossfs 1.0 风格默认值
+#    （-o max_stat_cache_size=100000 -o allow_other），该选项在 ossfs 2.0 中不存在，会导致挂载失败。
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: alicloud-oss
+provisioner: ossplugin.csi.alibabacloud.com
+parameters:
+  bucket: "your-user-workspaces-bucket"
+  region: "cn-hangzhou"
+  url: "https://oss-cn-hangzhou-internal.aliyuncs.com"
+  otherOpts: "-o close_to_open=false"    # ossfs 2.0 参数；读多写少可改 -o close_to_open=true 换元数据实时性
+  fuseType: "ossfs2"                     # ossfs 2.0 客户端
+  sigVersion: "v4"
+  csi.storage.k8s.io/provisioner-secret-name: "oss-secret"
+  csi.storage.k8s.io/provisioner-secret-namespace: "default"
+  csi.storage.k8s.io/node-publish-secret-name: "oss-secret"
+  csi.storage.k8s.io/node-publish-secret-namespace: "default"
+reclaimPolicy: Retain
+allowVolumeExpansion: true

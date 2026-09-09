@@ -19,7 +19,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -330,6 +332,10 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 					fuseType := "ossfs"
 					secretName := "oss-secret"
 					secretNamespace := "default"
+					// OSS V4 签名参数：2025-09-01 起阿里云新建 Bucket 强制 V4 签名，
+					// 由 StorageClass 透传到 PV，未配置时保持 V1（兼容存量专有云 Bucket）
+					sigVersion := ""
+					region := ""
 
 					if sc != nil {
 						if b, ok := sc.Parameters["bucket"]; ok && b != "" {
@@ -343,6 +349,12 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 						}
 						if f, ok := sc.Parameters["fuseType"]; ok && f != "" {
 							fuseType = f
+						}
+						if s, ok := sc.Parameters["sigVersion"]; ok {
+							sigVersion = s
+						}
+						if rg, ok := sc.Parameters["region"]; ok {
+							region = rg
 						}
 						if sName, ok := sc.Parameters["csi.storage.k8s.io/provisioner-secret-name"]; ok && sName != "" {
 							secretName = sName
@@ -358,6 +370,19 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 					scNameStr := ""
 					if storageClass != nil {
 						scNameStr = *storageClass
+					}
+					volumeAttributes := map[string]string{
+						"bucket":    bucket,
+						"url":       url,
+						"path":      subPath,
+						"otherOpts": otherOpts,
+						"fuseType":  fuseType,
+					}
+					if sigVersion != "" {
+						volumeAttributes["sigVersion"] = sigVersion
+					}
+					if region != "" {
+						volumeAttributes["region"] = region
 					}
 					pv = &corev1.PersistentVolume{
 						ObjectMeta: metav1.ObjectMeta{
@@ -386,13 +411,7 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 										Name:      secretName,
 										Namespace: secretNamespace,
 									},
-									VolumeAttributes: map[string]string{
-										"bucket":    bucket,
-										"url":       url,
-										"path":      subPath,
-										"otherOpts": otherOpts,
-										"fuseType":  fuseType,
-									},
+									VolumeAttributes: volumeAttributes,
 								},
 							},
 						},
@@ -513,6 +532,59 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 	return pvc.Name, nil
 }
 
+// buildResourceRequirements parses CPU and memory specifications and constructs
+// corev1.ResourceRequirements with limits equal to the specified/default resources
+// and requests set to 50% (half) of limits.
+//
+// Examples:
+//   - cpu: "1", memory: "2" or "2Gi" -> cpu: limit 1, request 500m (0.5); memory: limit 2Gi, request 1Gi
+//   - cpu: "2", memory: "4Gi"        -> cpu: limit 2, request 1; memory: limit 4Gi, request 2Gi
+//   - cpu: "500m", memory: "1Gi"     -> cpu: limit 500m, request 250m; memory: limit 1Gi, request 512Mi
+//   - empty (default)                -> cpu: limit 500m, request 250m; memory: limit 1Gi, request 512Mi
+func buildResourceRequirements(cpuStr, memStr string) corev1.ResourceRequirements {
+	cpuStr = strings.TrimSpace(cpuStr)
+	if cpuStr == "" {
+		cpuStr = "500m" // 0.5 CPU default limit
+	}
+
+	memStr = strings.TrimSpace(memStr)
+	if memStr == "" {
+		memStr = "1Gi" // 1G Memory default limit
+	} else if _, err := strconv.ParseInt(memStr, 10, 64); err == nil {
+		// If memStr is a plain integer without a unit (e.g. "2" for 2Gi, "1" for 1Gi), append "Gi"
+		memStr = memStr + "Gi"
+	}
+
+	resources := corev1.ResourceRequirements{
+		Limits:   corev1.ResourceList{},
+		Requests: corev1.ResourceList{},
+	}
+
+	if qtyCPU, err := apiresources.ParseQuantity(cpuStr); err == nil {
+		resources.Limits[corev1.ResourceCPU] = qtyCPU
+
+		// Request is 50% of Limit
+		reqMilli := qtyCPU.MilliValue() / 2
+		if reqMilli < 1 && qtyCPU.MilliValue() > 0 {
+			reqMilli = 1
+		}
+		resources.Requests[corev1.ResourceCPU] = *apiresources.NewMilliQuantity(reqMilli, apiresources.DecimalSI)
+	}
+
+	if qtyMem, err := apiresources.ParseQuantity(memStr); err == nil {
+		resources.Limits[corev1.ResourceMemory] = qtyMem
+
+		// Request is 50% of Limit
+		reqBytes := qtyMem.Value() / 2
+		if reqBytes < 1 && qtyMem.Value() > 0 {
+			reqBytes = 1
+		}
+		resources.Requests[corev1.ResourceMemory] = *apiresources.NewQuantity(reqBytes, qtyMem.Format)
+	}
+
+	return resources
+}
+
 func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1alpha1.Workspace, pvcName string) (string, int32, error) {
 	log := logf.FromContext(ctx)
 	deployName := ws.Name + "-deploy"
@@ -531,30 +603,8 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		envVars = append(envVars, corev1.EnvVar{Name: env.Name, Value: env.Value})
 	}
 
-	// Parse resource requirements
-	resources := corev1.ResourceRequirements{}
-
-	// Default resource specs if empty (0.5c CPU / 1G Memory)
-	cpuStr := ws.Spec.Runtime.CPU
-	if cpuStr == "" {
-		cpuStr = "500m" // 0.5 CPU
-	}
-	memStr := ws.Spec.Runtime.Memory
-	if memStr == "" {
-		memStr = "1Gi" // 1G Memory
-	}
-
-	resources.Limits = corev1.ResourceList{}
-	resources.Requests = corev1.ResourceList{}
-
-	if qtyCPU, err := apiresources.ParseQuantity(cpuStr); err == nil {
-		resources.Limits[corev1.ResourceCPU] = qtyCPU
-		resources.Requests[corev1.ResourceCPU] = qtyCPU
-	}
-	if qtyMem, err := apiresources.ParseQuantity(memStr); err == nil {
-		resources.Limits[corev1.ResourceMemory] = qtyMem
-		resources.Requests[corev1.ResourceMemory] = qtyMem
-	}
+	// Parse resource requirements: limit = configured/default, request = 50% limit
+	resources := buildResourceRequirements(ws.Spec.Runtime.CPU, ws.Spec.Runtime.Memory)
 
 	// Ports
 	containerPort := int32(8080)
@@ -1336,9 +1386,7 @@ func buildSelectorLabels(ws *aiv1alpha1.Workspace) map[string]string {
 // are applied afterwards to ensure selector consistency and prevent user labels from breaking Deployment/Service selectors.
 func buildWorkspaceLabels(ws *aiv1alpha1.Workspace) map[string]string {
 	labels := make(map[string]string, len(ws.Labels)+3)
-	for k, v := range ws.Labels {
-		labels[k] = v
-	}
+	maps.Copy(labels, ws.Labels)
 	// Enforce built-in reserved keys
 	labels["app"] = "workspace"
 	labels["workspace"] = ws.Name

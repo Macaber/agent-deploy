@@ -129,7 +129,18 @@ func (r *WorkspaceReconciler) cleanupOSSData(ctx context.Context, ws *aiv1alpha1
 		url = "http://" + url
 	}
 
-	client, err := oss.New(url, akID, akSecret, oss.ForcePathStyle(true))
+	// 挂载侧用 V4 签名（PV volumeAttributes 带 sigVersion=v4，2025-09-01 起阿里云新建 Bucket
+	// 强制 V4）时，清理侧必须使用同一签名版本，否则请求会因签名版本不被支持而失败
+	clientOpts := []oss.ClientOption{oss.ForcePathStyle(true)}
+	if strings.EqualFold(strings.TrimSpace(attrs["sigVersion"]), "v4") {
+		region := strings.TrimSpace(attrs["region"])
+		if region == "" {
+			return fmt.Errorf("PV %q requests v4 signature but missing region volume attribute", pv.Name)
+		}
+		clientOpts = append(clientOpts, oss.AuthVersion(oss.AuthV4), oss.Region(region))
+	}
+
+	client, err := oss.New(url, akID, akSecret, clientOpts...)
 	if err != nil {
 		return fmt.Errorf("create OSS client: %w", err)
 	}
