@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -258,6 +261,79 @@ func TestGetOAFromWorkspace(t *testing.T) {
 		}
 		if got := getOAFromWorkspace(ws); got != "env_oa" {
 			t.Errorf("expected 'env_oa', got '%s'", got)
+		}
+	})
+}
+
+func TestListWorkspacesHandler(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = aiv1alpha1.AddToScheme(scheme)
+
+	ws1 := &aiv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ws-u1",
+			Namespace: "bocomwork",
+		},
+		Spec: aiv1alpha1.WorkspaceSpec{
+			Owner: "u1",
+		},
+		Status: aiv1alpha1.WorkspaceStatus{
+			Phase: aiv1alpha1.WorkspaceRunning,
+		},
+	}
+	ws2 := &aiv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ws-u2",
+			Namespace: "default",
+		},
+		Spec: aiv1alpha1.WorkspaceSpec{
+			Owner: "u2",
+		},
+		Status: aiv1alpha1.WorkspaceStatus{
+			Phase: aiv1alpha1.WorkspaceStopped,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&aiv1alpha1.Workspace{}).WithObjects(ws1, ws2).Build()
+	handler := listWorkspacesHandler(fakeClient)
+
+	t.Run("filter by namespace bocomwork", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/workspaces?namespace=bocomwork", nil)
+		rr := httptest.NewRecorder()
+		handler(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rr.Code)
+		}
+		var items []workspaceItem
+		if err := json.Unmarshal(rr.Body.Bytes(), &items); err != nil {
+			t.Fatalf("failed to unmarshal JSON: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("expected 1 item, got %d", len(items))
+		}
+		if items[0].Phase != "Running" {
+			t.Errorf("expected phase Running, got %s", items[0].Phase)
+		}
+		if items[0].Namespace != "bocomwork" {
+			t.Errorf("expected namespace bocomwork, got %s", items[0].Namespace)
+		}
+	})
+
+	t.Run("query all namespaces", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/workspaces?namespace=all", nil)
+		rr := httptest.NewRecorder()
+		handler(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rr.Code)
+		}
+		var items []workspaceItem
+		if err := json.Unmarshal(rr.Body.Bytes(), &items); err != nil {
+			t.Fatalf("failed to unmarshal JSON: %v", err)
+		}
+		if len(items) != 2 {
+			t.Fatalf("expected 2 items, got %d", len(items))
 		}
 	})
 }

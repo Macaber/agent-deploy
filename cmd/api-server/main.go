@@ -106,14 +106,15 @@ type workspaceRequest struct {
 
 // workspaceItem is the JSON response type for listing workspaces.
 type workspaceItem struct {
-	UserID string `json:"userId"`
-	Name   string `json:"name"`
-	OA     string `json:"oa,omitempty"`
-	Phase  string `json:"phase"`
-	URL    string `json:"url"`
-	Image  string `json:"image"`
-	CPU    string `json:"cpu"`
-	Memory string `json:"memory"`
+	UserID    string `json:"userId"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty"`
+	OA        string `json:"oa,omitempty"`
+	Phase     string `json:"phase"`
+	URL       string `json:"url"`
+	Image     string `json:"image"`
+	CPU       string `json:"cpu"`
+	Memory    string `json:"memory"`
 }
 
 // getOAValue extracts the OA value from environment variables if present.
@@ -156,16 +157,17 @@ func workspaceRouter(c client.Client) http.HandlerFunc {
 	}
 }
 
-// listWorkspacesHandler handles GET /api/workspaces (without userId) — lists all workspaces in a namespace.
+// listWorkspacesHandler handles GET /api/workspaces (without userId) — lists all workspaces in a namespace, or all namespaces if "all" or "*".
 func listWorkspacesHandler(c client.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		namespace := r.URL.Query().Get("namespace")
-		if namespace == "" {
-			namespace = "default"
+		var listOpts []client.ListOption
+		if namespace != "" && namespace != "all" && namespace != "*" && namespace != "_all" {
+			listOpts = append(listOpts, client.InNamespace(namespace))
 		}
 		ctx := r.Context()
 		wsList := &aiv1alpha1.WorkspaceList{}
-		if err := c.List(ctx, wsList, client.InNamespace(namespace)); err != nil {
+		if err := c.List(ctx, wsList, listOpts...); err != nil {
 			log.Printf("Failed to list Workspaces: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -176,14 +178,15 @@ func listWorkspacesHandler(c client.Client) http.HandlerFunc {
 			url := getWorkspaceURL(ws.Spec.Owner, ws.Name, ws.Status.Endpoint)
 			oa := getOAFromWorkspace(&ws)
 			items = append(items, workspaceItem{
-				UserID: ws.Spec.Owner,
-				Name:   ws.Name,
-				OA:     oa,
-				Phase:  string(ws.Status.Phase),
-				URL:    url,
-				Image:  ws.Spec.Runtime.Image,
-				CPU:    ws.Spec.Runtime.CPU,
-				Memory: ws.Spec.Runtime.Memory,
+				UserID:    ws.Spec.Owner,
+				Name:      ws.Name,
+				Namespace: ws.Namespace,
+				OA:        oa,
+				Phase:     string(ws.Status.Phase),
+				URL:       url,
+				Image:     ws.Spec.Runtime.Image,
+				CPU:       ws.Spec.Runtime.CPU,
+				Memory:    ws.Spec.Runtime.Memory,
 			})
 		}
 

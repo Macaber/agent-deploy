@@ -599,6 +599,126 @@
             min-height: 18px;
             text-align: center;
         }
+
+        .success-box {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 10px;
+            padding: 12px 18px;
+            margin-top: 14px;
+            color: #047857;
+            font-size: 14px;
+            font-weight: 500;
+            box-shadow: 0 2px 8px rgba(16, 185, 129, 0.15);
+        }
+
+        /* Running Indicator Pill in Tabs */
+        .running-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            border-radius: 9999px;
+            background: rgba(16, 185, 129, 0.12);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            color: #047857;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 6px rgba(16, 185, 129, 0.08);
+            user-select: none;
+        }
+
+        .running-pill:hover {
+            background: rgba(16, 185, 129, 0.2);
+            border-color: rgba(16, 185, 129, 0.5);
+            transform: translateY(-1px);
+        }
+
+        .running-pulse-dot {
+            width: 8px;
+            height: 8px;
+            background-color: #10b981;
+            border-radius: 50%;
+            display: inline-block;
+            box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+            animation: pulse-green 2s infinite;
+        }
+
+        @keyframes pulse-green {
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+            }
+            70% {
+                transform: scale(1);
+                box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+            }
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+            }
+        }
+
+        .tab-badge {
+            display: inline-block;
+            margin-left: 6px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 700;
+            background: rgba(16, 185, 129, 0.15);
+            color: #047857;
+            border: 1px solid rgba(16, 185, 129, 0.25);
+            vertical-align: middle;
+        }
+
+        /* Stats summary cards in directory view */
+        .stats-summary-bar {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: rgba(248, 250, 252, 0.85);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .stat-card-title {
+            font-size: 12px;
+            color: var(--text-muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-card-value {
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .stat-card-value.running {
+            color: #047857;
+        }
+
+        .stat-card-value.stopped {
+            color: #b45309;
+        }
+
+        .stat-card-value.total {
+            color: var(--primary);
+        }
     </style>
 </head>
 <body>
@@ -646,11 +766,20 @@
         <div id="portalContainer">
             <!-- Main Tabs -->
             <div class="tabs" style="justify-content: space-between; align-items: center;">
-                <div style="display: flex; gap: 16px;">
+                <div style="display: flex; gap: 16px; align-items: center;">
                     <button class="tab-btn active" id="tabCreatorBtn" onclick="switchMainTab('creator')">创建与配置 (Create Workspace)</button>
-                    <button class="tab-btn" id="tabDirectoryBtn" onclick="switchMainTab('directory')">工作空间管理 (Workspace Directory)</button>
+                    <button class="tab-btn" id="tabDirectoryBtn" onclick="switchMainTab('directory')">
+                        工作空间管理 (Workspace Directory)
+                        <span id="tabRunningBadge" class="tab-badge" style="display:none;">0 运行中</span>
+                    </button>
                 </div>
-                <button id="logoutBtn" class="btn-inline-action btn-stop" style="display: none; padding: 6px 14px; font-size: 12px; margin-right: 8px;" onclick="handleLogout()">退出登录</button>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div id="runningSummaryPill" class="running-pill" onclick="switchMainTab('directory')" title="点击切换至工作空间管理列表" style="cursor: pointer;">
+                        <span class="running-pulse-dot"></span>
+                        <span>运行中: <strong id="globalRunningCount">0</strong></span>
+                    </div>
+                    <button id="logoutBtn" class="btn-inline-action btn-stop" style="display: none; padding: 6px 14px; font-size: 12px; margin-right: 8px;" onclick="handleLogout()">退出登录</button>
+                </div>
             </div>
 
             <!-- Main Tab View 1: Creator Panel -->
@@ -827,18 +956,47 @@
 
                 <!-- Submit trigger -->
                 <div class="submit-container">
-                    <button class="btn-submit" onclick="handleLaunchSubmit()">部署并进入工作空间</button>
+                    <button class="btn-submit" id="submitBtn" onclick="handleLaunchSubmit()">部署工作空间</button>
+                    <div class="success-box" id="successBox" style="display:none;">
+                        <span id="successMsg">工作空间已成功部署就绪！</span>
+                        <a class="btn-quick-connect" id="successOpenBtn" href="#" target="_blank">点击进入工作空间</a>
+                    </div>
                     <div class="error-message" id="errorBox"></div>
                 </div>
             </div>
 
             <!-- Main Tab View 2: Workspace Directory Panel -->
             <div id="directoryView" style="display:none;">
+                <!-- Stats Summary Cards -->
+                <div class="stats-summary-bar" id="statsSummaryBar">
+                    <div class="stat-card">
+                        <div>
+                            <div class="stat-card-title">运行中工作空间</div>
+                            <div class="stat-card-sub" style="font-size: 11px; color: var(--text-muted);">Running Workspaces</div>
+                        </div>
+                        <div class="stat-card-value running" id="statRunningCount">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div>
+                            <div class="stat-card-title">待机 / 停止状态</div>
+                            <div class="stat-card-sub" style="font-size: 11px; color: var(--text-muted);">Sleeping / Stopped</div>
+                        </div>
+                        <div class="stat-card-value stopped" id="statStoppedCount">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div>
+                            <div class="stat-card-title">工作空间总数</div>
+                            <div class="stat-card-sub" style="font-size: 11px; color: var(--text-muted);">Total Workspaces</div>
+                        </div>
+                        <div class="stat-card-value total" id="statTotalCount">0</div>
+                    </div>
+                </div>
+
                 <!-- Search/Namespace Panel -->
                 <div style="display: flex; gap: 16px; align-items: flex-end; margin-bottom: 20px; text-align: left;">
                     <div style="flex: 1;">
-                        <label class="input-label" for="queryNamespace">命名空间 (Namespace)</label>
-                        <input class="input-field" type="text" id="queryNamespace" value="bocomwork" placeholder="bocomwork" autocomplete="off">
+                        <label class="input-label" for="queryNamespace">命名空间 (Namespace) - 可输入 all 查询全部</label>
+                        <input class="input-field" type="text" id="queryNamespace" value="bocomwork" placeholder="bocomwork (输入 all 查询全部)" autocomplete="off" onkeydown="if(event.key==='Enter')refreshWorkspaceDirectory()">
                     </div>
                     <div>
                         <button class="btn-submit" style="margin: 0; padding: 10px 24px; font-size: 14px; background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);" onclick="refreshWorkspaceDirectory()">查询并刷新列表</button>
@@ -1016,9 +1174,23 @@
             document.getElementById('userId').addEventListener('blur', checkStatusOfTargetWorkspace);
             document.getElementById('namespace').removeEventListener('blur', checkStatusOfTargetWorkspace);
             document.getElementById('namespace').addEventListener('blur', checkStatusOfTargetWorkspace);
+            document.getElementById('namespace').removeEventListener('change', handleNamespaceChange);
+            document.getElementById('namespace').addEventListener('change', handleNamespaceChange);
             
-            // Initial check
+            // Initial check of target workspace
             checkStatusOfTargetWorkspace();
+
+            // Refresh running counts and directory list on load / page refresh
+            refreshWorkspaceDirectory(true);
+        }
+
+        function handleNamespaceChange() {
+            const val = document.getElementById('namespace').value.trim();
+            if (val) {
+                const queryInput = document.getElementById('queryNamespace');
+                if (queryInput) queryInput.value = val;
+                refreshWorkspaceDirectory(true);
+            }
         }
 
         // Initialize elements
@@ -1086,16 +1258,52 @@
             }
         }
 
+        // Update running counts in header tab pill, tab badge, and directory summary cards
+        function updateRunningStats(items) {
+            const list = Array.isArray(items) ? items : [];
+            const runningCount = list.filter(item => (item.phase || '').toLowerCase() === 'running').length;
+            const stoppedCount = list.filter(item => {
+                const p = (item.phase || '').toLowerCase();
+                return p === 'sleeping' || p === 'stopped';
+            }).length;
+            const totalCount = list.length;
+
+            const globalCount = document.getElementById('globalRunningCount');
+            if (globalCount) globalCount.innerText = runningCount;
+
+            const tabBadge = document.getElementById('tabRunningBadge');
+            if (tabBadge) {
+                tabBadge.innerText = runningCount + ' 运行中';
+                tabBadge.style.display = 'inline-block';
+            }
+
+            const statRunning = document.getElementById('statRunningCount');
+            if (statRunning) statRunning.innerText = runningCount;
+
+            const statStopped = document.getElementById('statStoppedCount');
+            if (statStopped) statStopped.innerText = stoppedCount;
+
+            const statTotal = document.getElementById('statTotalCount');
+            if (statTotal) statTotal.innerText = totalCount;
+        }
+
         // Fetch directory of workspaces inside specified namespace
-        async function refreshWorkspaceDirectory() {
-            const namespace = document.getElementById('queryNamespace').value.trim() || 'default';
+        async function refreshWorkspaceDirectory(isSilent = false) {
+            let namespace = document.getElementById('queryNamespace')?.value.trim();
+            if (!namespace) {
+                namespace = (document.getElementById('namespace')?.value || 'bocomwork').trim();
+                const qInput = document.getElementById('queryNamespace');
+                if (qInput && !qInput.value.trim()) qInput.value = namespace;
+            }
             const tbody = document.getElementById('directoryBody');
             const emptyState = document.getElementById('directoryEmptyState');
             const table = document.getElementById('directoryTable');
             
-            tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 24px; color: var(--text-muted);">正在加载工作空间列表，请稍候...</td></tr>';
-            emptyState.style.display = 'none';
-            table.style.display = 'table';
+            if (!isSilent) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 24px; color: var(--text-muted);">正在加载工作空间列表，请稍候...</td></tr>';
+                emptyState.style.display = 'none';
+                table.style.display = 'table';
+            }
             
             try {
                 const res = await fetch(getApiUrl('api/workspaces?namespace=' + encodeURIComponent(namespace)));
@@ -1103,6 +1311,10 @@
                     throw new Error(await getCleanErrorMsg(res, "获取工作空间列表失败"));
                 }
                 const items = await res.json();
+                
+                // Update running stats immediately
+                updateRunningStats(items);
+                
                 tbody.innerHTML = '';
                 
                 if (!items || items.length === 0) {
@@ -1110,6 +1322,9 @@
                     emptyState.style.display = 'block';
                     return;
                 }
+
+                table.style.display = 'table';
+                emptyState.style.display = 'none';
                 
                 items.forEach(item => {
                     const tr = document.createElement('tr');
@@ -1122,16 +1337,16 @@
                     if (phase === 'Running') {
                         actionButtons = 
                             '<a class="btn-inline-action btn-connect" href="' + escapeHtml(item.url) + '" target="_blank">进入</a>' +
-                            '<button class="btn-inline-action btn-stop" onclick="inlineStopWorkspace(\'' + escapeHtml(item.userId) + '\')">停止</button>';
+                            '<button class="btn-inline-action btn-stop" onclick="inlineStopWorkspace(\'' + escapeHtml(item.userId) + '\', \'' + escapeHtml(item.namespace || '') + '\')">停止</button>';
                     } else if (phase === 'Sleeping' || phase === 'Stopped') {
                         actionButtons = 
-                            '<button class="btn-inline-action btn-wakeup" onclick="inlineWakeupWorkspace(\'' + escapeHtml(item.userId) + '\')">唤醒</button>';
+                            '<button class="btn-inline-action btn-wakeup" onclick="inlineWakeupWorkspace(\'' + escapeHtml(item.userId) + '\', \'' + escapeHtml(item.namespace || '') + '\')">唤醒</button>';
                     } else {
                         actionButtons = '<span style="color: var(--text-muted); font-size: 11px; padding: 0 4px;">调度中...</span>';
                     }
                     
                     // Modify button
-                    actionButtons += '<button class="btn-inline-action btn-load" onclick="loadWorkspaceToForm(\'' + escapeHtml(item.userId) + '\')">载入修改</button>';
+                    actionButtons += '<button class="btn-inline-action btn-load" onclick="loadWorkspaceToForm(\'' + escapeHtml(item.userId) + '\', \'' + escapeHtml(item.namespace || '') + '\')">载入修改</button>';
                     
                     const oaDisplay = item.oa 
                         ? '<span class="oa-badge" style="display: inline-block; background: rgba(99, 102, 241, 0.12); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.25); padding: 2px 7px; border-radius: 4px; font-family: monospace; font-size: 12px; font-weight: 500;">' + escapeHtml(item.oa) + '</span>' 
@@ -1149,13 +1364,15 @@
                     tbody.appendChild(tr);
                 });
             } catch (err) {
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 24px; color: #ef4444;">' + escapeHtml(err.message) + '</td></tr>';
+                if (!isSilent) {
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 24px; color: #ef4444;">' + escapeHtml(err.message) + '</td></tr>';
+                }
             }
         }
 
         // Inline actions
-        async function inlineStopWorkspace(userId) {
-            const namespace = document.getElementById('queryNamespace').value.trim() || 'default';
+        async function inlineStopWorkspace(userId, itemNamespace) {
+            const namespace = itemNamespace || document.getElementById('queryNamespace').value.trim() || 'bocomwork';
             if (!confirm('确定要停止用户 ' + userId + ' 的工作空间吗？')) return;
             
             const portal = document.getElementById('portalContainer');
@@ -1187,8 +1404,8 @@
             }
         }
 
-        async function inlineWakeupWorkspace(userId) {
-            const namespace = document.getElementById('queryNamespace').value.trim() || 'default';
+        async function inlineWakeupWorkspace(userId, itemNamespace) {
+            const namespace = itemNamespace || document.getElementById('queryNamespace').value.trim() || 'bocomwork';
             const portal = document.getElementById('portalContainer');
             const loader = document.getElementById('loadingView');
             portal.style.display = "none";
@@ -1205,9 +1422,11 @@
                     throw new Error(await getCleanErrorMsg(res, "唤醒失败"));
                 }
                 const data = await res.json();
-                setStatus("唤醒就绪！", "工作空间已就绪，正在跳转进入...");
+                setStatus("唤醒就绪！", "工作空间已成功唤醒");
                 setTimeout(() => {
-                    window.location.href = data.url;
+                    portal.style.display = "block";
+                    loader.style.display = "none";
+                    refreshWorkspaceDirectory();
                 }, 1000);
             } catch (err) {
                 portal.style.display = "block";
@@ -1218,8 +1437,9 @@
         }
 
         // Load row config into form designer
-        async function loadWorkspaceToForm(userId) {
-            const namespace = document.getElementById('queryNamespace').value.trim() || 'default';
+        async function loadWorkspaceToForm(userId, itemNamespace) {
+            hideSuccessBox();
+            const namespace = itemNamespace || document.getElementById('queryNamespace').value.trim() || 'bocomwork';
             
             try {
                 // Lock UI with loader while fetching full spec
@@ -1583,6 +1803,7 @@
 
         // Realtime sync from visual form to payload + text
         function handleFormInput() {
+            hideSuccessBox();
             syncFormFieldsToPayload();
             renderEnvVars();
             syncPayloadToJsonText();
@@ -1590,6 +1811,7 @@
 
         // Realtime sync from JSON text to payload (if valid JSON)
         function handleJsonInput() {
+            hideSuccessBox();
             const text = document.getElementById('jsonTextarea').value;
             const errDiv = document.getElementById('jsonErrorInfo');
             
@@ -1695,6 +1917,7 @@
                     portal.style.display = "block";
                     loader.style.display = "none";
                     checkStatusOfTargetWorkspace();
+                    refreshWorkspaceDirectory(true);
                 }, 1000);
             } catch (err) {
                 portal.style.display = "block";
@@ -1734,9 +1957,13 @@
                 }
 
                 const data = await response.json();
-                setStatus("唤醒就绪！", "工作空间正在拉起，即将进入...");
+                setStatus("唤醒就绪！", "工作空间已成功唤醒并就绪");
                 setTimeout(() => {
-                    window.location.href = data.url;
+                    portal.style.display = "block";
+                    loader.style.display = "none";
+                    checkStatusOfTargetWorkspace();
+                    showSuccessPrompt(data.url, "工作空间已成功唤醒！");
+                    refreshWorkspaceDirectory(true);
                 }, 1000);
             } catch (err) {
                 portal.style.display = "block";
@@ -1765,6 +1992,7 @@
 
             const errorBox = document.getElementById('errorBox');
             errorBox.innerText = "";
+            hideSuccessBox();
 
             if (!payload.userId) {
                 errorBox.innerText = "用户 ID 为必填项！";
@@ -1801,10 +2029,14 @@
                 }
 
                 const data = await response.json();
-                setStatus("部署成功！", "工作空间实例就绪，正在准备环境并进入系统...");
+                setStatus("部署成功！", "工作空间实例已就绪");
                 
                 setTimeout(() => {
-                    window.location.href = data.url;
+                    portal.style.display = "block";
+                    loader.style.display = "none";
+                    checkStatusOfTargetWorkspace();
+                    showSuccessPrompt(data.url, "工作空间已成功部署就绪！");
+                    refreshWorkspaceDirectory(true);
                 }, 1000);
             } catch (err) {
                 portal.style.display = "block";
@@ -1812,6 +2044,29 @@
                 errorBox.innerText = err.message;
                 checkStatusOfTargetWorkspace(); // Restore banner if possible
             }
+        }
+
+        // Show success prompt with open button
+        function showSuccessPrompt(url, msg) {
+            const successBox = document.getElementById('successBox');
+            const successMsg = document.getElementById('successMsg');
+            const successOpenBtn = document.getElementById('successOpenBtn');
+            if (successBox && successOpenBtn) {
+                if (msg && successMsg) successMsg.innerText = msg;
+                if (url) {
+                    successOpenBtn.href = url;
+                    successOpenBtn.style.display = 'inline-block';
+                } else {
+                    successOpenBtn.style.display = 'none';
+                }
+                successBox.style.display = 'flex';
+            }
+        }
+
+        // Hide success prompt
+        function hideSuccessBox() {
+            const successBox = document.getElementById('successBox');
+            if (successBox) successBox.style.display = 'none';
         }
 
         // Helper to update loading status UI
@@ -1876,12 +2131,6 @@
                 .replace(/>/g, "&gt;")
                 .replace(/"/g, "&quot;")
                 .replace(/'/g, "&#039;");
-        }
-
-        // Helper to update loading status UI
-        function setStatus(title, desc) {
-            document.getElementById('statusTitle').innerText = title;
-            document.getElementById('statusDesc').innerText = desc;
         }
     </script>
 
