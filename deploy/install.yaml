@@ -99,8 +99,9 @@ spec:
                   e.g. "30m", "1h"
                 type: string
               networkPolicy:
-                description: NetworkPolicy specifies customizable network isolation
-                  rules (blocked/allowed CIDRs) for the workspace.
+                description: |-
+                  NetworkPolicy specifies customizable network isolation rules (blocked/allowed CIDRs) for the workspace.
+                  Network isolation is enabled by default when this field is omitted.
                 properties:
                   allowedCIDRs:
                     description: AllowedCIDRs specifies explicit CIDR blocks allowed
@@ -836,7 +837,7 @@ spec:
         env:
         - name: WORKSPACE_DOMAIN
           value: bocomcode
-        image: workspace-operator:v1.0.30
+        image: workspace-operator:v1.0.31
         livenessProbe:
           httpGet:
             path: /healthz
