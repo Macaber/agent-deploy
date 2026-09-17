@@ -108,12 +108,12 @@ configMapVolumeMounts:
 
 ### E. 网络隔离策略配置 (Spec.NetworkPolicy)
 
-您可以在 `spec.networkPolicy` 中按需声明该工作空间的网络隔离规则：
+Operator 默认会为每个 Workspace 创建 NetworkPolicy，禁止 Workspace Pod 之间直接访问；您可以在 `spec.networkPolicy` 中声明出站规则，或显式关闭隔离：
 
 | 参数名 | 数据类型 | 是否必填 | 作用描述 | 示例值 |
 | :--- | :--- | :--- | :--- | :--- |
-| **`disabled`** | `boolean` | 否 | 是否禁用 NetworkPolicy。设为 `true` 时不创建策略。 | `false`, `true` |
-| **`blockedCIDRs`** | `array` | 否 | **自定义禁止出站的网段列表**。仅拦截列表中显式指定的网段（无任何隐式默认拦截）。 | `["10.0.0.0/8", "192.168.0.0/16"]` |
+| **`disabled`** | `boolean` | 否 | 是否禁用 NetworkPolicy。默认 `false`；即使省略整个 `networkPolicy` 字段也会创建策略。 | `false`, `true` |
+| **`blockedCIDRs`** | `array` | 否 | **额外禁止出站的网段列表**。默认已拦截 RFC1918 私网、`100.64.0.0/10` 和链路本地网段，防止访问其他 Pod、节点、VPC 服务及云元数据。 | `["203.0.113.0/24"]` |
 | **`allowedCIDRs`** | `array` | 否 | **精准白名单放行的 IP/网段列表**。用于特批放行企业内部大模型推理服务（LLM Gateway）或内网 GitLab。 | `["10.10.20.5/32", "192.168.1.100/32"]` |
 
 #### 网络策略配置示例：

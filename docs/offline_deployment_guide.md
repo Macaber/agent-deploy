@@ -611,13 +611,13 @@ kubectl get runtimeclass
 
 ### 7.3 维度三：网络隔离 (NetworkPolicy 零信任安全网)
 
-当用户在 Workspace 中声明 `spec.networkPolicy` 时，Operator 会自动创建专属的 `<workspace-name>-netpol` 网络策略：
-1. **入站 (Ingress) 全放行**：放行来自 Ingress 网关、Kubelet 探针及外部用户的访问流量，保证外部 Web 访问 100% 畅通。
+Operator 默认会为每个 Workspace 创建专属的 `<workspace-name>-netpol` 网络策略（仅当 `spec.networkPolicy.disabled: true` 时关闭）：
+1. **入站 (Ingress) 按端口放行**：允许 Ingress Controller、节点转发及外部来源访问 Workspace 的 HTTP 端口；其他端口与 ICMP 不放行，兼容会 SNAT 或使用宿主机网络的 Ingress 实现。
 2. **东西向横向阻断**：严禁 `ws-a` 与 `ws-b` 等多个 Agent Pod 之间相互直接探测与直连通信。
-3. **出站安全出口 (Egress - 纯自定义配置，无隐式默认值)**：
+3. **出站安全出口 (Egress)**：
    * 允许访问集群 CoreDNS（UDP/TCP 53）进行正常域名解析；
-   * 允许与 Ingress 网关进行双向响应回包；
-   * **按需声明禁止网段 (`blockedCIDRs`)**：仅拦截在 `spec.networkPolicy.blockedCIDRs` 中显式填写的网段；未填则不拦截公网与任何网段。
+   * Ingress 入站连接的响应回包由 NetworkPolicy 有状态连接自动放行；
+   * **默认阻断内部网段**：从公网放行规则中排除 RFC1918 私网、`100.64.0.0/10` 与链路本地网段，阻止访问其他 Pod、节点、VPC 服务及云元数据；`blockedCIDRs` 可追加其他禁止网段。
    * **白名单放行 (`allowedCIDRs`)**：可在 `spec.networkPolicy.allowedCIDRs` 中添加明确放行的 IP/CIDR（如私有 LLM 网关 `10.10.20.5/32`、内网自建 GitLab `192.168.1.100/32`）。
 
 > **CNI 插件要求**：确保集群 CNI 插件支持 NetworkPolicy（如 Calico、Cilium、Kube-router 或阿里云 ACK Terway）。
@@ -626,7 +626,7 @@ kubectl get runtimeclass
 
 ### 7.4 在 Workspace 中启用 Kata 沙箱与自定义网络策略
 
-在提交 Workspace CR 时，通过 `spec.runtime.runtimeClassName: "kata"` 启用 MicroVM 内核沙箱，并在 `spec.networkPolicy` 中灵活指定拦截/放行网段：
+在提交 Workspace CR 时，通过 `spec.runtime.runtimeClassName: "kata"` 启用 MicroVM 内核沙箱；NetworkPolicy 默认启用，也可以在 `spec.networkPolicy` 中灵活指定拦截/放行网段：
 
 ```yaml
 apiVersion: ai.example.com/v1alpha1
@@ -645,7 +645,7 @@ spec:
     size: "10Gi"
     storageClass: "local-path"
   networkPolicy:
-    # 纯自定义禁止出站的私有网段（仅拦截此处显式列出的网段，无任何隐式默认拦截）
+    # 追加禁止出站的网段；常用私网与链路本地网段已默认阻断
     blockedCIDRs:
       - "10.0.0.0/8"
       - "192.168.0.0/16"
@@ -691,4 +691,3 @@ spec:
    ```
 
 5. 工作空间进入 `Running` 后，尝试写入数据文件，确认停止并重新启动后数据完美恢复。
-

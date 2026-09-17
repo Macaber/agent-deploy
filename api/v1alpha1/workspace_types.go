@@ -203,6 +203,7 @@ type WorkspaceSpec struct {
 	DisableNetworkPolicy bool `json:"disableNetworkPolicy,omitempty"`
 
 	// NetworkPolicy specifies customizable network isolation rules (blocked/allowed CIDRs) for the workspace.
+	// Network isolation is enabled by default when this field is omitted.
 	// +optional
 	NetworkPolicy *WorkspaceNetworkPolicySpec `json:"networkPolicy,omitempty"`
 }
@@ -213,8 +214,8 @@ type WorkspaceNetworkPolicySpec struct {
 	// +optional
 	Disabled bool `json:"disabled,omitempty"`
 
-	// BlockedCIDRs specifies CIDR blocks blocked from egress traffic (e.g. ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.169.254/32"]).
-	// Only the CIDRs explicitly listed here will be blocked from egress.
+	// BlockedCIDRs specifies additional CIDR blocks blocked from egress traffic.
+	// Private, carrier-grade NAT, and link-local ranges are blocked by default to prevent access to other Pods, nodes, VPC services, and cloud metadata.
 	// +optional
 	BlockedCIDRs []string `json:"blockedCIDRs,omitempty"`
 

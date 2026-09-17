@@ -69,7 +69,6 @@ var _ = Describe("Workspace Controller", func() {
 						Storage: aiv1alpha1.StorageSpec{
 							Size: "1Gi",
 						},
-						NetworkPolicy: &aiv1alpha1.WorkspaceNetworkPolicySpec{},
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -137,7 +136,21 @@ var _ = Describe("Workspace Controller", func() {
 
 			Expect(netpol.Spec.PolicyTypes).To(ContainElement(networkingv1.PolicyTypeIngress))
 			Expect(netpol.Spec.PolicyTypes).To(ContainElement(networkingv1.PolicyTypeEgress))
+			Expect(netpol.Spec.Ingress).To(HaveLen(1))
+			Expect(netpol.Spec.Ingress[0].From).To(BeEmpty())
+			Expect(netpol.Spec.Ingress[0].Ports).To(HaveLen(1))
+			Expect(netpol.Spec.Ingress[0].Ports[0].Protocol).NotTo(BeNil())
+			Expect(*netpol.Spec.Ingress[0].Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
+			Expect(netpol.Spec.Ingress[0].Ports[0].Port).NotTo(BeNil())
+			Expect(netpol.Spec.Ingress[0].Ports[0].Port.IntVal).To(Equal(int32(80)))
 			Expect(len(netpol.Spec.Egress)).To(BeNumerically(">=", 2))
+			Expect(netpol.Spec.Egress[1].To[0].IPBlock.Except).To(ConsistOf(
+				"10.0.0.0/8",
+				"100.64.0.0/10",
+				"169.254.0.0/16",
+				"172.16.0.0/12",
+				"192.168.0.0/16",
+			))
 
 			By("Updating Workspace with custom BlockedCIDRs and AllowedCIDRs")
 			resource := &aiv1alpha1.Workspace{}
@@ -157,9 +170,9 @@ var _ = Describe("Workspace Controller", func() {
 				Name:      resourceName + "-netpol",
 				Namespace: resourceNamespace,
 			}, netpol)).To(Succeed())
-			Expect(netpol.Spec.Egress[2].To[0].IPBlock.Except).To(ConsistOf("192.168.1.0/24", "10.0.0.0/16"))
-			Expect(netpol.Spec.Egress).To(HaveLen(4))
-			Expect(netpol.Spec.Egress[3].To[0].IPBlock.CIDR).To(Equal("10.0.1.100/32"))
+			Expect(netpol.Spec.Egress[1].To[0].IPBlock.Except).To(ContainElements("192.168.1.0/24", "10.0.0.0/16"))
+			Expect(netpol.Spec.Egress).To(HaveLen(3))
+			Expect(netpol.Spec.Egress[2].To[0].IPBlock.CIDR).To(Equal("10.0.1.100/32"))
 
 			By("Disabling NetworkPolicy via NetworkPolicy.Disabled and verifying deletion")
 			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())

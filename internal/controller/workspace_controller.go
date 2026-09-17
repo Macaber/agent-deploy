@@ -44,8 +44,10 @@ import (
 	aiv1alpha1 "github.com/example/workspace-operator/api/v1alpha1"
 )
 
-// workspaceFinalizer 保证 workspace 删除时有机会清理同名 PV
-const workspaceFinalizer = "ai.example.com/workspace-cleanup"
+const (
+	// workspaceFinalizer 保证 workspace 删除时有机会清理同名 PV
+	workspaceFinalizer = "ai.example.com/workspace-cleanup"
+)
 
 // WorkspaceReconciler reconciles a Workspace object
 type WorkspaceReconciler struct {
@@ -607,12 +609,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	resources := buildResourceRequirements(ws.Spec.Runtime.CPU, ws.Spec.Runtime.Memory)
 
 	// Ports
-	containerPort := int32(8080)
-	if ws.Spec.Runtime.Port != 0 {
-		containerPort = ws.Spec.Runtime.Port
-	} else if strings.Contains(ws.Spec.Runtime.Image, "nginx") {
-		containerPort = 80
-	}
+	containerPort := getWorkspaceContainerPort(ws)
 
 	ports := []corev1.ContainerPort{
 		{Name: "http", ContainerPort: containerPort},
@@ -1138,16 +1135,51 @@ func isNetworkPolicyDisabled(ws *aiv1alpha1.Workspace) bool {
 		return true
 	}
 	if ws.Spec.NetworkPolicy == nil {
-		return true
+		return false
 	}
 	return ws.Spec.NetworkPolicy.Disabled
 }
 
-func getBlockedEgressCIDRs(ws *aiv1alpha1.Workspace) []string {
-	if ws.Spec.NetworkPolicy != nil && len(ws.Spec.NetworkPolicy.BlockedCIDRs) > 0 {
-		return ws.Spec.NetworkPolicy.BlockedCIDRs
+func getWorkspaceContainerPort(ws *aiv1alpha1.Workspace) int32 {
+	if ws.Spec.Runtime.Port != 0 {
+		return ws.Spec.Runtime.Port
 	}
-	return nil
+	if strings.Contains(ws.Spec.Runtime.Image, "nginx") {
+		return 80
+	}
+	return 8080
+}
+
+func getBlockedEgressCIDRs(ws *aiv1alpha1.Workspace) []string {
+	// Exclude private, carrier-grade NAT, and link-local networks from the
+	// otherwise public Internet egress rule. These ranges cover the common Pod,
+	// Service, node, VPC, and cloud metadata address spaces.
+	cidrs := []string{
+		"10.0.0.0/8",
+		"100.64.0.0/10",
+		"169.254.0.0/16",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+	}
+	seen := make(map[string]struct{}, len(cidrs))
+	for _, cidr := range cidrs {
+		seen[cidr] = struct{}{}
+	}
+
+	if ws.Spec.NetworkPolicy != nil {
+		for _, cidr := range ws.Spec.NetworkPolicy.BlockedCIDRs {
+			trimmed := strings.TrimSpace(cidr)
+			if trimmed == "" {
+				continue
+			}
+			if _, exists := seen[trimmed]; exists {
+				continue
+			}
+			cidrs = append(cidrs, trimmed)
+			seen[trimmed] = struct{}{}
+		}
+	}
+	return cidrs
 }
 
 func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *aiv1alpha1.Workspace) error {
@@ -1172,6 +1204,7 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 
 	tcpProtocol := corev1.ProtocolTCP
 	udpProtocol := corev1.ProtocolUDP
+	containerPort := intstr.FromInt32(getWorkspaceContainerPort(ws))
 
 	blockedCIDRs := getBlockedEgressCIDRs(ws)
 
@@ -1189,61 +1222,21 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 				},
 			},
 		},
-		// 2. Allow communication/return traffic to Ingress Controller and system services (ensures external web access and route sync)
-		{
-			To: []networkingv1.NetworkPolicyPeer{
-				{
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchExpressions: []metav1.LabelSelectorRequirement{
-							{
-								Key:      "kubernetes.io/metadata.name",
-								Operator: metav1.LabelSelectorOpIn,
-								Values:   []string{"ingress-nginx", "kube-system"},
-							},
-						},
-					},
-				},
-				{
-					NamespaceSelector: &metav1.LabelSelector{},
-					PodSelector: &metav1.LabelSelector{
-						MatchExpressions: []metav1.LabelSelectorRequirement{
-							{
-								Key:      "app.kubernetes.io/name",
-								Operator: metav1.LabelSelectorOpIn,
-								Values:   []string{"ingress-nginx", "ingress-controller", "traefik"},
-							},
-						},
-					},
+	}
+
+	// 2. Allow public Internet egress while excluding Pod/Service/VPC networks.
+	egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
+		To: []networkingv1.NetworkPolicyPeer{
+			{
+				IPBlock: &networkingv1.IPBlock{
+					CIDR:   "0.0.0.0/0",
+					Except: blockedCIDRs,
 				},
 			},
 		},
-	}
+	})
 
-	// 3. Egress rule for external/public network traffic (applies custom blockedCIDRs if provided)
-	if len(blockedCIDRs) > 0 {
-		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
-			To: []networkingv1.NetworkPolicyPeer{
-				{
-					IPBlock: &networkingv1.IPBlock{
-						CIDR:   "0.0.0.0/0",
-						Except: blockedCIDRs,
-					},
-				},
-			},
-		})
-	} else {
-		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
-			To: []networkingv1.NetworkPolicyPeer{
-				{
-					IPBlock: &networkingv1.IPBlock{
-						CIDR: "0.0.0.0/0",
-					},
-				},
-			},
-		})
-	}
-
-	// 4. Append explicit AllowedCIDRs if specified in ws.Spec.NetworkPolicy (e.g. internal LLM proxy)
+	// 3. Append explicit AllowedCIDRs if specified in ws.Spec.NetworkPolicy (e.g. internal LLM proxy)
 	if ws.Spec.NetworkPolicy != nil {
 		for _, cidr := range ws.Spec.NetworkPolicy.AllowedCIDRs {
 			if trimmed := strings.TrimSpace(cidr); trimmed != "" {
@@ -1268,9 +1261,18 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 			networkingv1.PolicyTypeIngress,
 			networkingv1.PolicyTypeEgress,
 		},
-		// Allow all inbound ingress traffic from external clients, Ingress controllers, and Kubelet
+		// Allow the application port from any source so this works with Ingress
+		// implementations that SNAT or use host networking. Other ports and
+		// non-TCP protocols such as ICMP remain blocked by ingress isolation.
 		Ingress: []networkingv1.NetworkPolicyIngressRule{
-			{},
+			{
+				Ports: []networkingv1.NetworkPolicyPort{
+					{
+						Protocol: &tcpProtocol,
+						Port:     &containerPort,
+					},
+				},
+			},
 		},
 		Egress: egressRules,
 	}

@@ -94,7 +94,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   | **`sharedVolumeMounts`** | `array` | 否 | - | 预先存在的共享存储卷 (PVC) 挂载配置列表。支持 `readOnly` 属性，格式为 `[{"pvcName": "shared-pvc", "mountPath": "/shared", "subPath": "subdir", "readOnly": true}]`。 |
   | **`initContainers`** | `array` | 否 | - | **初始化容器配置列表**。在主容器启动前依次运行的初始化容器。支持 `name`, `image`, `command`, `args`, `env`, `volumeMounts`, `sharedVolumeMounts`, `configMapVolumeMounts` 字段。 |
   | **`runtimeClassName`** | `string` | 否 | - | **容器运行时沙箱名称**（例如 `"kata"`、`"kata-qemu"` 等）。指定后将由 Kata Containers 独立 MicroVM 内核沙箱拉起 Pod，从物理底层彻底防止宿主机内核逃逸。 |
-  | **`networkPolicy`** | `object` | 否 | - | **工作空间专属网络安全策略配置**。包含 `disabled` (是否禁用策略，默认 `false`)、`blockedCIDRs` (自定义禁止出站的网段列表，仅拦截用户显式声明的网段，无任何隐式默认拦截)、`allowedCIDRs` (精准白名单放行的 IP/网段列表，如私有 LLM 网关)。 |
+  | **`networkPolicy`** | `object` | 否 | 默认启用隔离 | **工作空间专属网络安全策略配置**。即使省略该字段也会创建策略；默认阻断常用私网、CGNAT 与链路本地网段的出站访问。包含 `disabled` (显式关闭策略)、`blockedCIDRs` (追加禁止网段)、`allowedCIDRs` (精准白名单放行，如私有 LLM 网关)。 |
   | **`postStartScript`** | `string` | 否 | - | **K8s 原生生命周期钩子**。容器启动后立即在后台异步运行的多行 Shell 脚本。 |
   | **`healthPath`** | `string` | 否 | - | **自定义就绪探针 HTTP 路径**。若指定（例如 `"/health"`），K8s 将使用 HTTP GET 探测此路径；若不指定或为空，默认回退使用 TCP 协议对暴露端口（`port`）进行存活健康探测。 |
 
@@ -276,6 +276,5 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
    * **阻断环境变量互现 (`EnableServiceLinks: false`)**：默认关闭同 Namespace 下其他 Service 的环境变量注入，彻底解决 `ws-a` 在容器环境变量中嗅探到 `ws-b` 内网路由地址的问题。
    * **阻断 K8s API 访问 (`AutomountServiceAccountToken: false`)**：默认不挂载 ServiceAccount Token，防止 Agent 容器内调用 K8s API 进行集群侦察。
 3. **网络隔离 (NetworkPolicy 自定义管控)**：
-   * **入站（Ingress）全通**：所有外部用户、浏览器访问、Ingress 网关、Kubelet 就绪探针完全畅通；
-   * **出站（Egress）管控**：放行 DNS（UDP/TCP 53）与 Ingress 网关回包；仅拦截用户在 `blockedCIDRs` 中自定义声明的网段（无任何隐式默认拦截）；支持通过 `allowedCIDRs` 精准放行特定白名单。
-
+   * **入站（Ingress）按端口放行**：允许外部流量访问 Workspace HTTP 端口，其他端口与 ICMP 不放行，兼容 SNAT 和宿主机网络模式的 Ingress；
+   * **出站（Egress）管控**：放行 DNS 与公网，Ingress 入站连接的响应回包自动放行；默认排除常用私网、CGNAT 和链路本地网段，支持通过 `allowedCIDRs` 精准放行内部白名单。
