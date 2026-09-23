@@ -606,14 +606,14 @@ func probeWorkspaceViaIngress(ctx context.Context, userID, wsName string, ws *ai
 		}
 	}
 
-	return doSingleProbe(ctx, probeURL, cookieHeader)
+	return doSingleProbe(ctx, probeURL, cookieHeader, userID)
 }
 
 // doSingleProbe sends a single probe request with Cookie header and checks whether Ingress successfully forwarded to the Pod.
-func doSingleProbe(ctx context.Context, probeURL, cookieHeader string) bool {
+func doSingleProbe(ctx context.Context, probeURL, cookieHeader, userID string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
 	if err != nil {
-		log.Printf("Failed to create Ingress probe request for %s: %v", probeURL, err)
+		log.Printf("Workspace: ws-%s Failed to create Ingress probe request for %s: %v", userID, probeURL, err)
 		return false
 	}
 
@@ -631,21 +631,21 @@ func doSingleProbe(ctx context.Context, probeURL, cookieHeader string) bool {
 
 	resp, err := probeClient.Do(req)
 	if err != nil {
-		log.Printf("Ingress probe to %s failed (network/connect): %v", probeURL, err)
+		log.Printf("Workspace: ws-%s Ingress probe to %s failed (network/connect): %v", userID, probeURL, err)
 		return false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-		log.Printf("Ingress probe to %s succeeded (status: %d)", probeURL, resp.StatusCode)
+		log.Printf("Workspace: ws-%s Ingress probe to %s succeeded (status: %d)", userID, probeURL, resp.StatusCode)
 		return true
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		log.Printf("Ingress probe to %s reached target application (status: %d)", probeURL, resp.StatusCode)
+		log.Printf("Workspace: ws-%s Ingress probe to %s reached target application (status: %d)", userID, probeURL, resp.StatusCode)
 		return true
 	}
 
-	log.Printf("Ingress probe to %s waiting for route sync (status: %d)", probeURL, resp.StatusCode)
+	log.Printf("Workspace: ws-%s Ingress probe to %s waiting for route sync (status: %d)", userID, probeURL, resp.StatusCode)
 	return false
 }
 
