@@ -36,6 +36,7 @@ rules:
   verbs:
   - create
   - patch
+  - update
 - apiGroups:
   - ai.example.com
   resources:

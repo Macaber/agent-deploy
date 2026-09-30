@@ -69,8 +69,8 @@ type WorkspaceReconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch;update
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch;update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -295,6 +295,27 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.Workspace) (string, error) {
 	log := logf.FromContext(ctx)
 	pvcName := ws.Name + "-pvc"
+
+	var storageClass *string
+	if ws.Spec.Storage.StorageClass != "" {
+		storageClass = &ws.Spec.Storage.StorageClass
+	}
+
+	// Check if the requested StorageClass is OSS or uses ossplugin.csi.alibabacloud.com
+	isOSS := false
+	var sc *storagev1.StorageClass
+	if storageClass != nil && *storageClass != "" {
+		scObj := &storagev1.StorageClass{}
+		if err := r.Get(ctx, client.ObjectKey{Name: *storageClass}, scObj); err == nil {
+			if scObj.Provisioner == "ossplugin.csi.alibabacloud.com" || strings.Contains(strings.ToLower(*storageClass), "oss") {
+				isOSS = true
+				sc = scObj
+			}
+		} else if strings.Contains(strings.ToLower(*storageClass), "oss") {
+			isOSS = true
+		}
+	}
+
 	pvc := &corev1.PersistentVolumeClaim{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: pvcName}, pvc)
 	if err != nil {
@@ -302,25 +323,6 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 			storageSize, err := apiresources.ParseQuantity(ws.Spec.Storage.Size)
 			if err != nil {
 				return "", err
-			}
-			var storageClass *string
-			if ws.Spec.Storage.StorageClass != "" {
-				storageClass = &ws.Spec.Storage.StorageClass
-			}
-
-			// Check if the requested StorageClass is OSS or uses ossplugin.csi.alibabacloud.com
-			isOSS := false
-			var sc *storagev1.StorageClass
-			if storageClass != nil && *storageClass != "" {
-				scObj := &storagev1.StorageClass{}
-				if err := r.Get(ctx, client.ObjectKey{Name: *storageClass}, scObj); err == nil {
-					if scObj.Provisioner == "ossplugin.csi.alibabacloud.com" || strings.Contains(strings.ToLower(*storageClass), "oss") {
-						isOSS = true
-						sc = scObj
-					}
-				} else if strings.Contains(strings.ToLower(*storageClass), "oss") {
-					isOSS = true
-				}
 			}
 
 			if isOSS {
@@ -429,6 +431,9 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      pvcName,
 						Namespace: ws.Namespace,
+						Annotations: map[string]string{
+							"volume.kubernetes.io/storage-provisioner": "ossplugin.csi.alibabacloud.com",
+						},
 					},
 					Spec: corev1.PersistentVolumeClaimSpec{
 						AccessModes: []corev1.PersistentVolumeAccessMode{
@@ -475,6 +480,19 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 	}
 
 	// PVC already exists: handle volume expansion / size reconciliation
+	// Ensure OSS PVC has the storage-provisioner annotation so K8s admission allows resizing
+	if isOSS {
+		if pvc.Annotations == nil {
+			pvc.Annotations = make(map[string]string)
+		}
+		if _, ok := pvc.Annotations["volume.kubernetes.io/storage-provisioner"]; !ok {
+			pvc.Annotations["volume.kubernetes.io/storage-provisioner"] = "ossplugin.csi.alibabacloud.com"
+			if err := r.Update(ctx, pvc); err != nil {
+				log.Error(err, "Failed to update existing PVC annotations with storage-provisioner", "pvcName", pvcName)
+			}
+		}
+	}
+
 	desiredSize, err := apiresources.ParseQuantity(ws.Spec.Storage.Size)
 	if err != nil {
 		log.Error(err, "Invalid storage size in workspace spec", "size", ws.Spec.Storage.Size)
@@ -498,13 +516,19 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 		cmp := desiredSize.Cmp(currentReq)
 		if cmp > 0 {
 			log.Info("Expanding PVC storage size", "pvcName", pvcName, "oldSize", currentReq.String(), "newSize", desiredSize.String())
+			if isOSS {
+				if pvc.Annotations == nil {
+					pvc.Annotations = make(map[string]string)
+				}
+				pvc.Annotations["volume.kubernetes.io/storage-provisioner"] = "ossplugin.csi.alibabacloud.com"
+			}
 			pvc.Spec.Resources.Requests[corev1.ResourceStorage] = desiredSize
 			if err := r.Update(ctx, pvc); err != nil {
 				log.Error(err, "Failed to update PVC for expansion", "pvcName", pvcName)
 				if r.Recorder != nil {
 					r.Recorder.Eventf(ws, corev1.EventTypeWarning, "VolumeExpansionFailed", "Failed to expand PVC %s from %s to %s: %v", pvcName, currentReq.String(), desiredSize.String(), err)
 				}
-				return "", err
+				return pvc.Name, nil
 			}
 			if r.Recorder != nil {
 				r.Recorder.Eventf(ws, corev1.EventTypeNormal, "VolumeExpanded", "Expanded PVC %s from %s to %s", pvcName, currentReq.String(), desiredSize.String())

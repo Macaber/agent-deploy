@@ -111,8 +111,8 @@ spec:
                     type: array
                   blockedCIDRs:
                     description: |-
-                      BlockedCIDRs specifies CIDR blocks blocked from egress traffic (e.g. ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.169.254/32"]).
-                      Only the CIDRs explicitly listed here will be blocked from egress.
+                      BlockedCIDRs specifies additional CIDR blocks blocked from egress traffic.
+                      Private, carrier-grade NAT, and link-local ranges are blocked by default to prevent access to other Pods, nodes, VPC services, and cloud metadata.
                     items:
                       type: string
                     type: array
@@ -580,6 +580,7 @@ rules:
   verbs:
   - create
   - patch
+  - update
 - apiGroups:
   - ai.example.com
   resources:
@@ -837,7 +838,7 @@ spec:
         env:
         - name: WORKSPACE_DOMAIN
           value: bocomcode
-        image: workspace-operator:v1.0.31
+        image: workspace-operator:v1.0.33
         livenessProbe:
           httpGet:
             path: /healthz
