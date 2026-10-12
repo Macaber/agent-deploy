@@ -151,7 +151,26 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		needsStatusUpdate = true
 	}
 	if needsStatusUpdate {
-		if err := r.Status().Update(ctx, ws); err != nil {
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latestWs := &aiv1alpha1.Workspace{}
+			if err := r.Get(ctx, req.NamespacedName, latestWs); err != nil {
+				return err
+			}
+			changed := false
+			if latestWs.Status.Phase == "" {
+				latestWs.Status.Phase = aiv1alpha1.WorkspacePending
+				changed = true
+			}
+			if latestWs.Status.LastActiveTime == nil {
+				latestWs.Status.LastActiveTime = &metav1.Time{Time: time.Now()}
+				changed = true
+			}
+			if !changed {
+				return nil
+			}
+			return r.Status().Update(ctx, latestWs)
+		})
+		if err != nil {
 			return ctrl.Result{}, err
 		}
 		// Re-fetch to get latest resourceVersion
@@ -284,7 +303,27 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Update status if anything changed
 	if oldPhase != ws.Status.Phase || oldPodName != ws.Status.PodName || oldPVCName != ws.Status.PVCName || oldEndpoint != ws.Status.Endpoint {
 		log.Info("Updating Workspace status", "phase", ws.Status.Phase, "podName", ws.Status.PodName)
-		if err := r.Status().Update(ctx, ws); err != nil {
+		desiredPhase := ws.Status.Phase
+		desiredPodName := ws.Status.PodName
+		desiredPVCName := ws.Status.PVCName
+		desiredEndpoint := ws.Status.Endpoint
+		desiredLastActiveTime := ws.Status.LastActiveTime
+
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latestWs := &aiv1alpha1.Workspace{}
+			if err := r.Get(ctx, req.NamespacedName, latestWs); err != nil {
+				return err
+			}
+			latestWs.Status.Phase = desiredPhase
+			latestWs.Status.PodName = desiredPodName
+			latestWs.Status.PVCName = desiredPVCName
+			latestWs.Status.Endpoint = desiredEndpoint
+			if desiredLastActiveTime != nil && (latestWs.Status.LastActiveTime == nil || desiredLastActiveTime.After(latestWs.Status.LastActiveTime.Time)) {
+				latestWs.Status.LastActiveTime = desiredLastActiveTime
+			}
+			return r.Status().Update(ctx, latestWs)
+		})
+		if err != nil {
 			return ctrl.Result{}, err
 		}
 	}
