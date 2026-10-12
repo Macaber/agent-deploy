@@ -101,6 +101,45 @@ spec:
                     items:
                       type: string
                     type: array
+                  allowedNamespaces:
+                    description: |-
+                      AllowedNamespaces adds egress exceptions for shared in-cluster services that live
+                      inside the private ranges excluded from the public Internet egress rule
+                      (e.g. the OTel collector in the "monitoring" namespace).
+                      Each rule is matched through namespace/pod labels instead of raw IPs, so it keeps
+                      working when the target pods are rescheduled and get new IPs.
+                    items:
+                      description: WorkspaceNetworkPolicyNamespaceRule defines an
+                        egress exception to another namespace.
+                      properties:
+                        namespace:
+                          description: |-
+                            Namespace is the target namespace name. It is enforced through the standard
+                            "kubernetes.io/metadata.name" label so the rule survives namespace recreation.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        podSelector:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            PodSelector matches Pods in the target namespace by labels
+                            (e.g. {"app.kubernetes.io/name": "otel-collector"}).
+                            When empty, all Pods in the namespace are selected.
+                          type: object
+                        ports:
+                          description: |-
+                            Ports lists TCP ports allowed to the selected Pods (e.g. 4318 for OTLP/HTTP, 4317 for OTLP/gRPC).
+                            Valid range is 1-65535. When empty, all ports are allowed.
+                          items:
+                            format: int32
+                            type: integer
+                          type: array
+                      required:
+                      - namespace
+                      type: object
+                    type: array
                   blockedCIDRs:
                     description: |-
                       BlockedCIDRs specifies additional CIDR blocks blocked from egress traffic.

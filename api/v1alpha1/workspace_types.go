@@ -222,6 +222,36 @@ type WorkspaceNetworkPolicySpec struct {
 	// AllowedCIDRs specifies explicit CIDR blocks allowed for egress traffic (e.g. internal LLM API gateway "10.10.20.5/32").
 	// +optional
 	AllowedCIDRs []string `json:"allowedCIDRs,omitempty"`
+
+	// AllowedNamespaces adds egress exceptions for shared in-cluster services that live
+	// inside the private ranges excluded from the public Internet egress rule
+	// (e.g. the OTel collector in the "monitoring" namespace).
+	// Each rule is matched through namespace/pod labels instead of raw IPs, so it keeps
+	// working when the target pods are rescheduled and get new IPs.
+	// +optional
+	AllowedNamespaces []WorkspaceNetworkPolicyNamespaceRule `json:"allowedNamespaces,omitempty"`
+}
+
+// WorkspaceNetworkPolicyNamespaceRule defines an egress exception to another namespace.
+type WorkspaceNetworkPolicyNamespaceRule struct {
+	// Namespace is the target namespace name. It is enforced through the standard
+	// "kubernetes.io/metadata.name" label so the rule survives namespace recreation.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Namespace string `json:"namespace"`
+
+	// PodSelector matches Pods in the target namespace by labels
+	// (e.g. {"app.kubernetes.io/name": "otel-collector"}).
+	// When empty, all Pods in the namespace are selected.
+	// +optional
+	PodSelector map[string]string `json:"podSelector,omitempty"`
+
+	// Ports lists TCP ports allowed to the selected Pods (e.g. 4318 for OTLP/HTTP, 4317 for OTLP/gRPC).
+	// Valid range is 1-65535. When empty, all ports are allowed.
+	// +optional
+	Ports []int32 `json:"ports,omitempty"`
 }
 
 // SharedVolumeMount defines a mount of a pre-existing generic/shared PVC.

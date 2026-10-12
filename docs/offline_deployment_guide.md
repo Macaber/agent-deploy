@@ -619,6 +619,8 @@ Operator 默认会为每个 Workspace 创建专属的 `<workspace-name>-netpol` 
    * Ingress 入站连接的响应回包由 NetworkPolicy 有状态连接自动放行；
    * **默认阻断内部网段**：从公网放行规则中排除 RFC1918 私网、`100.64.0.0/10` 与链路本地网段，阻止访问其他 Pod、节点、VPC 服务及云元数据；`blockedCIDRs` 可追加其他禁止网段。
    * **白名单放行 (`allowedCIDRs`)**：可在 `spec.networkPolicy.allowedCIDRs` 中添加明确放行的 IP/CIDR（如私有 LLM 网关 `10.10.20.5/32`、内网自建 GitLab `192.168.1.100/32`）。
+   * **命名空间放行 (`allowedNamespaces`)**：可在 `spec.networkPolicy.allowedNamespaces` 中按「命名空间 + Pod 标签 + TCP 端口」放行集群内共享服务（如 `monitoring` 命名空间的 OpenTelemetry Collector `4318` 端口）。规则按标签匹配而非裸 IP，目标 Pod 重调度换 IP 后依然生效。
+   * **全局放行 (`NETPOL_ALLOWED_NAMESPACES`)**：在 controller-manager 部署上设置该环境变量（或启动参数 `--netpol-allowed-namespaces`），即可对所有 Workspace 自动生效同样的命名空间放行规则，无需逐个修改 Workspace CR；该全局规则与 CR 级 `allowedNamespaces` 合并去重。
 
 > **CNI 插件要求**：确保集群 CNI 插件支持 NetworkPolicy（如 Calico、Cilium、Kube-router 或阿里云 ACK Terway）。
 
@@ -653,6 +655,12 @@ spec:
     allowedCIDRs:
       - "10.10.20.5/32"           # 内部 LLM Gateway
       - "192.168.1.100/32"        # 内部私有 GitLab
+    # 按命名空间放行集群内共享服务（如 OTLP 上报到 monitoring 的 otel-collector）
+    allowedNamespaces:
+      - namespace: monitoring
+        podSelector:
+          app.kubernetes.io/name: otel-collector   # 与 collector Service 的 spec.selector 保持一致
+        ports: [4318]
 ```
 
 ---

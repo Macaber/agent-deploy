@@ -152,12 +152,19 @@ var _ = Describe("Workspace Controller", func() {
 				"192.168.0.0/16",
 			))
 
-			By("Updating Workspace with custom BlockedCIDRs and AllowedCIDRs")
+			By("Updating Workspace with custom BlockedCIDRs, AllowedCIDRs and AllowedNamespaces")
 			resource := &aiv1alpha1.Workspace{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
 			resource.Spec.NetworkPolicy = &aiv1alpha1.WorkspaceNetworkPolicySpec{
 				BlockedCIDRs: []string{"192.168.1.0/24", "10.0.0.0/16"},
 				AllowedCIDRs: []string{"10.0.1.100/32"},
+				AllowedNamespaces: []aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule{
+					{
+						Namespace:   "monitoring",
+						PodSelector: map[string]string{"app.kubernetes.io/name": "otel-collector"},
+						Ports:       []int32{4318},
+					},
+				},
 			}
 			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
 
@@ -171,8 +178,22 @@ var _ = Describe("Workspace Controller", func() {
 				Namespace: resourceNamespace,
 			}, netpol)).To(Succeed())
 			Expect(netpol.Spec.Egress[1].To[0].IPBlock.Except).To(ContainElements("192.168.1.0/24", "10.0.0.0/16"))
-			Expect(netpol.Spec.Egress).To(HaveLen(3))
+			Expect(netpol.Spec.Egress).To(HaveLen(4))
 			Expect(netpol.Spec.Egress[2].To[0].IPBlock.CIDR).To(Equal("10.0.1.100/32"))
+
+			// Namespace-scoped egress exception for the OTel collector.
+			// The empty-Namespace rule is skipped, so it must not produce an extra egress rule.
+			Expect(netpol.Spec.Egress[3].To).To(HaveLen(1))
+			Expect(netpol.Spec.Egress[3].To[0].NamespaceSelector).NotTo(BeNil())
+			Expect(netpol.Spec.Egress[3].To[0].NamespaceSelector.MatchLabels).To(Equal(
+				map[string]string{"kubernetes.io/metadata.name": "monitoring"}))
+			Expect(netpol.Spec.Egress[3].To[0].PodSelector).NotTo(BeNil())
+			Expect(netpol.Spec.Egress[3].To[0].PodSelector.MatchLabels).To(Equal(
+				map[string]string{"app.kubernetes.io/name": "otel-collector"}))
+			Expect(netpol.Spec.Egress[3].To[0].IPBlock).To(BeNil())
+			Expect(netpol.Spec.Egress[3].Ports).To(HaveLen(1))
+			Expect(*netpol.Spec.Egress[3].Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
+			Expect(netpol.Spec.Egress[3].Ports[0].Port.IntVal).To(Equal(int32(4318)))
 
 			By("Disabling NetworkPolicy via NetworkPolicy.Disabled and verifying deletion")
 			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
@@ -189,6 +210,75 @@ var _ = Describe("Workspace Controller", func() {
 				Namespace: resourceNamespace,
 			}, netpol)
 			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("should apply controller-wide namespace egress exceptions to every workspace", func() {
+			By("Reconciling the workspace with a controller-wide egress exception")
+			controllerReconciler := &WorkspaceReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				GlobalAllowedNamespaces: []aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule{
+					{
+						Namespace:   "monitoring",
+						PodSelector: map[string]string{"app.kubernetes.io/name": "otel-collector"},
+						Ports:       []int32{4318},
+					},
+				},
+			}
+
+			// First reconcile adds finalizer, second reconcile creates child resources.
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the global exception lands in the NetworkPolicy without any CR change")
+			netpol := &networkingv1.NetworkPolicy{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName + "-netpol",
+				Namespace: resourceNamespace,
+			}, netpol)).To(Succeed())
+			otelRule := findNamespaceEgressRule(netpol, "monitoring")
+			Expect(otelRule).NotTo(BeNil())
+			Expect(otelRule.Ports).To(HaveLen(1))
+			Expect(*otelRule.Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
+			Expect(otelRule.Ports[0].Port.IntVal).To(Equal(int32(4318)))
+
+			By("Reconciling again with an identical CR-level rule and an extra CR-only rule")
+			resource := &aiv1alpha1.Workspace{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+			resource.Spec.NetworkPolicy = &aiv1alpha1.WorkspaceNetworkPolicySpec{
+				AllowedNamespaces: []aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule{
+					{
+						Namespace:   "monitoring",
+						PodSelector: map[string]string{"app.kubernetes.io/name": "otel-collector"},
+						Ports:       []int32{4318},
+					},
+					{
+						Namespace: "logging",
+					},
+				},
+			}
+			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName + "-netpol",
+				Namespace: resourceNamespace,
+			}, netpol)).To(Succeed())
+			// The CR rule identical to the global default must be deduplicated.
+			Expect(countNamespaceEgressRules(netpol, "monitoring")).To(Equal(1))
+			// The CR-only rule (no ports => all ports) must still be merged in.
+			loggingRule := findNamespaceEgressRule(netpol, "logging")
+			Expect(loggingRule).NotTo(BeNil())
+			Expect(loggingRule.Ports).To(BeEmpty())
 		})
 
 		It("should successfully reconcile the resource with ConfigMap volume mounts", func() {
@@ -498,3 +588,31 @@ var _ = Describe("Workspace Controller", func() {
 		})
 	})
 })
+
+// findNamespaceEgressRule returns the first egress rule targeting the given namespace
+// through a kubernetes.io/metadata.name namespaceSelector, or nil when absent.
+func findNamespaceEgressRule(netpol *networkingv1.NetworkPolicy, namespace string) *networkingv1.NetworkPolicyEgressRule {
+	for i := range netpol.Spec.Egress {
+		for _, peer := range netpol.Spec.Egress[i].To {
+			if peer.NamespaceSelector != nil &&
+				peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == namespace {
+				return &netpol.Spec.Egress[i]
+			}
+		}
+	}
+	return nil
+}
+
+// countNamespaceEgressRules counts egress rules targeting the given namespace.
+func countNamespaceEgressRules(netpol *networkingv1.NetworkPolicy, namespace string) int {
+	count := 0
+	for _, rule := range netpol.Spec.Egress {
+		for _, peer := range rule.To {
+			if peer.NamespaceSelector != nil &&
+				peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == namespace {
+				count++
+			}
+		}
+	}
+	return count
+}

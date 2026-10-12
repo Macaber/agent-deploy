@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +55,11 @@ type WorkspaceReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	// GlobalAllowedNamespaces holds controller-wide NetworkPolicy egress exceptions that
+	// are applied to EVERY Workspace on top of spec.networkPolicy.allowedNamespaces
+	// (e.g. letting all workspaces export OTLP to a shared collector). Populated from
+	// the --netpol-allowed-namespaces flag / NETPOL_ALLOWED_NAMESPACES env (JSON array).
+	GlobalAllowedNamespaces []aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule
 }
 
 // +kubebuilder:rbac:groups=ai.example.com,resources=workspaces,verbs=get;list;watch;create;update;patch;delete
@@ -1316,6 +1322,23 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 		}
 	}
 
+	// 4. Append namespace-scoped egress exceptions (e.g. the shared OTel collector in the
+	// "monitoring" namespace), so workspaces can reach in-cluster services inside the
+	// private ranges excluded above. Controller-wide defaults apply to every Workspace;
+	// per-workspace rules from ws.Spec.NetworkPolicy are merged on top (deduplicated).
+	// Rules are matched by namespace/pod labels and stay valid when target pods move.
+	seenNsRules := make(map[string]struct{}, len(r.GlobalAllowedNamespaces))
+	for _, nsRule := range mergeNamespaceEgressRules(r.GlobalAllowedNamespaces, ws.Spec.NetworkPolicy) {
+		key := netpolNamespaceRuleKey(nsRule)
+		if _, dup := seenNsRules[key]; dup {
+			continue
+		}
+		seenNsRules[key] = struct{}{}
+		if egressRule, ok := buildNamespaceEgressRule(nsRule); ok {
+			egressRules = append(egressRules, egressRule)
+		}
+	}
+
 	desiredNetpolSpec := networkingv1.NetworkPolicySpec{
 		PodSelector: metav1.LabelSelector{
 			MatchLabels: selectorLabels,
@@ -1362,6 +1385,75 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 	netpol.Labels = labels
 	netpol.Spec = desiredNetpolSpec
 	return r.Update(ctx, netpol)
+}
+
+// mergeNamespaceEgressRules combines controller-wide egress exceptions with the
+// per-workspace rules declared in ws.Spec.NetworkPolicy (controller defaults first).
+func mergeNamespaceEgressRules(
+	global []aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule,
+	wsPolicy *aiv1alpha1.WorkspaceNetworkPolicySpec,
+) []aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule {
+	var wsRules []aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule
+	if wsPolicy != nil {
+		wsRules = wsPolicy.AllowedNamespaces
+	}
+	if len(global) == 0 {
+		return wsRules
+	}
+	if len(wsRules) == 0 {
+		return global
+	}
+	rules := make([]aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule, 0, len(global)+len(wsRules))
+	rules = append(rules, global...)
+	rules = append(rules, wsRules...)
+	return rules
+}
+
+// netpolNamespaceRuleKey builds a deterministic dedupe key for a namespace egress rule.
+func netpolNamespaceRuleKey(rule aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule) string {
+	selectorLabels := make([]string, 0, len(rule.PodSelector))
+	for k, v := range rule.PodSelector {
+		selectorLabels = append(selectorLabels, k+"="+v)
+	}
+	slices.Sort(selectorLabels)
+	ports := make([]string, 0, len(rule.Ports))
+	for _, port := range rule.Ports {
+		ports = append(ports, strconv.Itoa(int(port)))
+	}
+	slices.Sort(ports)
+	return strings.TrimSpace(rule.Namespace) + "|" + strings.Join(selectorLabels, ",") + "|" + strings.Join(ports, ",")
+}
+
+// buildNamespaceEgressRule translates a namespace egress exception into a NetworkPolicy
+// egress rule. It returns false when the rule has no usable destination (empty namespace).
+func buildNamespaceEgressRule(nsRule aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule) (networkingv1.NetworkPolicyEgressRule, bool) {
+	ns := strings.TrimSpace(nsRule.Namespace)
+	if ns == "" {
+		return networkingv1.NetworkPolicyEgressRule{}, false
+	}
+	tcpProtocol := corev1.ProtocolTCP
+	peer := networkingv1.NetworkPolicyPeer{
+		NamespaceSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{"kubernetes.io/metadata.name": ns},
+		},
+	}
+	if len(nsRule.PodSelector) > 0 {
+		peer.PodSelector = &metav1.LabelSelector{MatchLabels: nsRule.PodSelector}
+	}
+	egressRule := networkingv1.NetworkPolicyEgressRule{
+		To: []networkingv1.NetworkPolicyPeer{peer},
+	}
+	for _, port := range nsRule.Ports {
+		if port < 1 || port > 65535 {
+			continue
+		}
+		portVal := intstr.FromInt32(port)
+		egressRule.Ports = append(egressRule.Ports, networkingv1.NetworkPolicyPort{
+			Protocol: &tcpProtocol,
+			Port:     &portVal,
+		})
+	}
+	return egressRule, true
 }
 
 func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {

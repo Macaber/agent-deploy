@@ -115,6 +115,7 @@ Operator 默认会为每个 Workspace 创建 NetworkPolicy，禁止 Workspace Po
 | **`disabled`** | `boolean` | 否 | 是否禁用 NetworkPolicy。默认 `false`；即使省略整个 `networkPolicy` 字段也会创建策略。 | `false`, `true` |
 | **`blockedCIDRs`** | `array` | 否 | **额外禁止出站的网段列表**。默认已拦截 RFC1918 私网、`100.64.0.0/10` 和链路本地网段，防止访问其他 Pod、节点、VPC 服务及云元数据。 | `["203.0.113.0/24"]` |
 | **`allowedCIDRs`** | `array` | 否 | **精准白名单放行的 IP/网段列表**。用于特批放行企业内部大模型推理服务（LLM Gateway）或内网 GitLab。 | `["10.10.20.5/32", "192.168.1.100/32"]` |
+| **`allowedNamespaces`** | `array` | 否 | **按命名空间放行的出站规则列表**，用于访问被私网默认拦截的集群内共享服务（如 `monitoring` 命名空间的 OpenTelemetry Collector）。每条规则包含 `namespace`（目标命名空间名）、`podSelector`（Pod 标签选择，可省略表示全部 Pod）、`ports`（放行的 TCP 端口列表，可省略表示全部端口）。按标签匹配，目标 Pod 重建换 IP 后依然生效。 | `[{"namespace": "monitoring", "podSelector": {"app.kubernetes.io/name": "otel-collector"}, "ports": [4318]}]` |
 
 #### 网络策略配置示例：
 ```yaml
@@ -125,7 +126,14 @@ networkPolicy:
   allowedCIDRs:
     - "10.10.20.5/32"      # 企业私有大模型网关
     - "192.168.1.100/32"   # 内网自建 GitLab
+  allowedNamespaces:
+    - namespace: monitoring
+      podSelector:
+        app.kubernetes.io/name: otel-collector   # 与 collector Service 的 spec.selector 保持一致
+      ports: [4318]           # OTLP/HTTP（gRPC 为 4317）
 ```
+
+> **平台管理员（controller 级全局放行）**：如需对**所有** Workspace 统一放行而无需逐个修改 CR，可在 controller-manager 部署上设置环境变量 `NETPOL_ALLOWED_NAMESPACES`（或启动参数 `--netpol-allowed-namespaces`），取值为与 `allowedNamespaces` 完全相同结构的 JSON 数组。Operator 会在每次调谐时自动把该规则并入每个 Workspace 的 NetworkPolicy，并与 CR 级 `allowedNamespaces` 去重合并。示例见 `config/manager/manager.yaml` 中的注释配置。
 
 ---
 

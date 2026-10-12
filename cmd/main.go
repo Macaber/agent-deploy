@@ -18,8 +18,11 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -79,6 +82,12 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	var netpolAllowedNamespaces string
+	flag.StringVar(&netpolAllowedNamespaces, "netpol-allowed-namespaces", os.Getenv("NETPOL_ALLOWED_NAMESPACES"),
+		"Controller-wide NetworkPolicy egress exceptions applied to EVERY Workspace, as a JSON array of "+
+			"{namespace, podSelector, ports} rules (same schema as spec.networkPolicy.allowedNamespaces). "+
+			"Defaults to the NETPOL_ALLOWED_NAMESPACES environment variable. Example: "+
+			`[{"namespace":"monitoring","podSelector":{"app.kubernetes.io/name":"otel-collector"},"ports":[4318]}]`)
 	opts := zap.Options{
 		Development: true,
 	}
@@ -86,6 +95,15 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	globalAllowedNamespaces, err := parseNamespaceRuleJSON(netpolAllowedNamespaces)
+	if err != nil {
+		setupLog.Error(err, "Invalid --netpol-allowed-namespaces (or NETPOL_ALLOWED_NAMESPACES environment variable)")
+		os.Exit(1)
+	}
+	if len(globalAllowedNamespaces) > 0 {
+		setupLog.Info("Controller-wide NetworkPolicy egress exceptions enabled", "rules", len(globalAllowedNamespaces))
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -179,9 +197,10 @@ func main() {
 	}
 
 	if err := (&controller.WorkspaceReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("workspace-controller"),
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		Recorder:                mgr.GetEventRecorderFor("workspace-controller"),
+		GlobalAllowedNamespaces: globalAllowedNamespaces,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "workspace")
 		os.Exit(1)
@@ -202,4 +221,24 @@ func main() {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+// parseNamespaceRuleJSON parses the controller-wide NetworkPolicy egress exceptions
+// (--netpol-allowed-namespaces / NETPOL_ALLOWED_NAMESPACES).
+// An empty value means "no controller-wide exceptions".
+func parseNamespaceRuleJSON(raw string) ([]aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var rules []aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule
+	if err := json.Unmarshal([]byte(raw), &rules); err != nil {
+		return nil, fmt.Errorf("must be a JSON array of {namespace, podSelector, ports} rules: %w", err)
+	}
+	for i, rule := range rules {
+		if strings.TrimSpace(rule.Namespace) == "" {
+			return nil, fmt.Errorf("rules[%d].namespace must not be empty", i)
+		}
+	}
+	return rules, nil
 }

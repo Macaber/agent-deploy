@@ -25,4 +25,10 @@ spec:
   #   - configMapName: "bocomwork-config"
   #     mountPath: "/etc/bocomwork"
   #     readOnly: true
+  # networkPolicy:
+  #   allowedNamespaces:
+  #     - namespace: monitoring
+  #       podSelector:
+  #         app.kubernetes.io/name: otel-collector
+  #       ports: [4318]
 

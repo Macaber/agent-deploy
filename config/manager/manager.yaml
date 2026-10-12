@@ -92,6 +92,13 @@ spec:
         env:
         - name: WORKSPACE_DOMAIN
           value: "bocomcode"
+        # Controller-wide NetworkPolicy egress exceptions applied to EVERY workspace.
+        # JSON array, same schema as spec.networkPolicy.allowedNamespaces; the
+        # --netpol-allowed-namespaces flag is equivalent. This rule lets all workspace
+        # pods export OTLP (TCP 4318) to the shared OpenTelemetry collector in "monitoring".
+        # NOTE: keep podSelector in sync with the collector Service's spec.selector.
+        - name: NETPOL_ALLOWED_NAMESPACES
+          value: '[{"namespace":"monitoring","podSelector":{"app.kubernetes.io/name":"otel-collector"},"ports":[4318]}]'
         resources:
           limits:
             cpu: 500m
