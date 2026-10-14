@@ -602,6 +602,16 @@ rules:
   resources:
   - persistentvolumeclaims
   - persistentvolumes
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - services
   verbs:
   - create
@@ -879,7 +889,7 @@ spec:
           value: bocomcode
         - name: NETPOL_ALLOWED_NAMESPACES
           value: '[{"namespace":"monitoring","podSelector":{"app.kubernetes.io/name":"otel-collector"},"ports":[4318]}]'
-        image: workspace-operator:v1.0.36
+        image: workspace-operator:v1.0.37
         livenessProbe:
           httpGet:
             path: /healthz

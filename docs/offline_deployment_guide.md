@@ -395,20 +395,22 @@ spec:
       readOnly: false
 ```
 
-#### 6. 删除 Workspace 时的数据清理语义（三方案一致）
+#### 6. 删除 Workspace 时的存储保留语义（三方案一致）
 
-删除 Workspace 时，Operator finalizer 与 Kubernetes 回收机制配合，实现 **PV / PVC / 存储介质数据** 一并删除：
+删除 Workspace 时，**不会自动删除 PV 和 PVC**，底层持久化存储与用户数据完整保留（包括 OSS 方案）：
 
 | 方案 | PVC | PV | 存储数据 |
 | :--- | :--- | :--- | :--- |
-| Local Path | ownerRef 级联删除 | provisioner Delete 回收自动删 | provisioner 删除节点目录数据 |
-| NAS / NFS | ownerRef 级联删除 | provisioner Delete 回收自动删 | provisioner 删除 NAS 子目录数据 |
-| OSS | ownerRef 级联删除 | Operator finalizer 显式删除 | Operator 清空 OSS 上 `volumeAttributes.path` 前缀下的全部对象 |
+| Local Path | 保留（不设 ownerRef） | 保留（PVC 绑定中） | 节点目录数据保留 |
+| NAS / NFS | 保留（不设 ownerRef） | 保留（PVC 绑定中） | NAS 子目录数据保留 |
+| OSS | 保留（不设 ownerRef） | 保留（Retain 且不调删除） | OSS 上对象数据保留 |
 
-> OSS 数据清理由 Operator 通过 OSS Go SDK 完成（`ForcePathStyle` 适配专有云 http 内网地址），凭证取自 PV 引用的 `oss-secret`，分页列出并删除该 workspace 路径下的全部对象。
-> **删除范围安全保证**：删除前缀完全由 workspace 名称推导（`workspaces/<name>`），不采用 PV 上可被篡改的 `path` 属性；且按目录边界过滤（仅删除 key 等于前缀或以前缀 `/` 开头的对象），删除 `ws-aikc` 绝不会误删 `ws-aikc-dev`、公共共享目录等其他路径的内容；workspace 名称含 `/` 等非法字符时直接拒绝执行。
-> 若清理失败（凭证错误、网络不可达等），Operator 记录错误日志并继续删除 PV，不阻塞 workspace 删除，残留数据需人工介入。
-> 公共共享 PV（`global-oss-share-pv`）不属于任何 Workspace，其数据不受影响。
+> **数据安全保证**：
+> 1. PVC 创建时不绑定 Workspace 的 Owner Reference，因此删除 Workspace 时 Kubernetes 垃圾回收器不会级联删除 PVC。
+> 2. 由于 PVC 持续存在并处于 Bound 状态，底层 PV 不会触发回收策略。
+> 3. OSS 方案中，Operator 不会注入删除 finalizer，亦不会清空 OSS 上对应的数据前缀，确保工作空间重建或数据迁移时历史数据完好无损。
+> 4. 如需彻底清理存储，可由管理员显式执行 `kubectl delete pvc <name>-pvc` 及对应存储介质的物理清理。
+> 5. 公共共享 PV（`global-oss-share-pv`）不属于任何 Workspace，其数据同样不受影响。
 
 ---
 

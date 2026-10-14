@@ -46,7 +46,7 @@ import (
 )
 
 const (
-	// workspaceFinalizer 保证 workspace 删除时有机会清理同名 PV
+	// workspaceFinalizer 旧版本遗留 finalizer，仅用于清理升级兼容，不再向新资源添加
 	workspaceFinalizer = "ai.example.com/workspace-cleanup"
 )
 
@@ -66,8 +66,8 @@ type WorkspaceReconciler struct {
 // +kubebuilder:rbac:groups=ai.example.com,resources=workspaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ai.example.com,resources=workspaces/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
@@ -92,15 +92,10 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	// 删除处理：清理 PV 与存储介质数据后移除 finalizer（PVC 由 ownerRef 自动级联删除）。
-	// 语义与 NAS/Local 方案一致：删除 workspace 时 PV、PVC、存储介质数据一并删除。
-	// Local/NFS 的数据由各自 provisioner 在 PVC Delete 回收时清理；
-	// OSS 卷（Retain + CSI DeleteVolume 为空操作）由 cleanupPV 显式清空 OSS 数据。
+	// 删除处理：不自动删除 PV 和 PVC（包括 OSS 方案），保留持久化存储与底层数据。
+	// 若存在旧版本遗留的 finalizer，清理移除以便 Workspace 正常删除，但不执行 PV/PVC/OSS 数据清理。
 	if !ws.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(ws, workspaceFinalizer) {
-			if err := r.cleanupPV(ctx, ws); err != nil {
-				log.Error(err, "Failed to cleanup PV for deleted workspace", "workspace", ws.Name)
-			}
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				latestWs := &aiv1alpha1.Workspace{}
 				if err := r.Get(ctx, req.NamespacedName, latestWs); err != nil {
@@ -116,17 +111,17 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				return r.Update(ctx, latestWs)
 			})
 			if err != nil {
-				log.Error(err, "Failed to remove finalizer from Workspace", "workspace", ws.Name)
+				log.Error(err, "Failed to remove legacy finalizer from Workspace", "workspace", ws.Name)
 				return ctrl.Result{}, err
 			}
-			log.Info("Successfully removed finalizer for Workspace", "workspace", ws.Name)
+			log.Info("Successfully removed legacy finalizer for Workspace", "workspace", ws.Name)
 		}
 		return ctrl.Result{}, nil
 	}
 
-	// 首次创建时添加 finalizer，保证后续删除时有机会清理 PV
-	if !controllerutil.ContainsFinalizer(ws, workspaceFinalizer) {
-		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	// 若旧版本已注入 finalizer，在正常调谐中主动清理移除
+	if controllerutil.ContainsFinalizer(ws, workspaceFinalizer) {
+		_ = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			latestWs := &aiv1alpha1.Workspace{}
 			if err := r.Get(ctx, req.NamespacedName, latestWs); err != nil {
 				return err
@@ -134,16 +129,12 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			if !latestWs.DeletionTimestamp.IsZero() {
 				return nil
 			}
-			if controllerutil.ContainsFinalizer(latestWs, workspaceFinalizer) {
+			if !controllerutil.ContainsFinalizer(latestWs, workspaceFinalizer) {
 				return nil
 			}
-			controllerutil.AddFinalizer(latestWs, workspaceFinalizer)
+			controllerutil.RemoveFinalizer(latestWs, workspaceFinalizer)
 			return r.Update(ctx, latestWs)
 		})
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
 	}
 
 	// Initialize status Phase and LastActiveTime if not set
@@ -476,6 +467,7 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      pvcName,
 						Namespace: ws.Namespace,
+						Labels:    buildWorkspaceLabels(ws),
 						Annotations: map[string]string{
 							"volume.kubernetes.io/storage-provisioner": "ossplugin.csi.alibabacloud.com",
 						},
@@ -498,6 +490,7 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      pvcName,
 						Namespace: ws.Namespace,
+						Labels:    buildWorkspaceLabels(ws),
 					},
 					Spec: corev1.PersistentVolumeClaimSpec{
 						AccessModes: []corev1.PersistentVolumeAccessMode{
@@ -513,9 +506,7 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 				}
 			}
 
-			if err := ctrl.SetControllerReference(ws, pvc, r.Scheme); err != nil {
-				return "", err
-			}
+			// 注意：不设置 ControllerReference / OwnerReference，以确保删除 Workspace 时不会由 K8s 垃圾回收（GC）级联删除 PVC
 			if err := r.Create(ctx, pvc); err != nil {
 				return "", err
 			}
@@ -524,7 +515,28 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 		return "", err
 	}
 
-	// PVC already exists: handle volume expansion / size reconciliation
+	// PVC already exists: 若存在旧版本设置的 Workspace OwnerReference，移除它以防止删除 Workspace 时 PVC 被级联删除
+	if len(pvc.OwnerReferences) > 0 {
+		hasWsOwner := false
+		newOwnerRefs := make([]metav1.OwnerReference, 0, len(pvc.OwnerReferences))
+		for _, ref := range pvc.OwnerReferences {
+			if ref.Kind == "Workspace" && ref.Name == ws.Name {
+				hasWsOwner = true
+				continue
+			}
+			newOwnerRefs = append(newOwnerRefs, ref)
+		}
+		if hasWsOwner {
+			pvc.OwnerReferences = newOwnerRefs
+			if err := r.Update(ctx, pvc); err != nil {
+				log.Error(err, "Failed to remove workspace owner reference from existing PVC", "pvcName", pvcName)
+			} else {
+				log.Info("Removed workspace owner reference from existing PVC to prevent auto-deletion", "pvcName", pvcName)
+			}
+		}
+	}
+
+	// handle volume expansion / size reconciliation
 	// Ensure OSS PVC has the storage-provisioner annotation so K8s admission allows resizing
 	if isOSS {
 		if pvc.Annotations == nil {
@@ -1460,7 +1472,6 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&aiv1alpha1.Workspace{}).
 		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.Service{}).
 		Owns(&networkingv1.Ingress{}).
 		Owns(&networkingv1.NetworkPolicy{}).

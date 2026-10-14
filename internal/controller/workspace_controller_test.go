@@ -586,6 +586,89 @@ var _ = Describe("Workspace Controller", func() {
 			Expect(resMi.Limits.Memory().String()).To(Equal("512Mi"))
 			Expect(resMi.Requests.Memory().String()).To(Equal("256Mi"))
 		})
+
+		It("should not set OwnerReference on PVC and should retain PVC when workspace is deleted", func() {
+			wsName := "persist-test-ws"
+			wsNamespace := "default"
+			wsKey := types.NamespacedName{Name: wsName, Namespace: wsNamespace}
+
+			ws := &aiv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      wsName,
+					Namespace: wsNamespace,
+				},
+				Spec: aiv1alpha1.WorkspaceSpec{
+					Owner: "user-persist",
+					Runtime: aiv1alpha1.RuntimeSpec{
+						Image: "ubuntu:latest",
+					},
+					Storage: aiv1alpha1.StorageSpec{
+						Size: "2Gi",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
+
+			controllerReconciler := &WorkspaceReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// Reconcile workspace
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: wsKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			// 1. Verify that no finalizer was added to Workspace
+			latestWs := &aiv1alpha1.Workspace{}
+			Expect(k8sClient.Get(ctx, wsKey, latestWs)).To(Succeed())
+			Expect(controllerutil.ContainsFinalizer(latestWs, workspaceFinalizer)).To(BeFalse())
+
+			// 2. Verify that PVC is created and has NO OwnerReference to Workspace
+			pvcName := wsName + "-pvc"
+			pvc := &corev1.PersistentVolumeClaim{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: wsNamespace}, pvc)).To(Succeed())
+			Expect(pvc.OwnerReferences).To(BeEmpty())
+			Expect(pvc.Labels["workspace"]).To(Equal(wsName))
+
+			// 3. Test legacy ownerReference stripping on existing PVC
+			pvc.OwnerReferences = []metav1.OwnerReference{
+				{
+					APIVersion: "ai.example.com/v1alpha1",
+					Kind:       "Workspace",
+					Name:       wsName,
+					UID:        latestWs.UID,
+				},
+			}
+			Expect(k8sClient.Update(ctx, pvc)).To(Succeed())
+
+			// Reconcile again, should strip legacy owner reference
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: wsKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: wsNamespace}, pvc)).To(Succeed())
+			Expect(pvc.OwnerReferences).To(BeEmpty())
+
+			// 4. Test legacy finalizer handling on Workspace deletion
+			controllerutil.AddFinalizer(latestWs, workspaceFinalizer)
+			Expect(k8sClient.Update(ctx, latestWs)).To(Succeed())
+
+			// Delete Workspace
+			Expect(k8sClient.Delete(ctx, latestWs)).To(Succeed())
+
+			// Reconcile deletion
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: wsKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Workspace should be deleted (finalizer was removed by reconciler)
+			err = k8sClient.Get(ctx, wsKey, latestWs)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+
+			// 5. Verify PVC still exists and was NOT deleted
+			retainedPVC := &corev1.PersistentVolumeClaim{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: wsNamespace}, retainedPVC)).To(Succeed())
+
+			// Cleanup the PVC
+			Expect(k8sClient.Delete(ctx, retainedPVC)).To(Succeed())
+		})
 	})
 })
 

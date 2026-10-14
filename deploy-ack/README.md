@@ -80,7 +80,7 @@ Operator / CRD 一键安装包不在本目录，构建方式见步骤 5：`GOWOR
 }
 ```
 
-> **为什么必须用 AK Secret（不能用纯节点 RAM 角色）**：Operator 删除 Workspace 时直接读取 Secret 中的 `akId`/`akSecret` 调用 OSS SDK 清空该 Workspace 的 `workspaces/<name>` 前缀数据（`internal/controller/oss_cleanup.go`）。省略 Secret 会导致挂载可用、但**删除后数据残留**（仅记录日志，不阻塞删除）。
+> **AK Secret 说明**：CSI 驱动（`ossplugin.csi.alibabacloud.com`）挂载与操作 OSS 卷时需使用 Secret 中的 `akId`/`akSecret`。Workspace 删除时 PV 与 PVC 默认完整保留，不会自动清理底层存储与 OSS 数据。
 
 ## 4. 步骤 2：确认 ACK 托管 CSI 组件
 
@@ -272,12 +272,12 @@ Flannel 集群不支持，需 Terway + 网络策略能力；`kubectl get netpol 
 
 **Q6：还能用 NAS / 云盘吗？**
 
-可以，`spec.storage.storageClass` 支持多存储类并存（如 ACK 内置 `alicloud-nas`）。但 OSS 删除清理 finalizer 仅对 `ossplugin.csi.alibabacloud.com` 驱动的 PV 生效；云盘为 RWO 块存储，跨节点漂移受限。
+可以，`spec.storage.storageClass` 支持多存储类并存（如 ACK 内置 `alicloud-nas`）。所有存储类型的 PV 与 PVC 在 Workspace 删除时均予保留，不作自动清理；云盘为 RWO 块存储，跨节点漂移受限。
 
 ## 13. 卸载
 
 ```bash
-kubectl get workspace -A                                    # ① 确认所有 Workspace 已删除且 OSS 前缀已清理
+kubectl get workspace -A                                    # ① 确认所有 Workspace 已删除
 kubectl delete -f deploy-ack/api-server-deploy.yaml         # ② API-Server
 kubectl delete -f dist/install.yaml                         # ③ Operator + CRD
 kubectl delete -f deploy-ack/shared-pvc.yaml \
