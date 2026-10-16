@@ -328,6 +328,32 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{RequeueAfter: nextRequeue}, nil
 }
 
+// getDefaultStorageClass returns the default StorageClass and its name.
+// It first checks the DEFAULT_STORAGE_CLASS environment variable.
+// If not set, it inspects the cluster for a StorageClass annotated with
+// storageclass.kubernetes.io/is-default-class="true" (or legacy storageclass.beta.kubernetes.io/is-default-class="true").
+func (r *WorkspaceReconciler) getDefaultStorageClass(ctx context.Context) (*storagev1.StorageClass, string) {
+	if envDefault := strings.TrimSpace(os.Getenv("DEFAULT_STORAGE_CLASS")); envDefault != "" {
+		scObj := &storagev1.StorageClass{}
+		if err := r.Get(ctx, client.ObjectKey{Name: envDefault}, scObj); err == nil {
+			return scObj, envDefault
+		}
+		return nil, envDefault
+	}
+
+	scList := &storagev1.StorageClassList{}
+	if err := r.List(ctx, scList); err == nil {
+		for i := range scList.Items {
+			item := &scList.Items[i]
+			if item.Annotations["storageclass.kubernetes.io/is-default-class"] == "true" ||
+				item.Annotations["storageclass.beta.kubernetes.io/is-default-class"] == "true" {
+				return item, item.Name
+			}
+		}
+	}
+	return nil, ""
+}
+
 func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.Workspace) (string, error) {
 	log := logf.FromContext(ctx)
 	pvcName := ws.Name + "-pvc"
@@ -349,6 +375,20 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 			}
 		} else if strings.Contains(strings.ToLower(*storageClass), "oss") {
 			isOSS = true
+		}
+	} else {
+		// When storageClass is not explicitly specified in the Workspace spec,
+		// resolve the default StorageClass:
+		// 1. DEFAULT_STORAGE_CLASS environment variable (if configured)
+		// 2. Cluster default StorageClass with annotation storageclass.kubernetes.io/is-default-class="true"
+		defaultSC, defaultSCName := r.getDefaultStorageClass(ctx)
+		if defaultSCName != "" {
+			storageClass = &defaultSCName
+			sc = defaultSC
+			if (sc != nil && sc.Provisioner == "ossplugin.csi.alibabacloud.com") || strings.Contains(strings.ToLower(defaultSCName), "oss") {
+				isOSS = true
+			}
+			log.Info("Resolved default StorageClass for workspace", "workspace", ws.Name, "storageClass", defaultSCName, "isOSS", isOSS)
 		}
 	}
 
@@ -532,6 +572,21 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 				log.Error(err, "Failed to remove workspace owner reference from existing PVC", "pvcName", pvcName)
 			} else {
 				log.Info("Removed workspace owner reference from existing PVC to prevent auto-deletion", "pvcName", pvcName)
+			}
+		}
+	}
+
+	// If PVC already exists, also ensure isOSS is recognized if the PVC was created with an OSS storage class
+	if !isOSS && pvc.Spec.StorageClassName != nil && *pvc.Spec.StorageClassName != "" {
+		scName := *pvc.Spec.StorageClassName
+		if strings.Contains(strings.ToLower(scName), "oss") {
+			isOSS = true
+		} else {
+			scObj := &storagev1.StorageClass{}
+			if err := r.Get(ctx, client.ObjectKey{Name: scName}, scObj); err == nil {
+				if scObj.Provisioner == "ossplugin.csi.alibabacloud.com" {
+					isOSS = true
+				}
 			}
 		}
 	}

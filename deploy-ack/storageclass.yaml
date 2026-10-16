@@ -14,6 +14,10 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: alicloud-oss
+  annotations:
+    # 若希望创建 Workspace 未填写 storageClass 时默认使用本存储类，可解开下行注释或执行：
+    # kubectl annotate storageclass alicloud-oss storageclass.kubernetes.io/is-default-class="true" --overwrite
+    # storageclass.kubernetes.io/is-default-class: "true"
 provisioner: ossplugin.csi.alibabacloud.com
 parameters:
   bucket: "your-user-workspaces-bucket"                 # 个人工作空间 Bucket（与集群同 Region）
