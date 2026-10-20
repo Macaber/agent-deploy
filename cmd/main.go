@@ -82,6 +82,12 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	var kubeAPIQPS float64
+	var kubeAPIBurst int
+	var maxConcurrentReconciles int
+	flag.Float64Var(&kubeAPIQPS, "kube-api-qps", 300, "Maximum QPS to the API server from this controller.")
+	flag.IntVar(&kubeAPIBurst, "kube-api-burst", 600, "Maximum burst for throttle to the API server.")
+	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 30, "Maximum number of concurrent reconciles for the controller.")
 	var netpolAllowedNamespaces string
 	flag.StringVar(&netpolAllowedNamespaces, "netpol-allowed-namespaces", os.Getenv("NETPOL_ALLOWED_NAMESPACES"),
 		"Controller-wide NetworkPolicy egress exceptions applied to EVERY Workspace, as a JSON array of "+
@@ -172,7 +178,11 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	restConfig := ctrl.GetConfigOrDie()
+	restConfig.QPS = float32(kubeAPIQPS)
+	restConfig.Burst = kubeAPIBurst
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
@@ -201,6 +211,7 @@ func main() {
 		Scheme:                  mgr.GetScheme(),
 		Recorder:                mgr.GetEventRecorderFor("workspace-controller"),
 		GlobalAllowedNamespaces: globalAllowedNamespaces,
+		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "workspace")
 		os.Exit(1)

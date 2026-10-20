@@ -48,6 +48,14 @@ func main() {
 	}
 
 	http.HandleFunc("/", serveHome)
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
 	http.HandleFunc("/api/login", loginHandler)
 	http.HandleFunc("/api/logout", logoutHandler)
 	http.HandleFunc("/api/auth/check", authCheckHandler)
@@ -484,6 +492,23 @@ func updateExistingWorkspace(ctx context.Context, c client.Client, ws *aiv1alpha
 	return nil
 }
 
+// getCanaryHeader checks if a canary header is configured in environment / config (e.g. CANARY="new").
+func getCanaryHeader() string {
+	if val := os.Getenv("CANARY"); val != "" {
+		return val
+	}
+	if val := os.Getenv("X_CANARY"); val != "" {
+		return val
+	}
+	if val := os.Getenv("CANARY_HEADER"); val != "" {
+		return val
+	}
+	if val := os.Getenv("WORKSPACE_CANARY_HEADER"); val != "" {
+		return val
+	}
+	return ""
+}
+
 // pollWorkspaceRunning polls the workspace status until it reaches Running or Failed state,
 // and verifies that the Ingress route is healthy and serving before writing the JSON result.
 func pollWorkspaceRunning(ctx context.Context, c client.Client, w http.ResponseWriter, userID, wsName, namespace, timeoutMsg string) {
@@ -554,13 +579,14 @@ func probeWorkspaceViaIngress(ctx context.Context, userID, wsName string, ws *ai
 		healthPath = "/" + healthPath
 	}
 
-	var cookieHeader string
+	cookieHeader := fmt.Sprintf("oa=%s; WorkspaceUser=%s", userID, userID)
+	if canary := getCanaryHeader(); canary != "" {
+		cookieHeader = fmt.Sprintf("%s; X-Canary=%s", cookieHeader, canary)
+	}
+
 	var probeURL string
 
 	if ws.Namespace == "bocomwork" {
-		// In bocomwork namespace, Ingress routes via Cookie: oa=<oaVal> (or WorkspaceUser)
-		cookieHeader = fmt.Sprintf("oa=%s; WorkspaceUser=%s", userID, userID)
-
 		var probeBaseURL string
 		if envProbe := os.Getenv("WORKSPACE_INGRESS_PROBE_URL"); envProbe != "" {
 			probeBaseURL = envProbe
@@ -585,9 +611,6 @@ func probeWorkspaceViaIngress(ctx context.Context, userID, wsName string, ws *ai
 			probeURL = fmt.Sprintf("http://%s%s", endpoint, healthPath)
 		}
 	} else {
-		// Non-bocomwork namespace: standard probing
-		cookieHeader = fmt.Sprintf("oa=%s; WorkspaceUser=%s", userID, userID)
-
 		endpoint := ws.Status.Endpoint
 		if endpoint == "" {
 			baseURL := os.Getenv("WORKSPACE_BASE_URL")
@@ -609,6 +632,13 @@ func probeWorkspaceViaIngress(ctx context.Context, userID, wsName string, ws *ai
 	return doSingleProbe(ctx, probeURL, cookieHeader, userID)
 }
 
+var probeHTTPClient = &http.Client{
+	Timeout: 2 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
 // doSingleProbe sends a single probe request with Cookie header and checks whether Ingress successfully forwarded to the Pod.
 func doSingleProbe(ctx context.Context, probeURL, cookieHeader, userID string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
@@ -620,16 +650,10 @@ func doSingleProbe(ctx context.Context, probeURL, cookieHeader, userID string) b
 	if cookieHeader != "" {
 		req.Header.Set("Cookie", cookieHeader)
 	}
+
 	req.Header.Set("User-Agent", "Workspace-Ingress-Probe/1.0")
 
-	probeClient := &http.Client{
-		Timeout: 2 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
-	resp, err := probeClient.Do(req)
+	resp, err := probeHTTPClient.Do(req)
 	if err != nil {
 		log.Printf("Workspace: ws-%s Ingress probe to %s failed (network/connect): %v", userID, probeURL, err)
 		return false

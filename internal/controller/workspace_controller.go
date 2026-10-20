@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apiresources "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,9 +40,13 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	aiv1alpha1 "github.com/example/workspace-operator/api/v1alpha1"
 )
@@ -48,6 +54,9 @@ import (
 const (
 	// workspaceFinalizer 旧版本遗留 finalizer，仅用于清理升级兼容，不再向新资源添加
 	workspaceFinalizer = "ai.example.com/workspace-cleanup"
+
+	// podWorkspaceIndexKey is the field index key for looking up workspace pods in O(1)
+	podWorkspaceIndexKey = "metadata.workspace"
 )
 
 // WorkspaceReconciler reconciles a Workspace object
@@ -60,6 +69,9 @@ type WorkspaceReconciler struct {
 	// (e.g. letting all workspaces export OTLP to a shared collector). Populated from
 	// the --netpol-allowed-namespaces flag / NETPOL_ALLOWED_NAMESPACES env (JSON array).
 	GlobalAllowedNamespaces []aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule
+	// MaxConcurrentReconciles is the maximum number of concurrent Reconciles which can be run.
+	// Defaults to 30 if unset or <= 0.
+	MaxConcurrentReconciles int
 }
 
 // +kubebuilder:rbac:groups=ai.example.com,resources=workspaces,verbs=get;list;watch;create;update;patch;delete
@@ -254,14 +266,31 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			} else if deploy.Status.ReadyReplicas > 0 {
 				ws.Status.Phase = aiv1alpha1.WorkspaceRunning
 
-				// Find pod name to update status
+				// Find pod name to update status using field indexer (O(1)) with fallback
 				podList := &corev1.PodList{}
 				opts := []client.ListOption{
 					client.InNamespace(ws.Namespace),
-					client.MatchingLabels(deploy.Spec.Selector.MatchLabels),
+					client.MatchingFields{podWorkspaceIndexKey: ws.Name},
 				}
-				if err := r.List(ctx, podList, opts...); err == nil && len(podList.Items) > 0 {
-					ws.Status.PodName = podList.Items[0].Name
+				err := r.List(ctx, podList, opts...)
+				if err != nil {
+					// Fallback to MatchingLabels if indexer is unavailable (e.g. in test envs)
+					log.V(1).Info("Pod field-index lookup failed, falling back to label selector", "error", err)
+					opts = []client.ListOption{
+						client.InNamespace(ws.Namespace),
+						client.MatchingLabels(deploy.Spec.Selector.MatchLabels),
+					}
+					err = r.List(ctx, podList, opts...)
+				}
+				if err == nil && len(podList.Items) > 0 {
+					selectedPod := podList.Items[0].Name
+					for _, p := range podList.Items {
+						if p.DeletionTimestamp.IsZero() && p.Status.Phase == corev1.PodRunning {
+							selectedPod = p.Name
+							break
+						}
+					}
+					ws.Status.PodName = selectedPod
 				}
 			} else {
 				ws.Status.Phase = aiv1alpha1.WorkspaceStarting
@@ -747,8 +776,11 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	// Ports
 	containerPort := getWorkspaceContainerPort(ws)
 
+	// Protocol must be set explicitly: the API server defaults it to "TCP" on write and
+	// persists it, so an unset Protocol here would make the Task 1.2 diff never converge
+	// and trigger a spurious r.Update on every reconcile.
 	ports := []corev1.ContainerPort{
-		{Name: "http", ContainerPort: containerPort},
+		{Name: "http", ContainerPort: containerPort, Protocol: corev1.ProtocolTCP},
 	}
 
 	// Volumes and Mounts: Detect if running inside K8s (production PVC mode) or locally (developer HostPath mode)
@@ -1065,36 +1097,110 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		return "", 0, err
 	}
 
-	// Update replica count and other spec settings
+	// Update replica count and other spec settings if changed
 	if len(deploy.Spec.Template.Spec.Containers) == 0 {
 		return "", 0, fmt.Errorf("deployment %s has no containers", deployName)
 	}
-	deploy.Spec.Replicas = &desiredReplicas
-	deploy.Spec.Strategy = appsv1.DeploymentStrategy{
-		Type: appsv1.RecreateDeploymentStrategyType,
-	}
-	deploy.Labels = labels
-	deploy.Spec.Template.Labels = labels
-	deploy.Spec.Template.Spec.RuntimeClassName = ws.Spec.Runtime.RuntimeClassName
-	deploy.Spec.Template.Spec.Containers[0].Image = ws.Spec.Runtime.Image
-	deploy.Spec.Template.Spec.Containers[0].ImagePullPolicy = corev1.PullIfNotPresent
-	deploy.Spec.Template.Spec.Containers[0].Command = command
-	deploy.Spec.Template.Spec.Containers[0].Args = containerArgs
-	deploy.Spec.Template.Spec.Containers[0].Env = envVars
-	deploy.Spec.Template.Spec.Containers[0].Resources = resources
-	deploy.Spec.Template.Spec.Containers[0].Ports = ports
-	deploy.Spec.Template.Spec.InitContainers = initContainers
-	deploy.Spec.Template.Spec.Containers[0].VolumeMounts = volumeMounts
-	deploy.Spec.Template.Spec.Containers[0].Lifecycle = lifecycle
-	deploy.Spec.Template.Spec.Containers[0].StartupProbe = getStartupProbe(ws)
-	deploy.Spec.Template.Spec.Containers[0].ReadinessProbe = getReadinessProbe(ws)
-	deploy.Spec.Template.Spec.Volumes = volumes
-	deploy.Spec.Template.Spec.TerminationGracePeriodSeconds = int64Ptr(2)
-	deploy.Spec.Template.Spec.AutomountServiceAccountToken = boolPtr(false)
-	deploy.Spec.Template.Spec.EnableServiceLinks = boolPtr(false)
 
-	if err := r.Update(ctx, deploy); err != nil {
-		return "", 0, err
+	needsUpdate := false
+	if deploy.Spec.Replicas == nil || *deploy.Spec.Replicas != desiredReplicas {
+		deploy.Spec.Replicas = &desiredReplicas
+		needsUpdate = true
+	}
+	if deploy.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+		deploy.Spec.Strategy = appsv1.DeploymentStrategy{
+			Type: appsv1.RecreateDeploymentStrategyType,
+		}
+		needsUpdate = true
+	}
+	if !maps.Equal(deploy.Labels, labels) {
+		deploy.Labels = labels
+		needsUpdate = true
+	}
+	if !maps.Equal(deploy.Spec.Template.Labels, labels) {
+		deploy.Spec.Template.Labels = labels
+		needsUpdate = true
+	}
+
+	podSpec := &deploy.Spec.Template.Spec
+	if !reflect.DeepEqual(podSpec.RuntimeClassName, ws.Spec.Runtime.RuntimeClassName) {
+		podSpec.RuntimeClassName = ws.Spec.Runtime.RuntimeClassName
+		needsUpdate = true
+	}
+	if podSpec.TerminationGracePeriodSeconds == nil || *podSpec.TerminationGracePeriodSeconds != 2 {
+		podSpec.TerminationGracePeriodSeconds = int64Ptr(2)
+		needsUpdate = true
+	}
+	if podSpec.AutomountServiceAccountToken == nil || *podSpec.AutomountServiceAccountToken != false {
+		podSpec.AutomountServiceAccountToken = boolPtr(false)
+		needsUpdate = true
+	}
+	if podSpec.EnableServiceLinks == nil || *podSpec.EnableServiceLinks != false {
+		podSpec.EnableServiceLinks = boolPtr(false)
+		needsUpdate = true
+	}
+
+	targetContainer := &podSpec.Containers[0]
+	if targetContainer.Image != ws.Spec.Runtime.Image {
+		targetContainer.Image = ws.Spec.Runtime.Image
+		needsUpdate = true
+	}
+	if targetContainer.ImagePullPolicy != corev1.PullIfNotPresent {
+		targetContainer.ImagePullPolicy = corev1.PullIfNotPresent
+		needsUpdate = true
+	}
+	if !slices.Equal(targetContainer.Command, command) {
+		targetContainer.Command = command
+		needsUpdate = true
+	}
+	if !slices.Equal(targetContainer.Args, containerArgs) {
+		targetContainer.Args = containerArgs
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(targetContainer.Env, envVars) {
+		targetContainer.Env = envVars
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(targetContainer.Resources, resources) {
+		targetContainer.Resources = resources
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(targetContainer.Ports, ports) {
+		targetContainer.Ports = ports
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(targetContainer.VolumeMounts, volumeMounts) {
+		targetContainer.VolumeMounts = volumeMounts
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(targetContainer.Lifecycle, lifecycle) {
+		targetContainer.Lifecycle = lifecycle
+		needsUpdate = true
+	}
+	startupProbe := getStartupProbe(ws)
+	if !equality.Semantic.DeepEqual(targetContainer.StartupProbe, startupProbe) {
+		targetContainer.StartupProbe = startupProbe
+		needsUpdate = true
+	}
+	readinessProbe := getReadinessProbe(ws)
+	if !equality.Semantic.DeepEqual(targetContainer.ReadinessProbe, readinessProbe) {
+		targetContainer.ReadinessProbe = readinessProbe
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(podSpec.InitContainers, initContainers) {
+		podSpec.InitContainers = initContainers
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(podSpec.Volumes, volumes) {
+		podSpec.Volumes = volumes
+		needsUpdate = true
+	}
+
+	if needsUpdate {
+		log.Info("Updating Deployment spec due to changes", "deployment", deployName)
+		if err := r.Update(ctx, deploy); err != nil {
+			return "", 0, err
+		}
 	}
 
 	return deploy.Name, desiredReplicas, nil
@@ -1129,11 +1235,13 @@ func (r *WorkspaceReconciler) reconcileService(ctx context.Context, ws *aiv1alph
 	svc := &corev1.Service{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: svcName}, svc)
 
+	// Protocol must match the API-server default ("TCP") so the Task 1.2 diff converges.
 	ports := []corev1.ServicePort{
 		{
 			Name:       "http",
 			Port:       80,
 			TargetPort: intstr.FromString("http"),
+			Protocol:   corev1.ProtocolTCP,
 		},
 	}
 
@@ -1165,11 +1273,25 @@ func (r *WorkspaceReconciler) reconcileService(ctx context.Context, ws *aiv1alph
 		return "", err
 	}
 
-	svc.Labels = labels
-	svc.Spec.Selector = selectorLabels
-	svc.Spec.Ports = ports
-	if err := r.Update(ctx, svc); err != nil {
-		return "", err
+	needsUpdate := false
+	if !maps.Equal(svc.Labels, labels) {
+		svc.Labels = labels
+		needsUpdate = true
+	}
+	if !maps.Equal(svc.Spec.Selector, selectorLabels) {
+		svc.Spec.Selector = selectorLabels
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(svc.Spec.Ports, ports) {
+		svc.Spec.Ports = ports
+		needsUpdate = true
+	}
+	if needsUpdate {
+		log := logf.FromContext(ctx)
+		log.Info("Updating Service spec due to changes", "service", svcName)
+		if err := r.Update(ctx, svc); err != nil {
+			return "", err
+		}
 	}
 	return svc.Name, nil
 }
@@ -1245,23 +1367,43 @@ func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alph
 		return "", err
 	}
 
-	ingress.Labels = labels
+	needsUpdate := false
+	if !maps.Equal(ingress.Labels, labels) {
+		ingress.Labels = labels
+		needsUpdate = true
+	}
 	if ingress.Annotations == nil {
 		ingress.Annotations = make(map[string]string)
+		needsUpdate = true
 	}
-	ingress.Annotations["nginx.ingress.kubernetes.io/ssl-redirect"] = "false"
-	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-connect-timeout"] = "10"
-	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-body-size"] = "100m"
-	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-read-timeout"] = "86400"
-	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-send-timeout"] = "86400"
-	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-buffering"] = "off"
-	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-http-version"] = "1.1"
-	ingress.Annotations["nginx.ingress.kubernetes.io/limit-connections"] = "200"
-	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-next-upstream"] = "error timeout invalid_header http_502 http_503"
-	ingress.Annotations["nginx.ingress.kubernetes.io/proxy-next-upstream-tries"] = "3"
-	ingress.Spec = ingressSpec
-	if err := r.Update(ctx, ingress); err != nil {
-		return "", err
+	expectedAnnotations := map[string]string{
+		"nginx.ingress.kubernetes.io/ssl-redirect":              "false",
+		"nginx.ingress.kubernetes.io/proxy-connect-timeout":     "10",
+		"nginx.ingress.kubernetes.io/proxy-body-size":           "100m",
+		"nginx.ingress.kubernetes.io/proxy-read-timeout":        "86400",
+		"nginx.ingress.kubernetes.io/proxy-send-timeout":        "86400",
+		"nginx.ingress.kubernetes.io/proxy-buffering":           "off",
+		"nginx.ingress.kubernetes.io/proxy-http-version":        "1.1",
+		"nginx.ingress.kubernetes.io/limit-connections":         "200",
+		"nginx.ingress.kubernetes.io/proxy-next-upstream":       "error timeout invalid_header http_502 http_503",
+		"nginx.ingress.kubernetes.io/proxy-next-upstream-tries": "3",
+	}
+	for k, v := range expectedAnnotations {
+		if ingress.Annotations[k] != v {
+			ingress.Annotations[k] = v
+			needsUpdate = true
+		}
+	}
+	if !equality.Semantic.DeepEqual(ingress.Spec, ingressSpec) {
+		ingress.Spec = ingressSpec
+		needsUpdate = true
+	}
+	if needsUpdate {
+		log := logf.FromContext(ctx)
+		log.Info("Updating Ingress spec due to changes", "ingress", ingressName)
+		if err := r.Update(ctx, ingress); err != nil {
+			return "", err
+		}
 	}
 	return host, nil
 }
@@ -1449,9 +1591,20 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 		return err
 	}
 
-	netpol.Labels = labels
-	netpol.Spec = desiredNetpolSpec
-	return r.Update(ctx, netpol)
+	needsUpdate := false
+	if !maps.Equal(netpol.Labels, labels) {
+		netpol.Labels = labels
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(netpol.Spec, desiredNetpolSpec) {
+		netpol.Spec = desiredNetpolSpec
+		needsUpdate = true
+	}
+	if needsUpdate {
+		log.Info("Updating NetworkPolicy spec due to changes", "netpol", netpolName)
+		return r.Update(ctx, netpol)
+	}
+	return nil
 }
 
 // mergeNamespaceEgressRules combines controller-wide egress exceptions with the
@@ -1523,13 +1676,123 @@ func buildNamespaceEgressRule(nsRule aiv1alpha1.WorkspaceNetworkPolicyNamespaceR
 	return egressRule, true
 }
 
+func workspacePredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return true
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			return true
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			if e.ObjectOld == nil || e.ObjectNew == nil {
+				return false
+			}
+			oldWs, ok1 := e.ObjectOld.(*aiv1alpha1.Workspace)
+			newWs, ok2 := e.ObjectNew.(*aiv1alpha1.Workspace)
+			if !ok1 || !ok2 {
+				return false
+			}
+			// 1. Generation changed (Spec change)
+			if oldWs.GetGeneration() != newWs.GetGeneration() {
+				return true
+			}
+			// 2. DeletionTimestamp changed
+			if !oldWs.DeletionTimestamp.Equal(newWs.DeletionTimestamp) {
+				return true
+			}
+			// 3. Finalizers changed
+			if !slices.Equal(oldWs.Finalizers, newWs.Finalizers) {
+				return true
+			}
+			// 4. Labels changed (e.g. "oa" label or custom user labels)
+			if !maps.Equal(oldWs.Labels, newWs.Labels) {
+				return true
+			}
+			// 5. LastActiveTime changed (e.g. resumed/woken up via API)
+			oldActive := oldWs.Status.LastActiveTime
+			newActive := newWs.Status.LastActiveTime
+			if (oldActive == nil) != (newActive == nil) {
+				return true
+			}
+			if oldActive != nil && newActive != nil && !oldActive.Time.Equal(newActive.Time) {
+				return true
+			}
+			// Ignore other status-only updates from the controller itself (Phase, PodName, Endpoint, PVCName)
+			return false
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return true
+		},
+	}
+}
+
+func deploymentPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return true
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			return true
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			if e.ObjectOld == nil || e.ObjectNew == nil {
+				return false
+			}
+			oldDeploy, ok1 := e.ObjectOld.(*appsv1.Deployment)
+			newDeploy, ok2 := e.ObjectNew.(*appsv1.Deployment)
+			if !ok1 || !ok2 {
+				return false
+			}
+			// Reconcile when ReadyReplicas changes (Pod becomes ready or drops to 0)
+			if oldDeploy.Status.ReadyReplicas != newDeploy.Status.ReadyReplicas {
+				return true
+			}
+			// Reconcile if Deployment Generation changed
+			if oldDeploy.GetGeneration() != newDeploy.GetGeneration() {
+				return true
+			}
+			// Reconcile if DeletionTimestamp changed
+			if !oldDeploy.DeletionTimestamp.Equal(newDeploy.DeletionTimestamp) {
+				return true
+			}
+			return false
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return true
+		},
+	}
+}
+
 func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Register field indexer for pod lookup by workspace label (Task 1.5, O(1) pod lookup)
+	if mgr.GetFieldIndexer() != nil {
+		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, podWorkspaceIndexKey, func(rawObj client.Object) []string {
+			pod, ok := rawObj.(*corev1.Pod)
+			if !ok {
+				return nil
+			}
+			if wsName, exists := pod.Labels["workspace"]; exists && wsName != "" {
+				return []string{wsName}
+			}
+			return nil
+		}); err != nil {
+			logf.Log.Error(err, "Failed to register pod workspace field index; falling back to label-selector pod lists")
+		}
+	}
+
+	maxConcurrent := r.MaxConcurrentReconciles
+	if maxConcurrent <= 0 {
+		maxConcurrent = 30
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&aiv1alpha1.Workspace{}).
-		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.Service{}).
-		Owns(&networkingv1.Ingress{}).
-		Owns(&networkingv1.NetworkPolicy{}).
+		For(&aiv1alpha1.Workspace{}, builder.WithPredicates(workspacePredicate())).
+		Owns(&appsv1.Deployment{}, builder.WithPredicates(deploymentPredicate())).
+		Owns(&corev1.Service{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Owns(&networkingv1.Ingress{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Owns(&networkingv1.NetworkPolicy{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrent}).
 		Named("workspace").
 		Complete(r)
 }
@@ -1556,6 +1819,9 @@ func getProbeHandler(ws *aiv1alpha1.Workspace) corev1.ProbeHandler {
 			HTTPGet: &corev1.HTTPGetAction{
 				Path: ws.Spec.Runtime.HealthPath,
 				Port: intstr.FromString("http"),
+				// Scheme must match the API-server default ("HTTP") so the
+				// Task 1.2 diff converges instead of updating on every reconcile.
+				Scheme: corev1.URISchemeHTTP,
 			},
 		}
 	}
@@ -1570,6 +1836,7 @@ func getStartupProbe(ws *aiv1alpha1.Workspace) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler:        getProbeHandler(ws),
 		InitialDelaySeconds: 1,
+		TimeoutSeconds:      1,
 		PeriodSeconds:       2,
 		SuccessThreshold:    1,
 		FailureThreshold:    30,
@@ -1580,6 +1847,7 @@ func getReadinessProbe(ws *aiv1alpha1.Workspace) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler:        getProbeHandler(ws),
 		InitialDelaySeconds: 1,
+		TimeoutSeconds:      1,
 		PeriodSeconds:       2,
 		SuccessThreshold:    1,
 		FailureThreshold:    3,

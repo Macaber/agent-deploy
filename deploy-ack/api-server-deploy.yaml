@@ -62,6 +62,9 @@ spec:
           value: "yourdomain.com" # Workspace 泛域名后缀，与 DNS 泛域名解析保持一致
         - name: WORKSPACE_BASE_URL
           value: "http://<SLB-IP or 域名>/bocomwork/ws" # API-Server 拼接 Workspace 访问入口与探活地址的基址
+        # 金丝雀/灰度发布集群配置（若当前 api-server 部署在灰度集群，开启后探活 Cookie 将附带 X-Canary 灰度标识）：
+        # - name: CANARY
+        #   value: "new"
 ---
 apiVersion: v1
 kind: Service

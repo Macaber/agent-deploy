@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -334,6 +336,124 @@ func TestListWorkspacesHandler(t *testing.T) {
 		}
 		if len(items) != 2 {
 			t.Fatalf("expected 2 items, got %d", len(items))
+		}
+	})
+}
+
+type roundTripFunc func(req *http.Request) *http.Response
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req), nil
+}
+
+func TestProbeWorkspaceViaIngress_CanaryCookie(t *testing.T) {
+	origTransport := probeHTTPClient.Transport
+	defer func() { probeHTTPClient.Transport = origTransport }()
+
+	t.Run("attaches X-Canary to Cookie when CANARY is set in config", func(t *testing.T) {
+		t.Setenv("CANARY", "new")
+		t.Setenv("WORKSPACE_BASE_URL", "http://mock-probe/bocomwork/ws")
+
+		var receivedCookie string
+		var receivedUA string
+
+		probeHTTPClient.Transport = roundTripFunc(func(req *http.Request) *http.Response {
+			receivedCookie = req.Header.Get("Cookie")
+			receivedUA = req.Header.Get("User-Agent")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("ok")),
+				Header:     make(http.Header),
+			}
+		})
+
+		ws := &aiv1alpha1.Workspace{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "bocomwork"},
+			Spec: aiv1alpha1.WorkspaceSpec{
+				Runtime: aiv1alpha1.RuntimeSpec{HealthPath: "/health"},
+			},
+		}
+
+		ctx := context.Background()
+		ok := probeWorkspaceViaIngress(ctx, "u1", "ws-u1", ws)
+		if !ok {
+			t.Fatalf("expected probe to succeed")
+		}
+		if receivedCookie != "oa=u1; WorkspaceUser=u1; X-Canary=new" {
+			t.Errorf("expected Cookie 'oa=u1; WorkspaceUser=u1; X-Canary=new', got %q", receivedCookie)
+		}
+		if receivedUA != "Workspace-Ingress-Probe/1.0" {
+			t.Errorf("expected User-Agent header, got %q", receivedUA)
+		}
+	})
+
+	t.Run("does not attach X-Canary to Cookie when CANARY is not set", func(t *testing.T) {
+		t.Setenv("CANARY", "")
+		t.Setenv("X_CANARY", "")
+		t.Setenv("CANARY_HEADER", "")
+		t.Setenv("WORKSPACE_CANARY_HEADER", "")
+		t.Setenv("WORKSPACE_BASE_URL", "http://mock-probe/bocomwork/ws")
+
+		var receivedCookie string
+		probeHTTPClient.Transport = roundTripFunc(func(req *http.Request) *http.Response {
+			receivedCookie = req.Header.Get("Cookie")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("ok")),
+				Header:     make(http.Header),
+			}
+		})
+
+		ws := &aiv1alpha1.Workspace{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "bocomwork"},
+			Spec: aiv1alpha1.WorkspaceSpec{
+				Runtime: aiv1alpha1.RuntimeSpec{HealthPath: "/health"},
+			},
+		}
+
+		ctx := context.Background()
+		ok := probeWorkspaceViaIngress(ctx, "u1", "ws-u1", ws)
+		if !ok {
+			t.Fatalf("expected probe to succeed")
+		}
+		if receivedCookie != "oa=u1; WorkspaceUser=u1" {
+			t.Errorf("expected Cookie 'oa=u1; WorkspaceUser=u1', got %q", receivedCookie)
+		}
+	})
+}
+
+func TestHealthEndpoints(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	t.Run("GET /health returns 200 ok", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/health", nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", rr.Code)
+		}
+		if rr.Body.String() != "ok" {
+			t.Errorf("expected body 'ok', got %q", rr.Body.String())
+		}
+	})
+
+	t.Run("GET /healthz returns 200 ok", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/healthz", nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", rr.Code)
+		}
+		if rr.Body.String() != "ok" {
+			t.Errorf("expected body 'ok', got %q", rr.Body.String())
 		}
 	})
 }

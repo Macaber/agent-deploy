@@ -57,6 +57,9 @@ spec:
           value: "bocomcode"
         - name: WORKSPACE_BASE_URL
           value: "http://12.244.107.214/bocomwork/ws" # 生产可修改为您的主域名
+        # 金丝雀/灰度发布集群配置（若当前 api-server 部署在灰度集群，开启后探活 Cookie 将附带 X-Canary 灰度标识）：
+        # - name: CANARY
+        #   value: "new"
 ---
 apiVersion: v1
 kind: Service
