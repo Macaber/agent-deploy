@@ -5,6 +5,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
@@ -142,6 +143,52 @@ func TestDeploymentPredicate(t *testing.T) {
 		}
 		if pred.Update(event.UpdateEvent{ObjectOld: oldDeploy, ObjectNew: newDeploy}) {
 			t.Error("expected update without Generation/ReadyReplicas change to return false")
+		}
+	})
+}
+
+func TestSharedNetpolPredicate(t *testing.T) {
+	pred := sharedNetpolPredicate()
+
+	newNetpol := func(name string) *networkingv1.NetworkPolicy {
+		return &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		}
+	}
+
+	t.Run("Create and Delete events only match the shared template", func(t *testing.T) {
+		if !pred.Create(event.CreateEvent{Object: newNetpol(sharedNetpolName)}) {
+			t.Error("expected Create for the shared template to return true")
+		}
+		if pred.Create(event.CreateEvent{Object: newNetpol("some-ws-netpol")}) {
+			t.Error("expected Create for a legacy per-workspace policy to return false")
+		}
+		if pred.Create(event.CreateEvent{}) {
+			t.Error("expected Create with nil object to return false")
+		}
+		if !pred.Delete(event.DeleteEvent{Object: newNetpol(sharedNetpolName)}) {
+			t.Error("expected Delete for the shared template to return true")
+		}
+		if pred.Delete(event.DeleteEvent{Object: newNetpol("some-ws-netpol")}) {
+			t.Error("expected Delete for a legacy per-workspace policy to return false")
+		}
+	})
+
+	t.Run("Update only reacts to content changes of the shared template", func(t *testing.T) {
+		if pred.Update(event.UpdateEvent{ObjectOld: newNetpol("some-ws-netpol"), ObjectNew: newNetpol("some-ws-netpol")}) {
+			t.Error("expected Update for legacy policies to return false")
+		}
+
+		oldShared := newNetpol(sharedNetpolName)
+		unchanged := newNetpol(sharedNetpolName)
+		if pred.Update(event.UpdateEvent{ObjectOld: oldShared, ObjectNew: unchanged}) {
+			t.Error("expected Update without content change to return false")
+		}
+
+		changed := newNetpol(sharedNetpolName)
+		changed.Spec.Egress = []networkingv1.NetworkPolicyEgressRule{{}}
+		if !pred.Update(event.UpdateEvent{ObjectOld: oldShared, ObjectNew: changed}) {
+			t.Error("expected Update with spec change of the shared template to return true")
 		}
 	})
 }

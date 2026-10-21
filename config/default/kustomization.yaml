@@ -27,16 +27,21 @@ resources:
 #- ../prometheus
 # [METRICS] Expose the controller manager metrics service.
 - metrics_service.yaml
-# [NETWORK POLICY] Protect the /metrics endpoint and Webhook Server with NetworkPolicy.
-# Only Pod(s) running a namespace labeled with 'metrics: enabled' will be able to gather the metrics.
-# Only CR(s) which requires webhooks and are applied on namespaces labeled with 'webhooks: enabled' will
-# be able to communicate with the Webhook Server.
+# [NETWORK POLICY] Deliberately NOT shipped. Deployment precondition: nothing
+# installs a NetworkPolicy into agent-deploy-system, so ingress on the metrics
+# port (:8080) stays open by default (NetworkPolicy is additive; no selector
+# means allow all). Do not simply uncomment this: allow-metrics-traffic.yaml
+# only admits namespaces labeled 'metrics: enabled', so uncommenting without
+# labeling the monitoring namespace would break scraping that works today.
+# If the precondition ever changes, uncomment, label the monitoring namespace,
+# and rebuild deploy/install.yaml.
 #- ../network-policy
 
 # Uncomment the patches line if you enable Metrics
 patches:
-# [METRICS] The following patch will enable the metrics endpoint using HTTPS and the port :8443.
-# More info: https://book.kubebuilder.io/reference/metrics
+# [METRICS] The following patch exposes the metrics endpoint over plain HTTP
+# on :8080 with --metrics-secure=false (trusted internal network, no token
+# needed for scraping). More info: https://book.kubebuilder.io/reference/metrics
 - path: manager_metrics_patch.yaml
   target:
     kind: Deployment

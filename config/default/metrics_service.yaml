@@ -9,10 +9,13 @@ metadata:
   namespace: system
 spec:
   ports:
-  - name: https
-    port: 8443
+  # Plain HTTP: the manager runs with --metrics-secure=false (see
+  # manager_metrics_patch.yaml), so the port is named "http" to make the
+  # protocol obvious to anyone wiring up a scrape config.
+  - name: http
+    port: 8080
     protocol: TCP
-    targetPort: 8443
+    targetPort: 8080
   selector:
     control-plane: controller-manager
     app.kubernetes.io/name: agent-deploy

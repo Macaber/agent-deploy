@@ -644,29 +644,9 @@ metadata:
 spec:
   controller: k8s.io/ingress-nginx
 ---
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  labels:
-    app.kubernetes.io/component: admission-webhook
-    app.kubernetes.io/instance: ingress-nginx
-    app.kubernetes.io/name: ingress-nginx
-    app.kubernetes.io/part-of: ingress-nginx
-    app.kubernetes.io/version: 1.9.4
-  name: ingress-nginx-admission
-  namespace: ingress-nginx
-spec:
-  egress:
-  - {}
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/component: admission-webhook
-      app.kubernetes.io/instance: ingress-nginx
-      app.kubernetes.io/name: ingress-nginx
-  policyTypes:
-  - Ingress
-  - Egress
----
+# 注：原此处有一条 chart 自带的 NetworkPolicy ingress-nginx-admission，它只选择
+# 一次性的 kube-webhook-certgen Job Pod（component: admission-webhook），对常驻的
+# admission webhook（controller :8443）、Ingress 数据面和 Workspace 均无作用，已移除。
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:

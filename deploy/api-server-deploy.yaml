@@ -60,6 +60,33 @@ spec:
         # 金丝雀/灰度发布集群配置（若当前 api-server 部署在灰度集群，开启后探活 Cookie 将附带 X-Canary 灰度标识）：
         # - name: CANARY
         #   value: "new"
+        # readinessProbe 指向 /healthz：只有 Workspace 本地 Informer 缓存完成同步后才返回 200，
+        # 因此在缓存就绪前不会有流量被导入（P0-1 修复后进程不再卡在启动阶段）。
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 3000
+          initialDelaySeconds: 3
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        # livenessProbe 使用 /health：该端点不依赖缓存状态，只反映 HTTP 服务本身存活，
+        # 避免缓存重同步或 Kubernetes API 短暂不可用时误杀进程。
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
 ---
 apiVersion: v1
 kind: Service

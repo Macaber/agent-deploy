@@ -66,6 +66,12 @@ spec:
         image: controller:latest
         name: manager
         ports:
+        # Declared so Prometheus role: pod SD can discover the metrics
+        # endpoint; name "http" matches the metrics Service port name and the
+        # relabel rule in deploy/grafana/README.md.
+        - containerPort: 8080
+          name: http
+          protocol: TCP
         - containerPort: 8081
           name: health
           protocol: TCP

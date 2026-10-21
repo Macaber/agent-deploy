@@ -12,6 +12,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +30,9 @@ import (
 func main() {
 	log.Println("Initializing local API Gateway / Mock Server...")
 
+	// Graceful shutdown context (SIGINT/SIGTERM)
+	ctx := ctrl.SetupSignalHandler()
+
 	// Fetch standard kubeconfig context
 	config, err := ctrl.GetConfig()
 	if err != nil {
@@ -41,7 +45,17 @@ func main() {
 		log.Fatalf("Failed to add scheme: %v", err)
 	}
 
-	// Create K8s client
+	// Start the local Workspace informer cache. All listing is served from this
+	// in-memory materialized view; the request path never issues a full List
+	// against the K8s API Server (Task 4.2).
+	workspaceCache, err := startWorkspaceCache(ctx, config, scheme)
+	if err != nil {
+		log.Fatalf("Failed to start Workspace informer cache: %v", err)
+	}
+	log.Printf("Local Workspace informer cache ready: %d workspaces materialized", workspaceCache.size())
+
+	// Direct K8s client for writes and point reads only (create/update/stop/
+	// wakeup/poll). Never used for full-list queries.
 	k8sClient, err := client.New(config, client.Options{Scheme: scheme})
 	if err != nil {
 		log.Fatalf("Failed to create K8s client: %v", err)
@@ -52,14 +66,19 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	// Readiness: /healthz only reports OK once the informer cache has synced.
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if !workspaceCache.isReady() {
+			http.Error(w, "workspace informer cache not synced", http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
 	http.HandleFunc("/api/login", loginHandler)
 	http.HandleFunc("/api/logout", logoutHandler)
 	http.HandleFunc("/api/auth/check", authCheckHandler)
-	http.HandleFunc("/api/workspaces", workspaceRouter(k8sClient))
+	http.HandleFunc("/api/workspaces", workspaceRouter(k8sClient, workspaceCache))
 	http.HandleFunc("/api/workspaces/stop", stopWorkspaceHandler(k8sClient))
 	http.HandleFunc("/api/workspaces/wakeup", wakeupWorkspaceHandler(k8sClient))
 
@@ -68,10 +87,29 @@ func main() {
 		port = "3000"
 	}
 
-	log.Printf("API Server is running on http://localhost:%s", port)
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
-		log.Fatalf("Server exited with error: %v", err)
+	srv := &http.Server{
+		Addr: ":" + port,
+		// Keep long create/wakeup polls (up to WORKSPACE_POLL_TIMEOUT) safe
+		// while bounding slowloris-style header attacks and idle connections.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
+
+	go func() {
+		log.Printf("API Server is running on http://localhost:%s", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server exited with error: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("Shutting down API Server...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Graceful shutdown failed: %v", err)
+	}
+	log.Println("API Server stopped")
 }
 
 func serveHome(w http.ResponseWriter, r *http.Request) {
@@ -144,8 +182,8 @@ func getOAFromWorkspace(ws *aiv1alpha1.Workspace) string {
 }
 
 // workspaceRouter dispatches /api/workspaces requests to the appropriate handler by HTTP method.
-func workspaceRouter(c client.Client) http.HandlerFunc {
-	listHandler := listWorkspacesHandler(c)
+func workspaceRouter(c client.Client, wc *workspaceCache) http.HandlerFunc {
+	listHandler := listWorkspacesHandler(wc)
 	getHandler := getWorkspaceHandler(c)
 	createHandler := createOrUpdateWorkspaceHandler(c)
 
@@ -165,41 +203,153 @@ func workspaceRouter(c client.Client) http.HandlerFunc {
 	}
 }
 
-// listWorkspacesHandler handles GET /api/workspaces (without userId) — lists all workspaces in a namespace, or all namespaces if "all" or "*".
-func listWorkspacesHandler(c client.Client) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		namespace := r.URL.Query().Get("namespace")
-		var listOpts []client.ListOption
-		if namespace != "" && namespace != "all" && namespace != "*" && namespace != "_all" {
-			listOpts = append(listOpts, client.InNamespace(namespace))
+// workspaceListResponse is the paginated JSON envelope for GET /api/workspaces
+// when page/pageSize query params are present.
+type workspaceListResponse struct {
+	Items      []workspaceItem `json:"items"`
+	Total      int             `json:"total"`
+	Page       int             `json:"page"`
+	PageSize   int             `json:"pageSize"`
+	TotalPages int             `json:"totalPages"`
+}
+
+const (
+	// defaultListPageSize applies when pageSize is omitted while paginating.
+	defaultListPageSize = 50
+	// fallbackMaxListPageSize caps pageSize when the env override is unset.
+	fallbackMaxListPageSize = 200
+	// maxListPage bounds `page` so that (page-1)*pageSize can never overflow
+	// the int used for the slice window, and so that an obviously bogus page
+	// number is rejected with 400 instead of being echoed back in the envelope.
+	maxListPage = 1 << 30
+)
+
+// listMaxPageSize caps pageSize to protect the server from oversized pages.
+// Tunable via WORKSPACE_LIST_MAX_PAGE_SIZE; evaluated once at startup.
+var listMaxPageSize = envMaxListPageSize()
+
+func envMaxListPageSize() int {
+	if raw := os.Getenv("WORKSPACE_LIST_MAX_PAGE_SIZE"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
 		}
-		ctx := r.Context()
-		wsList := &aiv1alpha1.WorkspaceList{}
-		if err := c.List(ctx, wsList, listOpts...); err != nil {
-			log.Printf("Failed to list Workspaces: %v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("Invalid WORKSPACE_LIST_MAX_PAGE_SIZE %q, using default %d", raw, fallbackMaxListPageSize)
+	}
+	return fallbackMaxListPageSize
+}
+
+// parsePagination parses the page/pageSize query params. When neither is set,
+// pagination is disabled (pageSize=0) and the legacy full-list response shape
+// (bare JSON array) is preserved for existing consumers.
+func parsePagination(q map[string][]string) (page, pageSize int, paginated bool, err error) {
+	pageRaw, sizeRaw := q["page"], q["pageSize"]
+	first := func(vals []string) string {
+		if len(vals) == 0 {
+			return ""
+		}
+		return vals[0]
+	}
+	pageStr, sizeStr := first(pageRaw), first(sizeRaw)
+	if pageStr == "" && sizeStr == "" {
+		return 1, 0, false, nil
+	}
+
+	page = 1
+	if pageStr != "" {
+		// The upper bound is required: without it (page-1)*pageSize overflows to
+		// a negative int64 and the handler then slices offsets[start:end] with a
+		// negative start, panicking (and resetting the connection) on a request
+		// any client can send.
+		if page, err = strconv.Atoi(pageStr); err != nil || page < 1 || page > maxListPage {
+			return 0, 0, false, fmt.Errorf("invalid page param %q: must be an integer between 1 and %d", pageStr, maxListPage)
+		}
+	}
+	pageSize = defaultListPageSize
+	if sizeStr != "" {
+		if pageSize, err = strconv.Atoi(sizeStr); err != nil || pageSize < 1 {
+			return 0, 0, false, fmt.Errorf("invalid pageSize param %q: must be a positive integer", sizeStr)
+		}
+		if pageSize > listMaxPageSize {
+			pageSize = listMaxPageSize
+		}
+	}
+	return page, pageSize, true, nil
+}
+
+// listWorkspacesHandler handles GET /api/workspaces (without userId).
+//
+// All data is served from the local informer materialized view (workspaceCache)
+// — no K8s API Server round-trip, no full unpaginated API-server List.
+//
+// Query params:
+//   - page, pageSize: when either is present the response is a paginated
+//     envelope {"items","total","page","pageSize","totalPages"}; pageSize is
+//     capped by WORKSPACE_LIST_MAX_PAGE_SIZE (default 200, omitted pageSize
+//     defaults to 50).
+//   - namespace: filter by namespace ("all"/"*"/"_all" = every namespace).
+//   - owner: filter by spec.owner (workspace user ID).
+//   - oa: filter by the effective OA (workspace `oa` label, falling back to
+//     the OA env var).
+//
+// Backward compatibility: with no page/pageSize params the response keeps the
+// legacy bare JSON array shape. The unfiltered variant is pre-encoded by the
+// cache and written verbatim.
+func listWorkspacesHandler(wc *workspaceCache) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		namespace := q.Get("namespace")
+		owner := strings.TrimSpace(q.Get("owner"))
+		oa := strings.TrimSpace(q.Get("oa"))
+
+		page, pageSize, paginated, err := parsePagination(q)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		items := []workspaceItem{}
-		for _, ws := range wsList.Items {
-			url := getWorkspaceURL(ws.Spec.Owner, ws.Name, ws.Status.Endpoint)
-			oa := getOAFromWorkspace(&ws)
-			items = append(items, workspaceItem{
-				UserID:    ws.Spec.Owner,
-				Name:      ws.Name,
-				Namespace: ws.Namespace,
-				OA:        oa,
-				Phase:     string(ws.Status.Phase),
-				URL:       url,
-				Image:     ws.Spec.Runtime.Image,
-				CPU:       ws.Spec.Runtime.CPU,
-				Memory:    ws.Spec.Runtime.Memory,
-			})
-		}
+		snap := wc.snapshot()
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(items)
+
+		// Legacy hot path: no pagination params and no filters — serve the
+		// pre-encoded bare array (portal UI contract) in a single Write. This is
+		// checked before matchOffsets so the hottest request allocates nothing:
+		// computing the offsets first would allocate a full int32 slice (4 bytes
+		// per Workspace) on every request just to throw it away.
+		if !paginated && namespace == "" && owner == "" && oa == "" && snap.allJSON != nil {
+			_, _ = w.Write(snap.allJSON)
+			return
+		}
+
+		offsets := snap.matchOffsets(namespace, owner, oa)
+
+		if !paginated {
+			items := make([]workspaceItem, 0, len(offsets))
+			for _, i := range offsets {
+				items = append(items, snap.all[i])
+			}
+			_ = json.NewEncoder(w).Encode(items)
+			return
+		}
+
+		total := len(offsets)
+		start := (page - 1) * pageSize
+		items := []workspaceItem{}
+		if start < total {
+			end := min(start+pageSize, total)
+			items = make([]workspaceItem, 0, end-start)
+			for _, i := range offsets[start:end] {
+				items = append(items, snap.all[i])
+			}
+		}
+
+		_ = json.NewEncoder(w).Encode(workspaceListResponse{
+			Items:      items,
+			Total:      total,
+			Page:       page,
+			PageSize:   pageSize,
+			TotalPages: (total + pageSize - 1) / pageSize,
+		})
 	}
 }
 

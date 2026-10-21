@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -36,6 +37,7 @@ import (
 	apiresources "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
@@ -45,8 +47,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	aiv1alpha1 "github.com/example/workspace-operator/api/v1alpha1"
 )
@@ -57,6 +61,19 @@ const (
 
 	// podWorkspaceIndexKey is the field index key for looking up workspace pods in O(1)
 	podWorkspaceIndexKey = "metadata.workspace"
+
+	// sharedNetpolName is the name of the single namespace-level NetworkPolicy template
+	// (Task 2.1). One static policy per tenant namespace replaces the legacy per-workspace
+	// "ws-xxx-netpol" objects, cutting the cluster-wide NetworkPolicy count from
+	// 5,000+ down to single digits and shrinking node iptables/ipset rules accordingly.
+	sharedNetpolName = "workspace-shared-netpol"
+	// legacyNetpolSuffix is appended to the Workspace name to form the legacy
+	// per-workspace NetworkPolicy name cleaned up during reconciliation.
+	legacyNetpolSuffix = "-netpol"
+	// managedByLabelKey/Value select (and mark) every Pod created for a Workspace so the
+	// single shared namespace-level NetworkPolicy template manages them all.
+	managedByLabelKey   = "app.kubernetes.io/managed-by"
+	managedByLabelValue = "workspace-operator"
 )
 
 // WorkspaceReconciler reconciles a Workspace object
@@ -72,6 +89,10 @@ type WorkspaceReconciler struct {
 	// MaxConcurrentReconciles is the maximum number of concurrent Reconciles which can be run.
 	// Defaults to 30 if unset or <= 0.
 	MaxConcurrentReconciles int
+	// ActiveInstancesSyncInterval is how often the workspace_active_instances gauge
+	// is rebuilt from a cluster-wide Workspace list (Task 5.2). Defaults to 1 minute
+	// if unset or <= 0.
+	ActiveInstancesSyncInterval time.Duration
 }
 
 // +kubebuilder:rbac:groups=ai.example.com,resources=workspaces,verbs=get;list;watch;create;update;patch;delete
@@ -90,16 +111,52 @@ type WorkspaceReconciler struct {
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch;update
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch;update
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
+// errWorkspaceGone marks a reconcile request whose Workspace no longer exists.
+// The metrics wrapper in Reconcile drops it so delete-event reconciles do not
+// pollute the duration histogram.
+var errWorkspaceGone = errors.New("workspace no longer exists")
+
+// Reconcile instruments the reconciliation loop with the Workspace Prometheus
+// metrics (duration histogram, error counter) and delegates the actual work to
+// reconcile.
 func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	registerWorkspaceMetrics()
+
+	start := time.Now()
+	result, err := r.reconcile(ctx, req)
+	if errors.Is(err, errWorkspaceGone) {
+		// A delete-event reconcile that found nothing to do is not a
+		// reconciliation: keeping it out of the histogram protects the
+		// P50/P99 resolution. Reconcile errors are already surfaced by
+		// controller-runtime's controller_runtime_reconcile_errors_total.
+		return ctrl.Result{}, nil
+	}
+	workspaceReconcileDuration.Observe(time.Since(start).Seconds())
+	return result, err
+}
+
+// reconcile is part of the main kubernetes reconciliation loop which aims to
+// move the current state of the cluster closer to the desired state.
+func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// Fetch Workspace
 	ws := &aiv1alpha1.Workspace{}
 	if err := r.Get(ctx, req.NamespacedName, ws); err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, nil
+			// Workspace is gone: drop it from the active instances gauge.
+			workspacePhases.unset(req.NamespacedName)
+			// Task 2.1: the controller no longer adds a finalizer, so a Workspace
+			// deletion is immediate and the delete-event reconcile always lands
+			// here — the DeletionTimestamp branch below is never reached for it.
+			// The shared namespace-level NetworkPolicy template must therefore be
+			// garbage-collected from this branch, or it leaks in every tenant
+			// namespace forever.
+			if err := r.maybeDeleteSharedNetworkPolicy(ctx, req.Namespace, req.NamespacedName); err != nil {
+				log.Error(err, "Failed to clean up shared NetworkPolicy template", "namespace", req.Namespace)
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, errWorkspaceGone
 		}
 		return ctrl.Result{}, err
 	}
@@ -107,6 +164,8 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// 删除处理：不自动删除 PV 和 PVC（包括 OSS 方案），保留持久化存储与底层数据。
 	// 若存在旧版本遗留的 finalizer，清理移除以便 Workspace 正常删除，但不执行 PV/PVC/OSS 数据清理。
 	if !ws.DeletionTimestamp.IsZero() {
+		// Workspace is being deleted: stop counting it as an active instance.
+		workspacePhases.unset(req.NamespacedName)
 		if controllerutil.ContainsFinalizer(ws, workspaceFinalizer) {
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				latestWs := &aiv1alpha1.Workspace{}
@@ -127,6 +186,15 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				return ctrl.Result{}, err
 			}
 			log.Info("Successfully removed legacy finalizer for Workspace", "workspace", ws.Name)
+		}
+
+		// Task 2.1: garbage-collect the shared namespace-level NetworkPolicy template
+		// when the last Workspace in the namespace is going away. This branch only
+		// runs while a legacy finalizer still holds the object; the normal (no
+		// finalizer) deletion path is handled in the NotFound branch above.
+		if err := r.maybeDeleteSharedNetworkPolicy(ctx, ws.Namespace, req.NamespacedName); err != nil {
+			log.Error(err, "Failed to clean up shared NetworkPolicy template", "namespace", ws.Namespace)
+			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	}
@@ -353,6 +421,9 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 	}
+
+	// Track the Workspace in the active instances gauge with its final phase.
+	workspacePhases.set(req.NamespacedName, ws.Status.Phase)
 
 	return ctrl.Result{RequeueAfter: nextRequeue}, nil
 }
@@ -1017,6 +1088,9 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 
 	selectorLabels := buildSelectorLabels(ws)
 	labels := buildWorkspaceLabels(ws)
+	// Pods are the only resources that carry the managed-by marker (the shared
+	// NetworkPolicy selects on it); PVCs/Services/Ingresses must stay clean.
+	podLabels := buildPodLabels(ws)
 
 	var command []string
 	var containerArgs []string
@@ -1057,7 +1131,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: labels,
+							Labels: podLabels,
 						},
 						Spec: corev1.PodSpec{
 							RuntimeClassName:              ws.Spec.Runtime.RuntimeClassName,
@@ -1117,8 +1191,8 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		deploy.Labels = labels
 		needsUpdate = true
 	}
-	if !maps.Equal(deploy.Spec.Template.Labels, labels) {
-		deploy.Spec.Template.Labels = labels
+	if !maps.Equal(deploy.Spec.Template.Labels, podLabels) {
+		deploy.Spec.Template.Labels = podLabels
 		needsUpdate = true
 	}
 
@@ -1131,11 +1205,11 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		podSpec.TerminationGracePeriodSeconds = int64Ptr(2)
 		needsUpdate = true
 	}
-	if podSpec.AutomountServiceAccountToken == nil || *podSpec.AutomountServiceAccountToken != false {
+	if podSpec.AutomountServiceAccountToken == nil || *podSpec.AutomountServiceAccountToken {
 		podSpec.AutomountServiceAccountToken = boolPtr(false)
 		needsUpdate = true
 	}
-	if podSpec.EnableServiceLinks == nil || *podSpec.EnableServiceLinks != false {
+	if podSpec.EnableServiceLinks == nil || *podSpec.EnableServiceLinks {
 		podSpec.EnableServiceLinks = boolPtr(false)
 		needsUpdate = true
 	}
@@ -1428,63 +1502,131 @@ func getWorkspaceContainerPort(ws *aiv1alpha1.Workspace) int32 {
 	return 8080
 }
 
-func getBlockedEgressCIDRs(ws *aiv1alpha1.Workspace) []string {
-	// Exclude private, carrier-grade NAT, and link-local networks from the
-	// otherwise public Internet egress rule. These ranges cover the common Pod,
-	// Service, node, VPC, and cloud metadata address spaces.
-	cidrs := []string{
-		"10.0.0.0/8",
-		"100.64.0.0/10",
-		"169.254.0.0/16",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-	}
-	seen := make(map[string]struct{}, len(cidrs))
-	for _, cidr := range cidrs {
-		seen[cidr] = struct{}{}
-	}
-
-	if ws.Spec.NetworkPolicy != nil {
-		for _, cidr := range ws.Spec.NetworkPolicy.BlockedCIDRs {
-			trimmed := strings.TrimSpace(cidr)
-			if trimmed == "" {
-				continue
-			}
-			if _, exists := seen[trimmed]; exists {
-				continue
-			}
-			cidrs = append(cidrs, trimmed)
-			seen[trimmed] = struct{}{}
-		}
-	}
-	return cidrs
-}
-
 func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *aiv1alpha1.Workspace) error {
 	log := logf.FromContext(ctx)
-	netpolName := ws.Name + "-netpol"
-	netpol := &networkingv1.NetworkPolicy{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: netpolName}, netpol)
 
-	if isNetworkPolicyDisabled(ws) {
-		if err == nil {
-			log.Info("Deleting NetworkPolicy because NetworkPolicy is disabled", "netpolName", netpolName)
-			return r.Delete(ctx, netpol)
-		}
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
+	// Remove the legacy per-workspace NetworkPolicy from older operator versions.
+	// The object carries an owner reference to the Workspace, so garbage collection
+	// handles it on Workspace deletion; this Get/Delete pair cleans up leftovers in
+	// namespaces where the Workspace still exists.
+	legacyName := ws.Name + legacyNetpolSuffix
+	legacyNetpol := &networkingv1.NetworkPolicy{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: legacyName}, legacyNetpol)
+	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
+	if err == nil {
+		log.Info("Deleting legacy per-workspace NetworkPolicy", "netpolName", legacyName)
+		if err := r.Delete(ctx, legacyNetpol); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
 
-	selectorLabels := buildSelectorLabels(ws)
-	labels := buildWorkspaceLabels(ws)
+	// The shared template is static per namespace. Per-workspace egress customization
+	// can no longer be projected into it: merging one Workspace's exceptions into the
+	// shared policy would widen access for EVERY Workspace in the namespace. The
+	// controller-wide exception list (--netpol-allowed-namespaces) still applies.
+	if ws.Spec.NetworkPolicy != nil &&
+		(len(ws.Spec.NetworkPolicy.BlockedCIDRs) > 0 ||
+			len(ws.Spec.NetworkPolicy.AllowedCIDRs) > 0 ||
+			len(ws.Spec.NetworkPolicy.AllowedNamespaces) > 0) {
+		log.Info("Ignoring per-workspace NetworkPolicy customization because a single shared namespace-level NetworkPolicy template is used; configure controller-wide egress exceptions with --netpol-allowed-namespaces instead",
+			"workspace", ws.Name, "namespace", ws.Namespace)
+		if r.Recorder != nil {
+			// Static message on purpose: the apiserver aggregates repeats with the
+			// same reason and message into a single Event, so continuous
+			// reconciliation does not flood the event stream.
+			r.Recorder.Eventf(ws, corev1.EventTypeWarning, "NetworkPolicyOverridden",
+				"spec.networkPolicy.{blockedCIDRs,allowedCIDRs,allowedNamespaces} is ignored: a single shared namespace-level NetworkPolicy template is used; configure controller-wide egress exceptions with --netpol-allowed-namespaces")
+		}
+	}
 
+	return r.ensureSharedNetworkPolicy(ctx, ws.Namespace)
+}
+
+// ensureSharedNetworkPolicy creates or converges the single static namespace-level
+// NetworkPolicy template. The object is deliberately NOT owned by any Workspace so it
+// survives individual Workspace deletions; it is garbage collected with the namespace
+// or removed by the Workspace deletion path when the last Workspace goes away.
+func (r *WorkspaceReconciler) ensureSharedNetworkPolicy(ctx context.Context, namespace string) error {
+	log := logf.FromContext(ctx)
+
+	desiredSpec := networkingv1.NetworkPolicySpec{
+		// Select every Pod the operator manages in this namespace (Task 2.1).
+		PodSelector: metav1.LabelSelector{
+			MatchLabels: map[string]string{managedByLabelKey: managedByLabelValue},
+		},
+		PolicyTypes: []networkingv1.PolicyType{
+			networkingv1.PolicyTypeIngress,
+			networkingv1.PolicyTypeEgress,
+		},
+		// Ingress stays open for the selected Pods: the application port differs per
+		// Workspace and the Ingress controller may SNAT or use host networking, so a
+		// static template cannot pin a port without breaking traffic. The security
+		// boundary of the template is egress isolation.
+		Ingress: []networkingv1.NetworkPolicyIngressRule{{}},
+		Egress:  buildSharedEgressRules(r.GlobalAllowedNamespaces),
+	}
+
+	expectedLabels := map[string]string{
+		"app":             "workspace",
+		managedByLabelKey: managedByLabelValue,
+	}
+
+	netpol := &networkingv1.NetworkPolicy{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: sharedNetpolName}, netpol)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		netpol = &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      sharedNetpolName,
+				Namespace: namespace,
+				Labels:    expectedLabels,
+			},
+			Spec: desiredSpec,
+		}
+		log.Info("Creating shared namespace-level NetworkPolicy template", "netpol", sharedNetpolName, "namespace", namespace)
+		if err := r.Create(ctx, netpol); err != nil && !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		return nil
+	}
+
+	needsUpdate := false
+	if !maps.Equal(netpol.Labels, expectedLabels) {
+		netpol.Labels = expectedLabels
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(netpol.Spec, desiredSpec) {
+		netpol.Spec = desiredSpec
+		needsUpdate = true
+	}
+	if needsUpdate {
+		log.Info("Updating shared NetworkPolicy template due to changes", "netpol", sharedNetpolName, "namespace", namespace)
+		if err := r.Update(ctx, netpol); err != nil {
+			if apierrors.IsConflict(err) {
+				// Another worker converged the same template concurrently (the
+				// template is namespace-scoped). The NetworkPolicy watch will
+				// enqueue a Workspace again and the next attempt re-converges, so
+				// a conflict here must not become a reconcile error / backoff.
+				log.Info("Shared NetworkPolicy template update conflicted; deferring convergence to the next reconcile", "netpol", sharedNetpolName, "namespace", namespace)
+				return nil
+			}
+			return err
+		}
+		return nil
+	}
+	return nil
+}
+
+// buildSharedEgressRules builds the static egress section of the shared NetworkPolicy
+// template: DNS, the public Internet with private ranges excluded, and the
+// controller-wide namespace egress exceptions (--netpol-allowed-namespaces).
+func buildSharedEgressRules(globalAllowedNamespaces []aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule) []networkingv1.NetworkPolicyEgressRule {
 	tcpProtocol := corev1.ProtocolTCP
 	udpProtocol := corev1.ProtocolUDP
-	containerPort := intstr.FromInt32(getWorkspaceContainerPort(ws))
-
-	blockedCIDRs := getBlockedEgressCIDRs(ws)
 
 	egressRules := []networkingv1.NetworkPolicyEgressRule{
 		// 1. Allow DNS lookups (UDP and TCP on port 53)
@@ -1500,44 +1642,33 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 				},
 			},
 		},
-	}
-
-	// 2. Allow public Internet egress while excluding Pod/Service/VPC networks.
-	egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
-		To: []networkingv1.NetworkPolicyPeer{
-			{
-				IPBlock: &networkingv1.IPBlock{
-					CIDR:   "0.0.0.0/0",
-					Except: blockedCIDRs,
+		// 2. Allow public Internet egress while excluding the private, carrier-grade
+		//    NAT, and link-local ranges that cover the common Pod, Service, node, VPC,
+		//    and cloud metadata address spaces.
+		{
+			To: []networkingv1.NetworkPolicyPeer{
+				{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR: "0.0.0.0/0",
+						Except: []string{
+							"10.0.0.0/8",
+							"100.64.0.0/10",
+							"169.254.0.0/16",
+							"172.16.0.0/12",
+							"192.168.0.0/16",
+						},
+					},
 				},
 			},
 		},
-	})
-
-	// 3. Append explicit AllowedCIDRs if specified in ws.Spec.NetworkPolicy (e.g. internal LLM proxy)
-	if ws.Spec.NetworkPolicy != nil {
-		for _, cidr := range ws.Spec.NetworkPolicy.AllowedCIDRs {
-			if trimmed := strings.TrimSpace(cidr); trimmed != "" {
-				egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
-					To: []networkingv1.NetworkPolicyPeer{
-						{
-							IPBlock: &networkingv1.IPBlock{
-								CIDR: trimmed,
-							},
-						},
-					},
-				})
-			}
-		}
 	}
 
-	// 4. Append namespace-scoped egress exceptions (e.g. the shared OTel collector in the
-	// "monitoring" namespace), so workspaces can reach in-cluster services inside the
-	// private ranges excluded above. Controller-wide defaults apply to every Workspace;
-	// per-workspace rules from ws.Spec.NetworkPolicy are merged on top (deduplicated).
-	// Rules are matched by namespace/pod labels and stay valid when target pods move.
-	seenNsRules := make(map[string]struct{}, len(r.GlobalAllowedNamespaces))
-	for _, nsRule := range mergeNamespaceEgressRules(r.GlobalAllowedNamespaces, ws.Spec.NetworkPolicy) {
+	// 3. Controller-wide namespace-scoped egress exceptions (e.g. the shared OTel
+	//    collector in the "monitoring" namespace), so every workspace can reach shared
+	//    in-cluster services inside the excluded private ranges. Rules are matched by
+	//    namespace/pod labels and stay valid when target pods move.
+	seenNsRules := make(map[string]struct{}, len(globalAllowedNamespaces))
+	for _, nsRule := range globalAllowedNamespaces {
 		key := netpolNamespaceRuleKey(nsRule)
 		if _, dup := seenNsRules[key]; dup {
 			continue
@@ -1547,86 +1678,35 @@ func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *ai
 			egressRules = append(egressRules, egressRule)
 		}
 	}
-
-	desiredNetpolSpec := networkingv1.NetworkPolicySpec{
-		PodSelector: metav1.LabelSelector{
-			MatchLabels: selectorLabels,
-		},
-		PolicyTypes: []networkingv1.PolicyType{
-			networkingv1.PolicyTypeIngress,
-			networkingv1.PolicyTypeEgress,
-		},
-		// Allow the application port from any source so this works with Ingress
-		// implementations that SNAT or use host networking. Other ports and
-		// non-TCP protocols such as ICMP remain blocked by ingress isolation.
-		Ingress: []networkingv1.NetworkPolicyIngressRule{
-			{
-				Ports: []networkingv1.NetworkPolicyPort{
-					{
-						Protocol: &tcpProtocol,
-						Port:     &containerPort,
-					},
-				},
-			},
-		},
-		Egress: egressRules,
-	}
-
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			netpol = &networkingv1.NetworkPolicy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      netpolName,
-					Namespace: ws.Namespace,
-					Labels:    labels,
-				},
-				Spec: desiredNetpolSpec,
-			}
-			if err := ctrl.SetControllerReference(ws, netpol, r.Scheme); err != nil {
-				return err
-			}
-			log.Info("Creating NetworkPolicy for workspace", "netpolName", netpolName, "blockedCIDRs", blockedCIDRs)
-			return r.Create(ctx, netpol)
-		}
-		return err
-	}
-
-	needsUpdate := false
-	if !maps.Equal(netpol.Labels, labels) {
-		netpol.Labels = labels
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(netpol.Spec, desiredNetpolSpec) {
-		netpol.Spec = desiredNetpolSpec
-		needsUpdate = true
-	}
-	if needsUpdate {
-		log.Info("Updating NetworkPolicy spec due to changes", "netpol", netpolName)
-		return r.Update(ctx, netpol)
-	}
-	return nil
+	return egressRules
 }
 
-// mergeNamespaceEgressRules combines controller-wide egress exceptions with the
-// per-workspace rules declared in ws.Spec.NetworkPolicy (controller defaults first).
-func mergeNamespaceEgressRules(
-	global []aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule,
-	wsPolicy *aiv1alpha1.WorkspaceNetworkPolicySpec,
-) []aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule {
-	var wsRules []aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule
-	if wsPolicy != nil {
-		wsRules = wsPolicy.AllowedNamespaces
+// maybeDeleteSharedNetworkPolicy garbage-collects the shared namespace-level
+// NetworkPolicy template when no live (non-deleting) Workspace remains in the
+// namespace, keeping the cluster-wide policy count tied to active tenant namespaces.
+//
+// gone is the Workspace being reconciled after it disappeared. It is skipped
+// explicitly because the cached List below can still contain the object for a
+// short while after the API server deleted it; without this the template would
+// never be considered empty on the reconcile that observes the deletion.
+func (r *WorkspaceReconciler) maybeDeleteSharedNetworkPolicy(ctx context.Context, namespace string, gone types.NamespacedName) error {
+	wsList := &aiv1alpha1.WorkspaceList{}
+	if err := r.List(ctx, wsList, client.InNamespace(namespace)); err != nil {
+		return err
 	}
-	if len(global) == 0 {
-		return wsRules
+	for i := range wsList.Items {
+		item := &wsList.Items[i]
+		if item.DeletionTimestamp.IsZero() && item.Name != gone.Name {
+			return nil
+		}
 	}
-	if len(wsRules) == 0 {
-		return global
+	sharedNetpol := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: sharedNetpolName, Namespace: namespace},
 	}
-	rules := make([]aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule, 0, len(global)+len(wsRules))
-	rules = append(rules, global...)
-	rules = append(rules, wsRules...)
-	return rules
+	if err := r.Delete(ctx, sharedNetpol); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // netpolNamespaceRuleKey builds a deterministic dedupe key for a namespace egress rule.
@@ -1781,9 +1861,21 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 	}
 
+	// Register the Workspace observability metrics on the manager metrics
+	// endpoint (Task 5.2).
+	registerWorkspaceMetrics()
+
 	maxConcurrent := r.MaxConcurrentReconciles
 	if maxConcurrent <= 0 {
 		maxConcurrent = 30
+	}
+
+	controllerOptions := controller.Options{MaxConcurrentReconciles: maxConcurrent}
+
+	// Run the periodic workspace_active_instances resync alongside the controller.
+	// It runs under leader election like the controller itself.
+	if err := mgr.Add(r); err != nil {
+		return err
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
@@ -1791,10 +1883,121 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}, builder.WithPredicates(deploymentPredicate())).
 		Owns(&corev1.Service{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&networkingv1.Ingress{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Owns(&networkingv1.NetworkPolicy{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrent}).
+		// The shared namespace-level NetworkPolicy template is not owned by any single
+		// Workspace, so a mapped watch repairs it across all Workspaces of the
+		// namespace whenever it drifts or is deleted (Task 2.1).
+		Watches(&networkingv1.NetworkPolicy{},
+			handler.EnqueueRequestsFromMapFunc(r.mapNetworkPolicyToWorkspaces),
+			builder.WithPredicates(sharedNetpolPredicate())).
+		WithOptions(controllerOptions).
 		Named("workspace").
 		Complete(r)
+}
+
+// Start implements manager.Runnable: it periodically rebuilds the
+// workspace_active_instances gauge from a cluster-wide Workspace list so the
+// metric stays correct even when reconciles fail or objects are modified out of
+// band. Per-reconcile updates keep the gauge fresh in between syncs.
+func (r *WorkspaceReconciler) Start(ctx context.Context) error {
+	interval := r.ActiveInstancesSyncInterval
+	if interval <= 0 {
+		interval = defaultActiveInstancesSyncInterval
+	}
+
+	log := logf.FromContext(ctx).WithValues("runnable", "workspace-metrics-sync")
+	log.Info("Starting Workspace active instances metric syncer", "interval", interval.String())
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		r.syncActiveInstances(ctx)
+		select {
+		case <-ctx.Done():
+			log.Info("Stopping Workspace active instances metric syncer")
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+// syncActiveInstances lists all Workspaces and resets the gauge from the snapshot.
+func (r *WorkspaceReconciler) syncActiveInstances(ctx context.Context) {
+	log := logf.FromContext(ctx)
+	wsList := &aiv1alpha1.WorkspaceList{}
+	if err := r.List(ctx, wsList); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		log.Error(err, "Failed to list Workspaces for active instances metric sync")
+		return
+	}
+	phases := make(map[types.NamespacedName]aiv1alpha1.WorkspacePhase, len(wsList.Items))
+	for i := range wsList.Items {
+		phases[types.NamespacedName{Namespace: wsList.Items[i].Namespace, Name: wsList.Items[i].Name}] = wsList.Items[i].Status.Phase
+	}
+	workspacePhases.resetAll(phases)
+}
+
+// sharedNetpolPredicate filters NetworkPolicy events down to the shared
+// namespace-level template so legacy per-workspace policy churn does not fan out
+// into Workspace reconciles.
+func sharedNetpolPredicate() predicate.Predicate {
+	isShared := func(obj client.Object) bool {
+		return obj != nil && obj.GetName() == sharedNetpolName
+	}
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return isShared(e.Object)
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			return isShared(e.Object)
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			if !isShared(e.ObjectOld) || !isShared(e.ObjectNew) {
+				return false
+			}
+			oldNetpol, ok1 := e.ObjectOld.(*networkingv1.NetworkPolicy)
+			newNetpol, ok2 := e.ObjectNew.(*networkingv1.NetworkPolicy)
+			if !ok1 || !ok2 {
+				return false
+			}
+			// Only react to content changes of the shared template.
+			return !equality.Semantic.DeepEqual(oldNetpol.Labels, newNetpol.Labels) ||
+				!equality.Semantic.DeepEqual(oldNetpol.Spec, newNetpol.Spec)
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return isShared(e.Object)
+		},
+	}
+}
+
+// mapNetworkPolicyToWorkspaces enqueues a single representative Workspace so the
+// shared template is re-converged (and recreated when deleted). The template is
+// namespace-scoped, so one reconcile is enough; enqueuing every Workspace turned
+// one template change into an N-request burst that also made concurrent workers
+// fight over the same Update (conflict storms).
+func (r *WorkspaceReconciler) mapNetworkPolicyToWorkspaces(ctx context.Context, obj client.Object) []reconcile.Request {
+	wsList := &aiv1alpha1.WorkspaceList{}
+	if err := r.List(ctx, wsList, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(wsList.Items))
+	keys := make(map[string]types.NamespacedName, len(wsList.Items))
+	for i := range wsList.Items {
+		item := &wsList.Items[i]
+		if !item.DeletionTimestamp.IsZero() {
+			continue
+		}
+		names = append(names, item.Name)
+		keys[item.Name] = client.ObjectKeyFromObject(item)
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	// Deterministic pick (smallest name) so every replica maps the same event to
+	// the same request.
+	return []reconcile.Request{{NamespacedName: keys[slices.Min(names)]}}
 }
 
 func boolPtr(b bool) *bool {
@@ -1872,9 +2075,10 @@ func buildSelectorLabels(ws *aiv1alpha1.Workspace) map[string]string {
 	}
 }
 
-// buildWorkspaceLabels returns the labels for child resources (Deployment, Pods, Service, Ingress, NetworkPolicy).
-// User-provided labels from the Workspace CR are copied first, and system/built-in labels ("app", "workspace", "oa")
-// are applied afterwards to ensure selector consistency and prevent user labels from breaking Deployment/Service selectors.
+// buildWorkspaceLabels returns the labels for child resources (Deployment,
+// Service, Ingress, PVC). It deliberately does NOT carry the managed-by marker:
+// that marker is only meaningful on Pods (it is the shared NetworkPolicy
+// selector), so it is added by buildPodLabels.
 func buildWorkspaceLabels(ws *aiv1alpha1.Workspace) map[string]string {
 	labels := make(map[string]string, len(ws.Labels)+3)
 	maps.Copy(labels, ws.Labels)
@@ -1886,5 +2090,20 @@ func buildWorkspaceLabels(ws *aiv1alpha1.Workspace) map[string]string {
 			labels["oa"] = oa
 		}
 	}
+	return labels
+}
+
+// buildPodLabels returns the labels for Workspace Pods: the shared child labels
+// plus the managed-by marker selected by the namespace-level NetworkPolicy.
+// A Workspace that opted out of network isolation must never carry the marker,
+// even when the user supplied the same key in the CR labels — hence the explicit
+// delete instead of "just don't add".
+func buildPodLabels(ws *aiv1alpha1.Workspace) map[string]string {
+	labels := buildWorkspaceLabels(ws)
+	if isNetworkPolicyDisabled(ws) {
+		delete(labels, managedByLabelKey)
+		return labels
+	}
+	labels[managedByLabelKey] = managedByLabelValue
 	return labels
 }

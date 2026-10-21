@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -88,6 +89,10 @@ func main() {
 	flag.Float64Var(&kubeAPIQPS, "kube-api-qps", 300, "Maximum QPS to the API server from this controller.")
 	flag.IntVar(&kubeAPIBurst, "kube-api-burst", 600, "Maximum burst for throttle to the API server.")
 	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 30, "Maximum number of concurrent reconciles for the controller.")
+	var activeInstancesSyncInterval time.Duration
+	flag.DurationVar(&activeInstancesSyncInterval, "active-instances-sync-interval", 0,
+		"How often to rebuild the workspace_active_instances gauge from a cluster-wide Workspace list; "+
+			"0 uses the built-in default of 1m.")
 	var netpolAllowedNamespaces string
 	flag.StringVar(&netpolAllowedNamespaces, "netpol-allowed-namespaces", os.Getenv("NETPOL_ALLOWED_NAMESPACES"),
 		"Controller-wide NetworkPolicy egress exceptions applied to EVERY Workspace, as a JSON array of "+
@@ -207,11 +212,12 @@ func main() {
 	}
 
 	if err := (&controller.WorkspaceReconciler{
-		Client:                  mgr.GetClient(),
-		Scheme:                  mgr.GetScheme(),
-		Recorder:                mgr.GetEventRecorderFor("workspace-controller"),
-		GlobalAllowedNamespaces: globalAllowedNamespaces,
-		MaxConcurrentReconciles: maxConcurrentReconciles,
+		Client:                      mgr.GetClient(),
+		Scheme:                      mgr.GetScheme(),
+		Recorder:                    mgr.GetEventRecorderFor("workspace-controller"),
+		GlobalAllowedNamespaces:     globalAllowedNamespaces,
+		MaxConcurrentReconciles:     maxConcurrentReconciles,
+		ActiveInstancesSyncInterval: activeInstancesSyncInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "workspace")
 		os.Exit(1)

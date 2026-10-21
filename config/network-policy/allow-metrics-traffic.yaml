@@ -23,5 +23,6 @@ spec:
           matchLabels:
             metrics: enabled  # Only from namespaces with this label
       ports:
-        - port: 8443
+        # Plain HTTP metrics port (see config/default/manager_metrics_patch.yaml).
+        - port: 8080
           protocol: TCP

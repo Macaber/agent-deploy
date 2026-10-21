@@ -1,4 +1,15 @@
-# This patch adds the args to allow exposing the metrics endpoint using HTTPS
+# This patch adds the args to allow exposing the metrics endpoint over plain
+# HTTP on :8080.
+#
+# --metrics-secure=false disables both TLS serving and the
+# subject-access-review filter, so /metrics can be scraped without a
+# ServiceAccount token or a CA bundle. This deployment targets a trusted
+# internal network where the operator namespace is not reachable from outside
+# the cluster; set --metrics-secure back to true (the binary default) if that
+# assumption stops holding.
 - op: add
   path: /spec/template/spec/containers/0/args/0
-  value: --metrics-bind-address=:8443
+  value: --metrics-bind-address=:8080
+- op: add
+  path: /spec/template/spec/containers/0/args/1
+  value: --metrics-secure=false

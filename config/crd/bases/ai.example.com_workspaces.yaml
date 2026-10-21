@@ -92,22 +92,26 @@ spec:
                 type: string
               networkPolicy:
                 description: |-
-                  NetworkPolicy specifies customizable network isolation rules (blocked/allowed CIDRs) for the workspace.
-                  Network isolation is enabled by default when this field is omitted.
+                  NetworkPolicy specifies network isolation rules for the workspace. Network
+                  isolation is enabled by default via a single shared namespace-level
+                  NetworkPolicy template, so only Disabled is honored. BlockedCIDRs,
+                  AllowedCIDRs and AllowedNamespaces are deprecated and ignored — configure
+                  controller-wide exceptions with --netpol-allowed-namespaces instead.
                 properties:
                   allowedCIDRs:
-                    description: AllowedCIDRs specifies explicit CIDR blocks allowed
-                      for egress traffic (e.g. internal LLM API gateway "10.10.20.5/32").
+                    description: |-
+                      AllowedCIDRs is deprecated and ignored: a single shared namespace-level
+                      NetworkPolicy template cannot project one Workspace's exception without
+                      widening egress for every Workspace in the namespace.
+                      Deprecated: use the controller-wide --netpol-allowed-namespaces flag.
                     items:
                       type: string
                     type: array
                   allowedNamespaces:
                     description: |-
-                      AllowedNamespaces adds egress exceptions for shared in-cluster services that live
-                      inside the private ranges excluded from the public Internet egress rule
-                      (e.g. the OTel collector in the "monitoring" namespace).
-                      Each rule is matched through namespace/pod labels instead of raw IPs, so it keeps
-                      working when the target pods are rescheduled and get new IPs.
+                      AllowedNamespaces is deprecated and ignored for the same reason as
+                      AllowedCIDRs: the shared template aggregates cluster-wide exceptions only.
+                      Deprecated: use the controller-wide --netpol-allowed-namespaces flag.
                     items:
                       description: WorkspaceNetworkPolicyNamespaceRule defines an
                         egress exception to another namespace.
@@ -142,8 +146,10 @@ spec:
                     type: array
                   blockedCIDRs:
                     description: |-
-                      BlockedCIDRs specifies additional CIDR blocks blocked from egress traffic.
-                      Private, carrier-grade NAT, and link-local ranges are blocked by default to prevent access to other Pods, nodes, VPC services, and cloud metadata.
+                      BlockedCIDRs is deprecated and ignored: the shared namespace-level
+                      NetworkPolicy template always applies the default private, carrier-grade
+                      NAT, and link-local egress blocks; per-workspace additions are not possible.
+                      Deprecated: use the controller-wide --netpol-allowed-namespaces flag.
                     items:
                       type: string
                     type: array

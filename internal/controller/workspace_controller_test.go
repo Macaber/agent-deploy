@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -27,6 +28,7 @@ import (
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -87,9 +89,17 @@ var _ = Describe("Workspace Controller", func() {
 				}
 				_ = k8sClient.Delete(ctx, resource)
 			}
+
+			// Task 2.1: the shared namespace-level NetworkPolicy template is not owned
+			// by any Workspace, so remove it explicitly to isolate specs.
+			sharedNetpol := &networkingv1.NetworkPolicy{}
+			sharedKey := types.NamespacedName{Name: sharedNetpolName, Namespace: resourceNamespace}
+			if err := k8sClient.Get(ctx, sharedKey, sharedNetpol); err == nil {
+				_ = k8sClient.Delete(ctx, sharedNetpol)
+			}
 		})
 
-		It("should successfully reconcile security sandbox and NetworkPolicy", func() {
+		It("should reconcile a single shared namespace-level NetworkPolicy template", func() {
 			By("Reconciling the workspace")
 			controllerReconciler := &WorkspaceReconciler{
 				Client: k8sClient,
@@ -127,22 +137,20 @@ var _ = Describe("Workspace Controller", func() {
 			Expect(deploy.Spec.Template.Spec.Containers[0].Resources.Limits.Memory().String()).To(Equal("1Gi"))
 			Expect(deploy.Spec.Template.Spec.Containers[0].Resources.Requests.Memory().String()).To(Equal("512Mi"))
 
-			By("Verifying NetworkPolicy creation and isolation rules")
-			netpol := &networkingv1.NetworkPolicy{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      resourceName + "-netpol",
-				Namespace: resourceNamespace,
-			}, netpol)).To(Succeed())
+			sharedKey := types.NamespacedName{Name: sharedNetpolName, Namespace: resourceNamespace}
+			legacyKey := types.NamespacedName{Name: resourceName + legacyNetpolSuffix, Namespace: resourceNamespace}
 
+			By("Verifying the shared namespace-level NetworkPolicy template")
+			netpol := &networkingv1.NetworkPolicy{}
+			Expect(k8sClient.Get(ctx, sharedKey, netpol)).To(Succeed())
+			Expect(netpol.Spec.PodSelector.MatchLabels).To(Equal(map[string]string{
+				managedByLabelKey: managedByLabelValue,
+			}))
 			Expect(netpol.Spec.PolicyTypes).To(ContainElement(networkingv1.PolicyTypeIngress))
 			Expect(netpol.Spec.PolicyTypes).To(ContainElement(networkingv1.PolicyTypeEgress))
 			Expect(netpol.Spec.Ingress).To(HaveLen(1))
 			Expect(netpol.Spec.Ingress[0].From).To(BeEmpty())
-			Expect(netpol.Spec.Ingress[0].Ports).To(HaveLen(1))
-			Expect(netpol.Spec.Ingress[0].Ports[0].Protocol).NotTo(BeNil())
-			Expect(*netpol.Spec.Ingress[0].Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
-			Expect(netpol.Spec.Ingress[0].Ports[0].Port).NotTo(BeNil())
-			Expect(netpol.Spec.Ingress[0].Ports[0].Port.IntVal).To(Equal(int32(80)))
+			Expect(netpol.Spec.Ingress[0].Ports).To(BeEmpty())
 			Expect(len(netpol.Spec.Egress)).To(BeNumerically(">=", 2))
 			Expect(netpol.Spec.Egress[1].To[0].IPBlock.Except).To(ConsistOf(
 				"10.0.0.0/8",
@@ -151,19 +159,41 @@ var _ = Describe("Workspace Controller", func() {
 				"172.16.0.0/12",
 				"192.168.0.0/16",
 			))
+			// The shared template is namespace-level infrastructure: it must NOT be
+			// owned by (and garbage collected with) a single Workspace.
+			Expect(netpol.OwnerReferences).To(BeEmpty())
 
-			By("Updating Workspace with custom BlockedCIDRs, AllowedCIDRs and AllowedNamespaces")
+			By("Verifying no per-workspace NetworkPolicy is created anymore")
+			err = k8sClient.Get(ctx, legacyKey, &networkingv1.NetworkPolicy{})
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+
+			By("Verifying workspace pods carry the managed-by label")
+			Expect(deploy.Spec.Template.Labels[managedByLabelKey]).To(Equal(managedByLabelValue))
+
+			By("Verifying child resources stay clean of the pod-only managed-by label (P3-5)")
+			pvc := &corev1.PersistentVolumeClaim{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName + "-pvc",
+				Namespace: resourceNamespace,
+			}, pvc)).To(Succeed())
+			Expect(pvc.Labels).NotTo(HaveKey(managedByLabelKey))
+
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName + "-svc",
+				Namespace: resourceNamespace,
+			}, svc)).To(Succeed())
+			Expect(svc.Labels).NotTo(HaveKey(managedByLabelKey))
+			Expect(deploy.Labels).NotTo(HaveKey(managedByLabelKey))
+
+			By("Verifying per-workspace NetworkPolicy customization is ignored by the shared template")
 			resource := &aiv1alpha1.Workspace{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
 			resource.Spec.NetworkPolicy = &aiv1alpha1.WorkspaceNetworkPolicySpec{
 				BlockedCIDRs: []string{"192.168.1.0/24", "10.0.0.0/16"},
 				AllowedCIDRs: []string{"10.0.1.100/32"},
 				AllowedNamespaces: []aiv1alpha1.WorkspaceNetworkPolicyNamespaceRule{
-					{
-						Namespace:   "monitoring",
-						PodSelector: map[string]string{"app.kubernetes.io/name": "otel-collector"},
-						Ports:       []int32{4318},
-					},
+					{Namespace: "logging"},
 				},
 			}
 			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
@@ -173,29 +203,14 @@ var _ = Describe("Workspace Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      resourceName + "-netpol",
-				Namespace: resourceNamespace,
-			}, netpol)).To(Succeed())
-			Expect(netpol.Spec.Egress[1].To[0].IPBlock.Except).To(ContainElements("192.168.1.0/24", "10.0.0.0/16"))
-			Expect(netpol.Spec.Egress).To(HaveLen(4))
-			Expect(netpol.Spec.Egress[2].To[0].IPBlock.CIDR).To(Equal("10.0.1.100/32"))
+			// The shared template stays static: DNS + public Internet only, the
+			// CR-level exceptions are deliberately not merged.
+			Expect(k8sClient.Get(ctx, sharedKey, netpol)).To(Succeed())
+			Expect(netpol.Spec.Egress).To(HaveLen(2))
+			err = k8sClient.Get(ctx, legacyKey, &networkingv1.NetworkPolicy{})
+			Expect(errors.IsNotFound(err)).To(BeTrue())
 
-			// Namespace-scoped egress exception for the OTel collector.
-			// The empty-Namespace rule is skipped, so it must not produce an extra egress rule.
-			Expect(netpol.Spec.Egress[3].To).To(HaveLen(1))
-			Expect(netpol.Spec.Egress[3].To[0].NamespaceSelector).NotTo(BeNil())
-			Expect(netpol.Spec.Egress[3].To[0].NamespaceSelector.MatchLabels).To(Equal(
-				map[string]string{"kubernetes.io/metadata.name": "monitoring"}))
-			Expect(netpol.Spec.Egress[3].To[0].PodSelector).NotTo(BeNil())
-			Expect(netpol.Spec.Egress[3].To[0].PodSelector.MatchLabels).To(Equal(
-				map[string]string{"app.kubernetes.io/name": "otel-collector"}))
-			Expect(netpol.Spec.Egress[3].To[0].IPBlock).To(BeNil())
-			Expect(netpol.Spec.Egress[3].Ports).To(HaveLen(1))
-			Expect(*netpol.Spec.Egress[3].Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
-			Expect(netpol.Spec.Egress[3].Ports[0].Port.IntVal).To(Equal(int32(4318)))
-
-			By("Disabling NetworkPolicy via NetworkPolicy.Disabled and verifying deletion")
+			By("Disabling NetworkPolicy and verifying the workspace opts out via labels while the shared template remains")
 			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
 			resource.Spec.NetworkPolicy.Disabled = true
 			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
@@ -205,14 +220,18 @@ var _ = Describe("Workspace Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name:      resourceName + "-netpol",
+			// The shared template must survive a per-workspace opt-out because other
+			// workspaces in the namespace still rely on it.
+			Expect(k8sClient.Get(ctx, sharedKey, netpol)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName + "-deploy",
 				Namespace: resourceNamespace,
-			}, netpol)
-			Expect(errors.IsNotFound(err)).To(BeTrue())
+			}, deploy)).To(Succeed())
+			_, hasManagedBy := deploy.Spec.Template.Labels[managedByLabelKey]
+			Expect(hasManagedBy).To(BeFalse())
 		})
 
-		It("should apply controller-wide namespace egress exceptions to every workspace", func() {
+		It("should apply controller-wide namespace egress exceptions to the shared template", func() {
 			By("Reconciling the workspace with a controller-wide egress exception")
 			controllerReconciler := &WorkspaceReconciler{
 				Client: k8sClient,
@@ -236,19 +255,18 @@ var _ = Describe("Workspace Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying the global exception lands in the NetworkPolicy without any CR change")
+			sharedKey := types.NamespacedName{Name: sharedNetpolName, Namespace: resourceNamespace}
+
+			By("Verifying the global exception lands in the shared NetworkPolicy without any CR change")
 			netpol := &networkingv1.NetworkPolicy{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      resourceName + "-netpol",
-				Namespace: resourceNamespace,
-			}, netpol)).To(Succeed())
+			Expect(k8sClient.Get(ctx, sharedKey, netpol)).To(Succeed())
 			otelRule := findNamespaceEgressRule(netpol, "monitoring")
 			Expect(otelRule).NotTo(BeNil())
 			Expect(otelRule.Ports).To(HaveLen(1))
 			Expect(*otelRule.Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
 			Expect(otelRule.Ports[0].Port.IntVal).To(Equal(int32(4318)))
 
-			By("Reconciling again with an identical CR-level rule and an extra CR-only rule")
+			By("Verifying per-workspace namespace rules are no longer merged into the shared template")
 			resource := &aiv1alpha1.Workspace{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
 			resource.Spec.NetworkPolicy = &aiv1alpha1.WorkspaceNetworkPolicySpec{
@@ -269,16 +287,151 @@ var _ = Describe("Workspace Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      resourceName + "-netpol",
-				Namespace: resourceNamespace,
-			}, netpol)).To(Succeed())
-			// The CR rule identical to the global default must be deduplicated.
+			Expect(k8sClient.Get(ctx, sharedKey, netpol)).To(Succeed())
+			// The controller-wide default stays exactly once...
 			Expect(countNamespaceEgressRules(netpol, "monitoring")).To(Equal(1))
-			// The CR-only rule (no ports => all ports) must still be merged in.
-			loggingRule := findNamespaceEgressRule(netpol, "logging")
-			Expect(loggingRule).NotTo(BeNil())
-			Expect(loggingRule.Ports).To(BeEmpty())
+			// ...and the CR-only rule must NOT be merged into the shared template.
+			Expect(findNamespaceEgressRule(netpol, "logging")).To(BeNil())
+		})
+
+		It("should clean up the legacy per-workspace NetworkPolicy on reconcile", func() {
+			By("Pre-creating the legacy per-workspace NetworkPolicy from an older operator version")
+			legacyName := resourceName + legacyNetpolSuffix
+			legacyNetpol := &networkingv1.NetworkPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      legacyName,
+					Namespace: resourceNamespace,
+					Labels:    map[string]string{"app": "workspace", "workspace": resourceName},
+				},
+				Spec: networkingv1.NetworkPolicySpec{
+					PodSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "workspace", "workspace": resourceName},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, legacyNetpol)).To(Succeed())
+
+			controllerReconciler := &WorkspaceReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the legacy NetworkPolicy is deleted and only the shared template remains")
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: legacyName, Namespace: resourceNamespace}, &networkingv1.NetworkPolicy{})
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      sharedNetpolName,
+				Namespace: resourceNamespace,
+			}, &networkingv1.NetworkPolicy{})).To(Succeed())
+		})
+
+		// P1-3: a user configuring spec.networkPolicy.allowedCIDRs after Task 2.1 would
+		// otherwise get no signal at all — only a controller-side log line.
+		It("should emit a Warning event when per-workspace networkPolicy customization is ignored", func() {
+			ws := &aiv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{Name: "netpol-event-ws", Namespace: resourceNamespace},
+				Spec: aiv1alpha1.WorkspaceSpec{
+					NetworkPolicy: &aiv1alpha1.WorkspaceNetworkPolicySpec{
+						AllowedCIDRs: []string{"10.10.20.5/32"},
+					},
+				},
+			}
+			recorder := record.NewFakeRecorder(8)
+			controllerReconciler := &WorkspaceReconciler{
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Recorder: recorder,
+			}
+
+			By("Reconciling the network policy step for a workspace with deprecated per-workspace overrides")
+			Expect(controllerReconciler.reconcileNetworkPolicy(ctx, ws)).To(Succeed())
+
+			By("Verifying a Warning event with the override reason was emitted")
+			var events []string
+			for len(recorder.Events) > 0 {
+				events = append(events, <-recorder.Events)
+			}
+			Expect(events).NotTo(BeEmpty())
+			Expect(events).To(ContainElement(And(
+				ContainSubstring("Warning"),
+				ContainSubstring("NetworkPolicyOverridden"),
+			)))
+		})
+
+		// Regression (Task 2.1): the controller no longer adds a finalizer, so a
+		// Workspace delete is immediate and the delete-event reconcile only ever
+		// sees NotFound. The garbage collection used to live exclusively in the
+		// DeletionTimestamp branch, which made it unreachable — the shared template
+		// then leaked in the namespace forever. This uses the real deletion path
+		// (no hand-added finalizer, which is a state that does not exist in
+		// production).
+		It("should delete the shared NetworkPolicy after the last Workspace is deleted", func() {
+			wsName := "gc-test-ws"
+			// A dedicated namespace keeps the assertion honest: the shared
+			// template is namespace-scoped, and the shared "default" namespace is
+			// occupied by the fixture Workspace, so it must not be collected there.
+			wsNamespace := "gc-namespace"
+			wsKey := types.NamespacedName{Name: wsName, Namespace: wsNamespace}
+			sharedKey := types.NamespacedName{Name: sharedNetpolName, Namespace: wsNamespace}
+
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: wsNamespace}}
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, ns)
+			})
+
+			ws := &aiv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{Name: wsName, Namespace: wsNamespace},
+				Spec: aiv1alpha1.WorkspaceSpec{
+					Owner:   "user-gc",
+					Runtime: aiv1alpha1.RuntimeSpec{Image: "ubuntu:latest"},
+					Storage: aiv1alpha1.StorageSpec{Size: "1Gi"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
+			DeferCleanup(func() {
+				latest := &aiv1alpha1.Workspace{}
+				if err := k8sClient.Get(ctx, wsKey, latest); err == nil {
+					_ = k8sClient.Delete(ctx, latest)
+				}
+			})
+
+			controllerReconciler := &WorkspaceReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// Two passes: the first converges the child resources, the second
+			// creates the shared template once the Workspace is no longer "new".
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: wsKey})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: wsKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the shared template exists while the Workspace is alive")
+			Expect(k8sClient.Get(ctx, sharedKey, &networkingv1.NetworkPolicy{})).To(Succeed())
+
+			By("Deleting the Workspace through the real path (no finalizer)")
+			latest := &aiv1alpha1.Workspace{}
+			Expect(k8sClient.Get(ctx, wsKey, latest)).To(Succeed())
+			Expect(controllerutil.ContainsFinalizer(latest, workspaceFinalizer)).To(BeFalse(),
+				"the controller must not add a finalizer; the test would otherwise exercise a state that cannot occur in production")
+			Expect(k8sClient.Delete(ctx, latest)).To(Succeed())
+
+			// Deletion is immediate, so the reconcile only sees NotFound from here on.
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: wsKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the shared template was garbage-collected")
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, sharedKey, &networkingv1.NetworkPolicy{})
+				return errors.IsNotFound(err)
+			}, 5*time.Second, 100*time.Millisecond).Should(BeTrue(),
+				"the shared NetworkPolicy must be deleted once the last Workspace in the namespace is gone")
 		})
 
 		It("should successfully reconcile the resource with ConfigMap volume mounts", func() {
@@ -411,6 +564,44 @@ var _ = Describe("Workspace Controller", func() {
 			Expect(labels["app"]).To(Equal("workspace"))
 			Expect(labels["workspace"]).To(Equal("my-ws"))
 			Expect(labels["team"]).To(Equal("data"))
+			// P3-5: managed-by belongs to Pods only; child resources stay clean.
+			_, hasManagedBy := labels[managedByLabelKey]
+			Expect(hasManagedBy).To(BeFalse())
+
+			// Task 2.1: pods carry the managed-by label so the shared namespace-level
+			// NetworkPolicy template selects them.
+			podLabels := buildPodLabels(ws)
+			Expect(podLabels[managedByLabelKey]).To(Equal(managedByLabelValue))
+			Expect(podLabels["team"]).To(Equal("data"))
+
+			// Workspaces with network isolation disabled opt out via label omission.
+			disabledWs := &aiv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "disabled-ws",
+					Namespace: "default",
+				},
+				Spec: aiv1alpha1.WorkspaceSpec{
+					NetworkPolicy: &aiv1alpha1.WorkspaceNetworkPolicySpec{Disabled: true},
+				},
+			}
+			disabledPodLabels := buildPodLabels(disabledWs)
+			_, hasManagedBy = disabledPodLabels[managedByLabelKey]
+			Expect(hasManagedBy).To(BeFalse())
+			Expect(disabledPodLabels["app"]).To(Equal("workspace"))
+
+			// A user-supplied managed-by label must not defeat the opt-out.
+			disabledWithUserLabel := &aiv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "disabled-ws-user-label",
+					Namespace: "default",
+					Labels:    map[string]string{managedByLabelKey: managedByLabelValue},
+				},
+				Spec: aiv1alpha1.WorkspaceSpec{
+					NetworkPolicy: &aiv1alpha1.WorkspaceNetworkPolicySpec{Disabled: true},
+				},
+			}
+			_, hasManagedBy = buildPodLabels(disabledWithUserLabel)[managedByLabelKey]
+			Expect(hasManagedBy).To(BeFalse())
 
 			// In bocomwork namespace, OA from env should be added if not present
 			bocomWs := &aiv1alpha1.Workspace{
@@ -426,10 +617,11 @@ var _ = Describe("Workspace Controller", func() {
 					},
 				},
 			}
-			bocomLabels := buildWorkspaceLabels(bocomWs)
-			Expect(bocomLabels["oa"]).To(Equal("zhangsan"))
-			Expect(bocomLabels["app"]).To(Equal("workspace"))
-			Expect(bocomLabels["workspace"]).To(Equal("bocom-ws"))
+			bocomPodLabels := buildPodLabels(bocomWs)
+			Expect(bocomPodLabels["oa"]).To(Equal("zhangsan"))
+			Expect(bocomPodLabels["app"]).To(Equal("workspace"))
+			Expect(bocomPodLabels["workspace"]).To(Equal("bocom-ws"))
+			Expect(bocomPodLabels[managedByLabelKey]).To(Equal(managedByLabelValue))
 		})
 	})
 
@@ -647,7 +839,13 @@ var _ = Describe("Workspace Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: wsNamespace}, pvc)).To(Succeed())
 			Expect(pvc.OwnerReferences).To(BeEmpty())
 
-			// 4. Test legacy finalizer handling on Workspace deletion
+			// 4. Test legacy finalizer handling on Workspace deletion.
+			// The finalizer is added by hand on purpose: this reproduces the
+			// upgrade state where an older operator version already stamped it
+			// and the current version must strip it. This is NOT the normal
+			// deletion path — for that (and for shared NetworkPolicy garbage
+			// collection) see "should delete the shared NetworkPolicy after the
+			// last Workspace is deleted".
 			controllerutil.AddFinalizer(latestWs, workspaceFinalizer)
 			Expect(k8sClient.Update(ctx, latestWs)).To(Succeed())
 
