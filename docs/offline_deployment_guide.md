@@ -66,7 +66,8 @@ docker pull --platform linux/amd64 registry-cn-hangzhou.ack.aliyuncs.com/acs/csi
 cd /Users/yfsun/mywork/agent-deploy
 # 构建 Operator
 docker build --platform linux/amd64 -t workspace-operator:v1.0.0 .
-# 构建 API Server
+# 构建 API Server（控制台页面已内嵌在二进制中）
+# 如修改过 web/portal/ 前端源码，请先执行 make portal 重新生成 cmd/api-server/portal.html
 docker build --platform linux/amd64 -f Dockerfile.api-server -t api-server:v1.0.0 .
 cd -
 

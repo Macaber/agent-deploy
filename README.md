@@ -29,7 +29,10 @@
 ├── cmd/                    # 应用程序启动入口
 │   ├── main.go             # 核心：Operator 启动程序（注册控制器并启动调和主循环）
 │   └── api-server/
-│       └── main.go         # 核心：对外暴露的轻量级 RESTful API 网关服务器
+│       ├── main.go         # 核心：对外暴露的轻量级 RESTful API 网关服务器
+│       └── portal.html     # 控制台单文件构建产物（由 //go:embed 嵌入二进制）
+│
+├── web/portal/             # 控制台前端源码（React + Vite + shadcn Nova 风格）
 │
 ├── internal/               # 平台核心业务逻辑
 │   └── controller/
@@ -59,7 +62,7 @@
 ├── bin/                    # 内部编译出的可执行文件及 envtest 环境包 (K8s API 本地模拟)
 ├── test/                   # 集群端到端 (E2E) 测试代码
 ├── Dockerfile              # Operator 镜像打包配置
-├── Dockerfile.api-server   # API-Server 镜像打包配置
+├── Dockerfile.api-server   # API-Server 镜像打包配置（内嵌 portal.html）
 ├── PROJECT                 # Kubebuilder 项目脚手架配置文件
 └── Makefile                # 项目生命周期构建命令脚本 (如 make manifests, make generate)
 ```
@@ -107,6 +110,25 @@ kubectl apply -k config/samples/
 ```
 
 > **注意**: 请在应用前确保样本 manifest 中已配置符合测试环境的默认值。
+
+---
+
+### 控制台页面（Portal）
+
+`api-server` 在 `/` 提供内置控制台，页面由 `cmd/api-server/portal.html` 嵌入。前端源码位于
+`web/portal/`，修改后执行：
+
+```sh
+make portal    # 需要 Node.js 20.19+，会重建并覆盖 cmd/api-server/portal.html
+```
+
+构建产物已提交到仓库，因此仅构建镜像时不需要 Node.js；直接使用当前 `portal.html` 即可。
+打完镜像后，页面由 `api-server` 直接在 `/` 提供（例如 NodePort `http://<节点IP>:30000/`，或 Ingress `http://launcher.workspace.bocomcode/`）。
+
+```sh
+# 构建 API Server 镜像（内嵌已提交的 portal.html）
+GOWORK=off make docker-build-api-server API_IMG=<registry>/api-server:tag
+```
 
 ---
 

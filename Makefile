@@ -43,6 +43,10 @@ help: ## Display this help.
 
 ##@ Development
 
+.PHONY: portal
+portal: ## Build the embedded Portal UI (requires Node.js 20.19+).
+	cd web/portal && npm ci --no-audit --no-fund && npm run build
+
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
@@ -119,6 +123,13 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
+API_IMG ?= api-server:latest
+API_PLATFORM ?= linux/amd64
+
+.PHONY: docker-build-api-server
+docker-build-api-server: ## Build the api-server image (embeds the committed portal.html).
+	$(CONTAINER_TOOL) build --platform $(API_PLATFORM) -f Dockerfile.api-server -t $(API_IMG) .
+
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build -t ${IMG} .

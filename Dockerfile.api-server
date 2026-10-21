@@ -12,8 +12,12 @@ RUN go mod download
 # Copy the Go source
 COPY . .
 
-# Build the api-server
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o api-server cmd/api-server/main.go
+# Build the whole package (main.go + workspace_cache.go). Building only
+# main.go drops the workspaceCache implementation and fails to link.
+# The build context has no .git, so disable VCS stamping (otherwise some Go
+# toolchains fail with "error obtaining VCS status").
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -buildvcs=false -a -o api-server ./cmd/api-server
 
 # Package the binary into a minimal distroless image
 FROM gcr.io/distroless/static:nonroot

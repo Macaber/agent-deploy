@@ -3,10 +3,11 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -78,9 +79,11 @@ func main() {
 	http.HandleFunc("/api/login", loginHandler)
 	http.HandleFunc("/api/logout", logoutHandler)
 	http.HandleFunc("/api/auth/check", authCheckHandler)
-	http.HandleFunc("/api/workspaces", workspaceRouter(k8sClient, workspaceCache))
-	http.HandleFunc("/api/workspaces/stop", stopWorkspaceHandler(k8sClient))
-	http.HandleFunc("/api/workspaces/wakeup", wakeupWorkspaceHandler(k8sClient))
+	// When USERNAME/PASSWORD is configured, the workspace APIs require the
+	// session cookie issued by /api/login. The public endpoints stay open.
+	http.HandleFunc("/api/workspaces", requireAuth(workspaceRouter(k8sClient, workspaceCache)))
+	http.HandleFunc("/api/workspaces/stop", requireAuth(stopWorkspaceHandler(k8sClient)))
+	http.HandleFunc("/api/workspaces/wakeup", requireAuth(wakeupWorkspaceHandler(k8sClient)))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -117,12 +120,19 @@ func serveHome(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	tmpl, err := template.New("index").Parse(htmlTemplate)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	// portal.html is a pre-built static bundle (Vite single-file output). It
+	// contains JavaScript template literals, so it must NOT be parsed through
+	// html/template (which rejects "{{" sequences found in the bundle).
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("ETag", portalETag)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	if r.Header.Get("If-None-Match") == portalETag {
+		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	tmpl.Execute(w, nil)
+	_, _ = io.WriteString(w, portalHTML)
 }
 
 // workspaceRequest is the shared request body for workspace create/update operations.
@@ -1023,12 +1033,16 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Username == portalUsername && req.Password == portalPassword {
+	usernameOK := subtle.ConstantTimeCompare([]byte(req.Username), []byte(portalUsername)) == 1
+	passwordOK := subtle.ConstantTimeCompare([]byte(req.Password), []byte(portalPassword)) == 1
+	if usernameOK && passwordOK {
+		secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 		http.SetCookie(w, &http.Cookie{
 			Name:     "session_token",
 			Value:    expectedToken,
 			Path:     "/",
 			HttpOnly: true,
+			Secure:   secure,
 			MaxAge:   86400 * 7, // 7 days
 			SameSite: http.SameSiteLaxMode,
 		})
@@ -1061,4 +1075,8 @@ func authCheckHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 //go:embed portal.html
-var htmlTemplate string
+var portalHTML string
+
+// portalETag lets browsers revalidate the single-file bundle cheaply after a
+// deployment instead of re-downloading it on every visit.
+var portalETag = fmt.Sprintf(`"%x"`, sha256.Sum256([]byte(portalHTML)))

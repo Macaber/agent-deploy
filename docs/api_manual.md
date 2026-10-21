@@ -7,6 +7,9 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 ## 全局配置与运行参数
 
 - **默认监听端口**：`3000`（可通过环境变量 `PORT` 修改）。
+- **门户认证（可选）**：设置 `USERNAME` / `PASSWORD` 后，`/api/workspaces*` 需要 `/api/login` 下发的
+  `session_token` Cookie（7 天有效）；`/api/login`、`/api/logout`、`/api/auth/check` 保持公开。
+  未设置时认证关闭，所有接口可直接访问。
 - **域名环境变量**：`WORKSPACE_DOMAIN`（默认为 `localhost`）。生成的 HTTP 接入 URL 会基于此域名拼接，格式为 `http://ws-<userId>.<WORKSPACE_DOMAIN>`。
 - **列表缓存参数**：API-Server 启动时通过共享 Informer 建立 Workspace 本地内存物化视图，列表查询不直连 K8s API Server。
   - `WORKSPACE_LIST_MAX_PAGE_SIZE`：列表接口 `pageSize` 上限（默认 `200`）。
@@ -21,7 +24,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 - **请求方法**：`GET`
 - **请求路径**：`/`
 - **请求参数**：无
-- **返回响应 (HTTP 200)**：返回 `text/html` 的交互网页。
+- **返回响应 (HTTP 200)**：返回 `text/html` 的交互网页（Vite 单文件构建产物，由 `//go:embed` 嵌入二进制）。
 
 ---
 

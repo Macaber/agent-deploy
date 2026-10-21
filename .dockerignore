@@ -2,6 +2,11 @@
 # Ignore everything by default and re-include only needed files
 **
 
+# Frontend source/build tooling is not needed to compile the Go binary.
+# Exclude it before the HTML re-include rule so node_modules/dist never enter
+# the build context; the built portal lives at cmd/api-server/portal.html.
+web/
+
 # Re-include Go source files (but not *_test.go)
 !**/*.go
 **/*_test.go
@@ -10,6 +15,5 @@
 !go.mod
 !go.sum
 
-# Re-include HTML files for embedding
-!**/*.html
-
+# Re-include the built portal bundle for //go:embed
+!cmd/api-server/portal.html

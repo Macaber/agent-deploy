@@ -56,3 +56,6 @@ deploy/*.tar
 .Trashes
 ehthumbs.db
 Thumbs.db
+# Portal frontend build dependencies / generated output
+node_modules/
+web/portal/dist/
