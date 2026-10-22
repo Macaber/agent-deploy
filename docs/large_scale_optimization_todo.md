@@ -135,8 +135,15 @@
       - `controller_runtime_reconcile_errors_total{controller="workspace"}`（调谐失败计数，controller-runtime 内置）
       - `workqueue_queue_duration_seconds{controller="workspace"}`（工作队列排队延迟，controller-runtime 内置，自带 `controller` 标签）
       - `workspace_active_instances`（按 Phase 统计在线实例数）
+      - `workspace_total_instances` / `workspace_running_instances`（总数与当前 Running 数，免聚合）
+      - `workspace_running_peak_instances` / `workspace_running_peak_timestamp_seconds`
+        （同时 Running 峰值及其出现时间）
   - **验收标准**：Grafana 看板清晰呈现大促/早高峰期间调谐引擎水位。
   - **完成记录**：指标实现于 `internal/controller/metrics.go`（排队延迟使用 controller-runtime
     内置的 `workqueue_queue_duration_seconds`，不再自建队列包装器，错误退避重试不计入；
-    `workspace_active_instances` 由调谐实时增量更新 + 每分钟全量 resync 兜底）；Grafana 看板与告警建议见
+    `workspace_active_instances` 由调谐实时增量更新 + 每分钟全量 resync 兜底）；
+    规模类指标与 `workspace_active_instances` 共用 `workspacePhaseTracker`，增量更新保持 O(1)
+    （`BenchmarkWorkspacePhaseTrackerSet` 守护），峰值由每次相位变化驱动、resync 不清零，
+    跨重启口径由看板折线图的 `max_over_time` 图例补齐；Grafana 看板（「工作空间规模」行：
+    总数 / Running / 峰值 / 峰值时间 / Running 时间折线图）与告警建议见
     `deploy/grafana/README.md`、`deploy/grafana/dashboards/workspace-operator.json`。

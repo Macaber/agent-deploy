@@ -1,0 +1,64 @@
+# 专供「集群外 Prometheus」抓取的独立 Service。
+#
+# 为什么不直接改 agent-deploy-controller-manager-metrics-service 的 type？
+#   那个 Service 定义在 deploy/install.yaml 里。你把它 patch 成 NodePort/LoadBalancer 后，
+#   下次 `kubectl apply -f deploy/install.yaml`（升级版本时必然会发生）会把它改回
+#   ClusterIP，抓取会毫无征兆地断掉。用独立 Service 就与安装包解耦：
+#   升级不受影响，不想暴露了直接 delete 本文件即可。
+#
+# 用法：
+#   1) 按需选择下面 NodePort 或 LoadBalancer 其中一段（**另一段保持注释**）；
+#   2) kubectl apply -f metrics-external-service.yaml
+#   3) 在集群外 Prometheus 上配 static_configs，指向「节点 IP:30080」或「内网 SLB 地址:8080」。
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-deploy-controller-manager-metrics-external
+  namespace: agent-deploy-system
+  labels:
+    app.kubernetes.io/name: agent-deploy
+    app.kubernetes.io/component: metrics-external
+spec:
+  # ==========================================================================
+  # 方式 1（默认，最通用）：NodePort
+  # 需要同时在云上放行「worker 节点安全组 -> Prometheus 所在 IP」的 nodePort。
+  # externalTrafficPolicy 保持 Cluster：任意节点 IP 都能转发，单节点故障不影响抓取。
+  # ==========================================================================
+  type: NodePort
+  ports:
+    - name: http
+      port: 8080          # 集群内访问用的端口（与官方 Service 一致）
+      targetPort: 8080    # manager 容器的 http 端口
+      nodePort: 30080     # 固定端口，方便写死安全组规则；必须在 30000-32767 且未被占用
+      protocol: TCP
+  selector:
+    # 与 manager Pod 的标签一致
+    app.kubernetes.io/name: agent-deploy
+    control-plane: controller-manager
+
+  # ==========================================================================
+  # 方式 2（生产推荐）：内网负载均衡 + 来源 IP 白名单
+  # 把上面的 type: NodePort / ports.nodePort 整段注释掉，取消下面注释。
+  # 注解按云厂商调整，示例为阿里云 ACK（内网 SLB + 白名单 ACL）。
+  # ==========================================================================
+  # type: LoadBalancer
+  # annotations:
+  #   service.beta.kubernetes.io/alibaba-cloud-loadbalancer-address-type: "intranet"
+  #   service.beta.kubernetes.io/alibaba-cloud-loadbalancer-instance-charge-type: "PayByTraffic"
+  #   # 白名单：只允许 Prometheus 主机（或其出口 IP 段）访问
+  #   service.beta.kubernetes.io/alibaba-cloud-loadbalancer-acl-type: "white"
+  #   service.beta.kubernetes.io/alibaba-cloud-loadbalancer-acl-id: "<你的 ACL ID>"
+  #   # AWS EKS 对应写法：
+  #   #   service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+  #   #   service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+  #   #   service.beta.kubernetes.io/aws-load-balancer-source-ranges: "10.0.0.0/8"
+  #   # GKE 对应写法：
+  #   #   networking.gke.io/load-balancer-type: "Internal"
+  # ports:
+  #   - name: http
+  #     port: 8080
+  #     targetPort: 8080
+  #     protocol: TCP
+  # selector:
+  #   app.kubernetes.io/name: agent-deploy
+  #   control-plane: controller-manager

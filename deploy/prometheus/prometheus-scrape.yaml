@@ -1,0 +1,56 @@
+# 原生 Prometheus（没有 prometheus-operator / 不用 ServiceMonitor）接入方式。
+#
+# 把下面 scrape_configs 里的 job 追加到你的 prometheus.yml，然后
+#   promtool check config prometheus.yml && prometheus --config.file=...
+# 或者 curl -X POST http://<prometheus>:9090/-/reload （需 --web.enable-lifecycle）
+#
+# 若使用 kube-prometheus-stack 的 additionalScrapeConfigs（推荐用 ServiceMonitor，
+# 见 servicemonitor.yaml），则只拷贝 "- job_name: ..." 及其下级字段，
+# 不要带 "scrape_configs:" 这一行——它本身就是一个 job 列表。
+scrape_configs:
+  # 推荐：role: endpoints，直接跟着 Service 走，端口名过滤最精确。
+  - job_name: workspace-operator
+    scheme: http
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+            - agent-deploy-system
+    relabel_configs:
+      # 只保留 metrics Service，排除同命名空间里的其它 Service。
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: agent-deploy-controller-manager-metrics-service
+        action: keep
+      # 只保留名为 http 的端口(8080)。manager 还声明了 health(8081)，
+      # 若不按端口名过滤会多出一个抓 /metrics 返回 404 的坏 target。
+      - source_labels: [__meta_kubernetes_endpoint_port_name]
+        regex: http
+        action: keep
+      # 让指标带上可读的 namespace/pod 标签，便于多集群/多副本排查。
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      # 便于在 Prometheus UI 的 Targets 页面一眼看出是哪个 job。
+      - target_label: job
+        replacement: workspace-operator
+
+  # 备选：role: pod。适用于你更习惯按 Pod 标签选择、或 Service 没建出来的场景。
+  # 与上面的 endpoints 方案二选一，不要同时启用（否则同一实例会被抓两次，
+  # 出现重复样本）。
+  # - job_name: workspace-operator
+  #   scheme: http
+  #   scrape_interval: 30s
+  #   kubernetes_sd_configs:
+  #     - role: pod
+  #       namespaces:
+  #         names: [agent-deploy-system]
+  #   relabel_configs:
+  #     - source_labels: [__meta_kubernetes_pod_label_control_plane]
+  #       regex: controller-manager
+  #       action: keep
+  #     - source_labels: [__meta_kubernetes_pod_container_port_name]
+  #       regex: http
+  #       action: keep

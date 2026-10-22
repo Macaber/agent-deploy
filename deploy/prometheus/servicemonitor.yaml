@@ -1,0 +1,48 @@
+# Prometheus Operator（prometheus-operator / kube-prometheus-stack）接入方式。
+#
+# 用法：
+#   kubectl apply -n <Prometheus 所在命名空间> -f servicemonitor.yaml
+#
+# 关键点：
+#   1. 必须部署到 Prometheus 能看到的命名空间（最稳妥是 Prometheus 自己的命名空间）；
+#   2. metadata.labels 必须命中 Prometheus CR 的 spec.serviceMonitorSelector；
+#   3. endpoints[].port 写 Service 的端口「名字」http，不是 8081。
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: agent-deploy-controller-manager
+  namespace: monitoring
+  labels:
+    # ⚠️ 改成你的 Prometheus CR 的 serviceMonitorSelector 要求的标签。
+    # kube-prometheus-stack 默认按 Helm release 名选择，常见为：
+    #   release: prometheus        （helm install prometheus ...）
+    #   release: kube-prometheus-stack
+    # 先用下面命令确认，再替换本行：
+    #   kubectl get prometheus -A \
+    #     -o jsonpath='{range .items[*]}{.metadata.name}{"  "}{.spec.serviceMonitorSelector}{"\n"}{end}'
+    release: prometheus
+spec:
+  # 被监控对象在 agent-deploy-system，ServiceMonitor 本可以在别的命名空间。
+  namespaceSelector:
+    matchNames:
+      - agent-deploy-system
+  selector:
+    matchLabels:
+      # 命中 agent-deploy-controller-manager-metrics-service 的标签
+      app.kubernetes.io/name: agent-deploy
+      control-plane: controller-manager
+  endpoints:
+    # 端口名必须是 Service 里声明的 http(8080)。
+    # 写成 8081/health 会返回 404，因为只有一个容器端口暴露 /metrics。
+    - port: http
+      path: /metrics
+      # --metrics-secure=false：明文 HTTP，不需要 bearerTokenFile / tls_config。
+      # 若将来恢复安全模式，这里要改成 https + tlsConfig.insecureSkipVerify
+      # + bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      scheme: http
+      interval: 30s
+      scrapeTimeout: 10s
+      # 只看本 operator 的指标就保留；若要一并采集它依赖的集群指标可删掉。
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod

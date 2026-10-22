@@ -53,6 +53,47 @@ var (
 		Name: "workspace_active_instances",
 		Help: "Number of Workspace instances managed by the controller, grouped by status Phase.",
 	}, []string{"phase"})
+
+	// The gauges below are unlabelled convenience series derived from the same
+	// tracker as workspace_active_instances. They exist so "how many workspaces
+	// are there in total / currently Running / at peak, and when" can be read
+	// (and alerted on) without aggregation or `phase` selector typos. They are
+	// updated from the exact same code path as the labelled gauge, so they can
+	// never disagree with it.
+
+	// workspaceTotalInstances is the number of Workspaces the controller tracks
+	// right now, across every Phase. It always equals
+	// sum(workspace_active_instances).
+	workspaceTotalInstances = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "workspace_total_instances",
+		Help: "Number of Workspace instances currently managed by the controller (all Phases).",
+	})
+
+	// workspaceRunningInstances is the number of Workspaces in Phase Running
+	// right now. It always equals workspace_active_instances{phase="Running"}.
+	workspaceRunningInstances = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "workspace_running_instances",
+		Help: "Number of Workspace instances currently in status Phase Running.",
+	})
+
+	// workspaceRunningPeakInstances is the high-water mark of concurrent
+	// Running Workspaces observed by THIS manager process. It is monotonic until
+	// the process restarts (leader failover included), which is what makes it
+	// more accurate than max_over_time(): every phase change is observed, not
+	// just the values sampled at scrape time. For a peak limited to a query
+	// window use max_over_time(workspace_running_instances[$__range]) instead.
+	workspaceRunningPeakInstances = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "workspace_running_peak_instances",
+		Help: "High-water mark of concurrently Running Workspaces since this manager process started.",
+	})
+
+	// workspaceRunningPeakTimestamp records when the current peak was first
+	// reached, so "when did we peak?" does not need a second data source.
+	// Prometheus cannot recover the time of a max from max_over_time().
+	workspaceRunningPeakTimestamp = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "workspace_running_peak_timestamp_seconds",
+		Help: "Unix timestamp at which workspace_running_peak_instances was first reached.",
+	})
 )
 
 // allWorkspaceMetricPhases lists every WorkspacePhase that always has a time
@@ -80,6 +121,10 @@ func registerWorkspaceMetrics() {
 		metrics.Registry.MustRegister(
 			workspaceReconcileDuration,
 			workspaceActiveInstances,
+			workspaceTotalInstances,
+			workspaceRunningInstances,
+			workspaceRunningPeakInstances,
+			workspaceRunningPeakTimestamp,
 		)
 		// Publish zero-valued series for every phase so dashboards render
 		// before the first reconcile produces data.
@@ -94,13 +139,36 @@ var workspacePhases = newWorkspacePhaseTracker()
 
 // workspacePhaseTracker maintains the per-Workspace phase map and keeps the
 // workspace_active_instances gauge in sync incrementally (O(1) per reconcile).
+// It also maintains the derived unlabelled gauges (total / running / running
+// peak) from the same map so they can never drift from the labelled series.
 type workspacePhaseTracker struct {
 	mu     sync.Mutex
 	phases map[types.NamespacedName]aiv1alpha1.WorkspacePhase
+	// running is the number of entries currently in Phase Running. Kept as a
+	// counter so per-reconcile updates stay O(1) instead of recounting the map.
+	running int
+	// peakRunning is the highest `running` value seen by this process, and
+	// peakAt is when it was first reached (zero until the first peak).
+	peakRunning int
+	peakAt      time.Time
+	// now is the clock used to stamp peakAt; nil means time.Now (set by the
+	// constructor, overridable in tests).
+	now func() time.Time
 }
 
 func newWorkspacePhaseTracker() *workspacePhaseTracker {
-	return &workspacePhaseTracker{phases: make(map[types.NamespacedName]aiv1alpha1.WorkspacePhase)}
+	return &workspacePhaseTracker{
+		phases: make(map[types.NamespacedName]aiv1alpha1.WorkspacePhase),
+		now:    time.Now,
+	}
+}
+
+// clock returns the tracker clock, tolerating a zero-value tracker in tests.
+func (t *workspacePhaseTracker) clock() time.Time {
+	if t.now == nil {
+		return time.Now()
+	}
+	return t.now()
 }
 
 // set records the phase for one Workspace and refreshes only the affected gauge
@@ -114,9 +182,18 @@ func (t *workspacePhaseTracker) set(key types.NamespacedName, phase aiv1alpha1.W
 			return
 		}
 		workspaceActiveInstances.WithLabelValues(phaseMetricLabel(previous)).Dec()
+		if previous == aiv1alpha1.WorkspaceRunning {
+			t.running--
+		}
+	} else {
+		workspaceTotalInstances.Inc()
 	}
 	t.phases[key] = phase
 	workspaceActiveInstances.WithLabelValues(phaseMetricLabel(phase)).Inc()
+	if phase == aiv1alpha1.WorkspaceRunning {
+		t.running++
+	}
+	t.publishDerivedLocked()
 }
 
 // unset removes one Workspace and decrements only its phase series.
@@ -128,7 +205,12 @@ func (t *workspacePhaseTracker) unset(key types.NamespacedName) {
 		return
 	}
 	delete(t.phases, key)
+	workspaceTotalInstances.Dec()
 	workspaceActiveInstances.WithLabelValues(phaseMetricLabel(previous)).Dec()
+	if previous == aiv1alpha1.WorkspaceRunning {
+		t.running--
+	}
+	t.publishDerivedLocked()
 }
 
 // len returns the number of tracked Workspaces (used by tests).
@@ -153,6 +235,24 @@ func (t *workspacePhaseTracker) resetAll(phases map[types.NamespacedName]aiv1alp
 		workspaceActiveInstances.WithLabelValues(string(phase)).Set(float64(counts[string(phase)]))
 	}
 	workspaceActiveInstances.WithLabelValues(phaseLabelUnknown).Set(float64(counts[phaseLabelUnknown]))
+
+	workspaceTotalInstances.Set(float64(len(phases)))
+	t.running = counts[string(aiv1alpha1.WorkspaceRunning)]
+	t.publishDerivedLocked()
+}
+
+// publishDerivedLocked publishes the unlabelled total/running gauges and folds
+// the current Running count into the high-water mark. Callers must hold t.mu.
+func (t *workspacePhaseTracker) publishDerivedLocked() {
+	workspaceRunningInstances.Set(float64(t.running))
+	// The peak is deliberately NOT reset by resetAll(): a resync (or an HA
+	// failover replay) must not erase the water mark already observed.
+	if t.running > t.peakRunning {
+		t.peakRunning = t.running
+		t.peakAt = t.clock()
+		workspaceRunningPeakInstances.Set(float64(t.peakRunning))
+		workspaceRunningPeakTimestamp.Set(float64(t.peakAt.Unix()))
+	}
 }
 
 // zeroWorkspacePhaseSeries publishes zero-valued series for every phase so
@@ -162,6 +262,10 @@ func zeroWorkspacePhaseSeries() {
 		workspaceActiveInstances.WithLabelValues(string(phase)).Set(0)
 	}
 	workspaceActiveInstances.WithLabelValues(phaseLabelUnknown).Set(0)
+	workspaceTotalInstances.Set(0)
+	workspaceRunningInstances.Set(0)
+	workspaceRunningPeakInstances.Set(0)
+	workspaceRunningPeakTimestamp.Set(0)
 }
 
 // phaseMetricLabel maps a WorkspacePhase to its gauge label value.

@@ -1,0 +1,61 @@
+# 集群外 Prometheus 用的 scrape 配置片段。
+#
+# 前置：先按 metrics-external-service.yaml 把指标暴露出来，并在云上放行
+#       「Prometheus 主机 -> 节点/内网 SLB」的访问。
+#
+# 集群外 Prometheus 无法使用 kubernetes_sd_configs（除非给它 kubeconfig），
+# 所以这里用 static_configs 直接写地址。
+
+scrape_configs:
+  # 默认方式（配合 metrics-external-service.yaml 的 NodePort）
+  #   targets 填「任意一个 worker 节点 IP:30080」。
+  #   因为 Service 的 externalTrafficPolicy 是默认的 Cluster，任意节点都会转发到
+  #   manager Pod；节点 IP 建议选一个稳定的（或用内网 DNS 固定解析）。
+  - job_name: workspace-operator
+    scheme: http
+    metrics_path: /metrics
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    static_configs:
+      - targets:
+          - 10.0.0.11:30080        # ← 改成你的节点 IP:nodePort
+        labels:
+          cluster: prod            # 抓多套集群时用这个区分，必填否则数据混在一起
+          env: prod
+    relabel_configs:
+      # 把 instance 从「IP:端口」改成可读的固定名，避免节点 IP 换了图就断层。
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: workspace-operator-prod
+      - target_label: job
+        replacement: workspace-operator
+
+  # ---------------------------------------------------------------------------
+  # 如果用的是内网 SLB / LoadBalancer（metrics-external-service.yaml 的方式 2），
+  # 把上面的 targets 换成 SLB 的地址即可，端口是 8080：
+  #
+  #     - targets: ['192.168.10.20:8080']
+  #
+  # ---------------------------------------------------------------------------
+  # 加固方式（可选，需要先把 manager 的 --metrics-secure 改回 true）：
+  # /metrics 会变成 HTTPS + Bearer Token 鉴权，必须用 token 才能抓。
+  #
+  # 1) 生成长期 token（写入 Prometheus 容器可读的文件）：
+  #      kubectl -n agent-deploy-system create token agent-deploy-controller-manager \
+  #        --duration=8760h > /etc/prometheus/workspace-operator-token
+  #      chmod 600 /etc/prometheus/workspace-operator-token
+  # 2) 把该 ServiceAccount 绑定到随安装包交付的 metrics-reader 角色：
+  #      kubectl create clusterrolebinding workspace-operator-metrics-reader \
+  #        --clusterrole=agent-deploy-metrics-reader \
+  #        --serviceaccount=agent-deploy-system:agent-deploy-controller-manager
+  # 3) 抓取配置：
+  #  - job_name: workspace-operator
+  #    scheme: https
+  #    tls_config:
+  #      insecure_skip_verify: true        # 自签证书；生产建议配 trust_file / CA bundle
+  #    authorization:
+  #      type: Bearer
+  #      credentials_file: /etc/prometheus/workspace-operator-token
+  #    static_configs:
+  #      - targets: ['10.0.0.11:30080']
+  #        labels: {cluster: prod, env: prod}

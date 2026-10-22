@@ -2,9 +2,12 @@
 
 ## 内容
 
-- `dashboards/workspace-operator.json`：Grafana 看板 **「Workspace Operator - 调谐引擎水位」**。
+- `dashboards/workspace-operator.json`：Grafana 看板 **「Workspace Operator - 规模与调谐水位」**。
 
-## 指标清单
+> **接入 Prometheus 的完整操作步骤**（ServiceMonitor / 原生 scrape_configs /
+> 集群外 Prometheus、验证与排错）见 **`../prometheus/README.md`** 及同目录的
+> `servicemonitor.yaml`、`prometheus-scrape.yaml`、`recording-rules.yaml`。
+> 下面这节只保留最简抓取要点。
 
 ## 抓取配置
 
@@ -63,6 +66,15 @@ Prometheus 侧只需一条最简抓取规则，不需要 `bearer_token_file`，�
 | --- | --- | --- |
 | `workspace_reconcile_duration_seconds` | Histogram | 单次 Workspace 调谐耗时（含 PVC / Deployment / Service / Ingress / NetworkPolicy 全流程与状态回写）。NotFound 的删除事件不计入 |
 | `workspace_active_instances` | Gauge（`phase` 标签） | 按 `status.phase` 统计的在线实例数，phase 取值：Pending / Starting / Running / Sleeping / Stopped / Unknown（`Failed` 永不赋值，故不发布该序列） |
+| `workspace_total_instances` | Gauge | **工作空间总数**（所有 Phase 之和）。恒等于 `sum(workspace_active_instances)`，免去聚合与 `phase` 选择器拼写错误 |
+| `workspace_running_instances` | Gauge | **当前处于 Running 的个数**。恒等于 `workspace_active_instances{phase="Running"}` |
+| `workspace_running_peak_instances` | Gauge | **同时 Running 的峰值**（高水位，单调递增）。记录每一次相位变化的真实峰值，而不是抓取采样点，因此不会漏掉两个采样点之间的短峰；**进程重启或主备切换后归零**，跨窗口历史峰值请改用 `max_over_time(workspace_running_instances[$__range])` |
+| `workspace_running_peak_timestamp_seconds` | Gauge | 当前峰值**第一次出现**的 Unix 时间戳。`max_over_time()` 只给数值不给时间，需要"什么时候达到峰值"时用这个序列 |
+
+> 后四个无标签 Gauge 与 `workspace_active_instances` 走**完全相同的代码路径**
+> （`workspacePhaseTracker`）更新，因此两者永不漂移；同时它们也不受
+> `--active-instances-sync-interval` 全量 resync 影响——resync 只校正当前值，
+> **不会**把已经观测到的峰值抹掉。
 
 辅助使用 controller-runtime 内置指标。注意这些指标的**实际名称与标签并不统一**，
 不要给它们加 `controller_runtime_` 前缀：
@@ -76,6 +88,28 @@ Prometheus 侧只需一条最简抓取规则，不需要 `bearer_token_file`，�
 | `workqueue_longest_running_processor_seconds` | `name`, `controller` | 当前最长执行时长 |
 | `controller_runtime_max_concurrent_reconciles` | **`controller`**（无 `name`） | worker 并发上限 |
 
+## 看板结构
+
+看板分两行，共 13 个面板：
+
+| 行 | 面板 | 说明 |
+| --- | --- | --- |
+| **工作空间规模** | 工作空间总数 | `max(workspace_total_instances)`，全部 Phase 之和 |
+| | Running 实例数 | `max(workspace_running_instances)`，当前实时水位 |
+| | Running 峰值（同时运行数） | `max(workspace_running_peak_instances)`，进程内高水位 |
+| | 峰值出现时间 | `max(workspace_running_peak_timestamp_seconds)`，按 `dateTimeAsIso` 渲染 |
+| | **Running 工作空间数量随时间变化** | **折线图**：Running（绿实线）+ 进程内峰值（橙虚线）+ 总数（蓝线）。图例 `Max` 列即该时间窗口的峰值 |
+| | 各 Phase 在线实例水位 | 按 `phase` 堆叠，看爬坡与休眠回收 |
+| **调谐引擎** | 调谐吞吐量 / 调谐错误 (5m) | 顶部两个 stat |
+| | 调谐耗时、排队延迟、队列深度、速率与错误率、最长执行与并发 | 引擎容量与健康度 |
+
+> **峰值看两个口径**：
+> - 面板「Running 峰值（同时运行数）」是**进程内真实峰值**，来自控制器每次相位变化的观测，
+>   比抓取采样更准（30s 抓取 + 1m 内的短峰容易漏采），但**重启后归零**；
+> - 折线图图例的 `Max` 列是**所选时间窗口内采样点的最大值**（`max_over_time` 口径），
+>   跨重启仍然成立，适合复盘"昨天晚上高峰跑到多少"。
+> 需要长期留存峰值时，用 Recording Rule 固化 `max_over_time`，或直接看进程内峰值并接受重启归零。
+
 ## 导入看板
 
 Grafana → Dashboards → New → Import → 上传 `dashboards/workspace-operator.json`，
@@ -83,15 +117,20 @@ Grafana → Dashboards → New → Import → 上传 `dashboards/workspace-opera
 
 ## 大促 / 早高峰观察要点
 
-1. **实例爬坡**：「各 Phase 在线实例水位」应呈现 `Pending/Starting → Running` 的陡峭爬坡；
-   `Starting` 长时间堆积说明调度或镜像拉取成为瓶颈，而非调谐引擎。
-2. **引擎容量**：「调谐耗时 P95/P99」×「调谐吞吐量」≈ worker 占用。当
+1. **规模与占比**：先看「工作空间总数」与「Running 实例数」，两条线的差值就是待机/停止的存量。
+   Running 占比长期偏低说明 `idleTimeout` 或手动停止回收过猛；占比接近 100% 说明没有弹性余量。
+2. **实例爬坡**：「Running 工作空间数量随时间变化」与「各 Phase 在线实例水位」应呈现
+   `Pending/Starting → Running` 的陡峭爬坡；`Starting` 长时间堆积说明调度或镜像拉取成为瓶颈，
+   而非调谐引擎。
+3. **峰值水位**：早高峰看「Running 峰值（同时运行数）」抬到多少，据此定容量与告警阈值；
+   「峰值出现时间」用于复盘峰值时段是否与业务高峰对齐。
+4. **引擎容量**：「调谐耗时 P95/P99」×「调谐吞吐量」≈ worker 占用。当
    「队列深度」持续增长且「排队延迟 P95」超过 1s 时，调大
    `--max-concurrent-reconciles`（默认 30）并观察 API Server QPS 余量
    （`--kube-api-qps` / `--kube-api-burst`）。
-3. **错误风暴**：「调谐错误 (5m)」> 0 时结合「调谐速率与错误率」面板判断：
+5. **错误风暴**：「调谐错误 (5m)」> 0 时结合「调谐速率与错误率」面板判断：
    错误率上升但吞吐不降 → 限流重试在正常消化；两者同时恶化 → 下游依赖（存储/网络策略）故障。
-4. **休眠回收**：大促结束后 `Sleeping`（IdleTimeout 回收）应逐步替换 `Running`，
+6. **休眠回收**：大促结束后 `Sleeping`（IdleTimeout 回收）应逐步替换 `Running`，
    队列延迟回落至亚秒级。
 
 ## 告警建议（示例 PromQL）
@@ -105,4 +144,17 @@ histogram_quantile(0.95, sum by (le) (rate(workqueue_queue_duration_seconds{cont
 
 # Pending/Starting 实例长时间无法进入 Running
 sum(workspace_active_instances{phase=~"Pending|Starting"}) > 100
+
+# 同时 Running 数量超过容量红线
+max(workspace_running_instances) > 4500
+
+# 同时 Running 的短时峰值超过红线（1 小时内任意时刻，不受抓取间隔影响）
+max(workspace_running_peak_instances) > 4500
+
+# 容量逼近：Running 占全部工作空间的比例超过 90%（需要扩容或调小 idleTimeout）
+max(workspace_running_instances) / clamp_min(max(workspace_total_instances), 1) > 0.9
+
+# 窗口口径的峰值（跨 manager 重启仍有效，适合每日容量复盘报表）
+max(max_over_time(workspace_running_instances[24h]))
 ```
+

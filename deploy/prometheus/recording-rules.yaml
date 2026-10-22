@@ -1,0 +1,41 @@
+# 可选：把「窗口峰值」固化成 Recording Rule。
+#
+# 为什么需要：
+#   workspace_running_peak_instances 是 manager 进程内的高水位，进程重启
+#   （含滚动升级、主备切换）后归零。如果要做「每日/每周容量复盘」这种跨重启的
+#   长周期峰值，靠 PromQL 的 max_over_time 在查询时算（数据受 retention 限制），
+#   或者用本文件的 Recording Rule 定时落盘。
+#
+# 用法（Prometheus Operator）：
+#   kubectl apply -n <Prometheus 所在命名空间> -f recording-rules.yaml
+# 用法（原生 Prometheus）：
+#   把 groups: 下的内容合并进 prometheus.yml 的 rule_files 所指向的文件。
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: workspace-operator-capacity
+  namespace: monitoring
+  labels:
+    # 同样要命中 Prometheus CR 的 ruleSelector（kube-prometheus-stack 默认 release: <Helm release>）。
+    release: prometheus
+spec:
+  groups:
+    - name: workspace-operator.capacity
+      interval: 1m
+      rules:
+        # 1 小时窗口内「同时 Running」的峰值。
+        - record: workspace:running_instances:max_1h
+          expr: max_over_time(workspace_running_instances[1h])
+
+        # 24 小时窗口峰值：跨 manager 重启依然正确，适合每日容量报表。
+        # 注意它受 Prometheus retention 约束（必须 >= 1d）。
+        - record: workspace:running_instances:max_24h
+          expr: max_over_time(workspace_running_instances[24h])
+
+        # 全局窗口峰值（多副本/多集群聚合后的单值，便于直接做图表或告警）。
+        - record: workspace:running_instances:max_24h:global
+          expr: max(workspace:running_instances:max_24h)
+
+        # Running 占全部工作空间的占比，用于判断弹性余量是否充足。
+        - record: workspace:running_ratio
+          expr: max(workspace_running_instances) / clamp_min(max(workspace_total_instances), 1)

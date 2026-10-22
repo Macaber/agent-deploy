@@ -48,6 +48,22 @@
 - **调谐错误指标去重**：删除自建的 `workspace_reconcile_errors_total`，统一使用
   controller-runtime 内置的 `controller_runtime_reconcile_errors_total{controller="workspace"}`；
   存量告警/看板若引用旧名称需同步修改；
+- **新增工作空间规模指标**（无标签，免聚合，无需改现有抓取配置）：
+  - `workspace_total_instances`：工作空间总数（所有 Phase 之和），恒等于
+    `sum(workspace_active_instances)`；
+  - `workspace_running_instances`：当前 Running 数量，恒等于
+    `workspace_active_instances{phase="Running"}`；
+  - `workspace_running_peak_instances`：**同时 Running 的峰值**（高水位，单调递增）。
+    由每次相位变化驱动而非抓取采样，因此不会漏掉两次抓取之间的短峰；
+    **进程重启 / 主备切换后归零**，跨重启的窗口峰值请用
+    `max_over_time(workspace_running_instances[$__range])`；
+  - `workspace_running_peak_timestamp_seconds`：上述峰值首次出现的 Unix 时间戳；
+  - 这四个指标与 `workspace_active_instances` 走同一代码路径（`workspacePhaseTracker`），
+    不会互相漂移；周期性 resync 只校正当前值，**不会清除已观测到的峰值**；
+- Grafana 看板重排为「工作空间规模 / 调谐引擎」两行，新增「Running 峰值」
+  「峰值出现时间」两个 stat 面板与「Running 工作空间数量随时间变化」折线图
+  （绿色=当前 Running、橙色虚线=进程内峰值、蓝色=总数）。重新导入 JSON 覆盖即可
+  （uid 不变），无需改抓取配置；
 - 安装包**不包含** ServiceMonitor（`#- ../prometheus`）与 metrics 入站
   NetworkPolicy（`#- ../network-policy`），理由与启用条件见
   `config/default/kustomization.yaml` 注释。

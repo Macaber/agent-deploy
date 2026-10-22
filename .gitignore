@@ -59,3 +59,6 @@ Thumbs.db
 # Portal frontend build dependencies / generated output
 node_modules/
 web/portal/dist/
+
+# Migration scripts runtime logs
+hack/logs/
