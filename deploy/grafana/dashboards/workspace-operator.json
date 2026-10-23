@@ -25,7 +25,7 @@
       }
     ]
   },
-  "description": "Workspace Operator 看板：上半区为工作空间规模（总数、当前 Running、同时 Running 峰值及其出现时间，以及 Running 数量随时间变化的折线图），下半区为调谐引擎水位（调谐耗时、错误率、工作队列排队延迟）。",
+  "description": "Workspace Operator 看板，支持多集群：顶部「集群」变量可单选/多选/全选；面板按 cluster 标签分组展示。上半区为工作空间规模（总数、当前 Running、同时 Running 峰值及其出现时间，以及 Running 数量随时间变化的折线图），下半区为调谐引擎水位。",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -51,7 +51,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "控制器当前管理的 Workspace 总数（所有 Phase 之和）。等价于 sum(workspace_active_instances)。",
+      "description": "控制器当前管理的 Workspace 总数（所有 Phase 之和，**全集群所有命名空间**）。等价于 sum(workspace_active_instances)。注意：门户/API 页面默认只查 bocomwork 一个命名空间，因此这里的数字通常**大于**页面上的「工作空间总数」，属于口径差异。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -109,9 +109,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(workspace_total_instances)",
+          "expr": "max by (cluster) (workspace_total_instances{cluster=~\"$cluster\"})",
           "instant": false,
-          "legendFormat": "Workspace 总数",
+          "legendFormat": "{{cluster}}",
           "range": true,
           "refId": "A"
         }
@@ -124,7 +124,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "当前 Phase=Running 的工作空间数量（实时容量水位）。等价于 sum(workspace_active_instances{phase=\"Running\"})。",
+      "description": "当前 Phase=Running 的工作空间数量（全集群所有命名空间，实时容量水位）。等价于 sum(workspace_active_instances{phase=\"Running\"})。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -178,9 +178,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(workspace_running_instances)",
+          "expr": "max by (cluster) (workspace_running_instances{cluster=~\"$cluster\"})",
           "instant": false,
-          "legendFormat": "Running",
+          "legendFormat": "{{cluster}}",
           "range": true,
           "refId": "A"
         }
@@ -193,7 +193,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "本进程启动以来观察到的「同时 Running」峰值（高水位）。与 max_over_time() 不同，它记录每一次相位变化而不是抓取采样点，因此不会漏掉两个采样点之间的短峰；进程重启/主备切换后归零。",
+      "description": "本 manager 进程启动以来观察到的「同时 Running」峰值（高水位）。与 max_over_time() 不同，它记录每一次相位变化而不是抓取采样点，因此不会漏掉两个采样点之间的短峰。\n\n注意三个反直觉点：\n1) 它只升不降——删掉/缩容工作空间不会让峰值降低，只有 manager 重启才回到当前值；\n2) 进程重启/主备切换后归零并从当前 Running 数重新起算；\n3) 数字可能大于本面板时间范围内的数据量，因为值是 manager 内存里的历史，接入抓取之前就已存在。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -244,9 +244,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(workspace_running_peak_instances)",
+          "expr": "max by (cluster) (workspace_running_peak_instances{cluster=~\"$cluster\"})",
           "instant": false,
-          "legendFormat": "Running 峰值",
+          "legendFormat": "{{cluster}}",
           "range": true,
           "refId": "A"
         }
@@ -259,7 +259,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "上面那个峰值第一次出现的时刻。Prometheus 的 max_over_time() 只给数值不给时间，因此单独用 workspace_running_peak_timestamp_seconds 记录。值为 0 表示本进程尚未出现过 Running 工作空间（显示为「尚无峰值」，而不是 1970-01-01）。",
+      "description": "上面那个峰值第一次出现的时刻。Prometheus 的 max_over_time() 只给数值不给时间，因此单独用 workspace_running_peak_timestamp_seconds 记录（该指标是 Unix 秒，Grafana 的 dateTimeAsIso 按毫秒解析，故查询里 ×1000）。\n\n**这个时间可能早于你在 Prometheus 开始抓取的时间**：它是 manager 进程内存里早就记录好的峰值时刻，不是数据采集起点。想确认可以对比 manager Pod 的 startTime。manager 重启后此值会重置为重启后首次达到峰值的时刻。\n\n值为 0 表示本进程尚未出现过 Running 工作空间（映射为「尚无峰值」）。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -320,9 +320,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(workspace_running_peak_timestamp_seconds)",
+          "expr": "max by (cluster) (workspace_running_peak_timestamp_seconds{cluster=~\"$cluster\"}) * 1000",
           "instant": true,
-          "legendFormat": "峰值时间",
+          "legendFormat": "{{cluster}}",
           "range": false,
           "refId": "A"
         }
@@ -390,8 +390,8 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "运行中 (Running)"
+              "id": "byRegexp",
+              "options": ".* · 运行中"
             },
             "properties": [
               {
@@ -413,8 +413,8 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "Running 峰值（进程内）"
+              "id": "byRegexp",
+              "options": ".* · 峰值"
             },
             "properties": [
               {
@@ -442,8 +442,8 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "工作空间总数"
+              "id": "byRegexp",
+              "options": ".* · 总数"
             },
             "properties": [
               {
@@ -492,9 +492,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(workspace_running_instances)",
+          "expr": "max by (cluster) (workspace_running_instances{cluster=~\"$cluster\"})",
           "instant": false,
-          "legendFormat": "运行中 (Running)",
+          "legendFormat": "{{cluster}} · 运行中",
           "range": true,
           "refId": "A"
         },
@@ -504,9 +504,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(workspace_running_peak_instances)",
+          "expr": "max by (cluster) (workspace_running_peak_instances{cluster=~\"$cluster\"})",
           "instant": false,
-          "legendFormat": "Running 峰值（进程内）",
+          "legendFormat": "{{cluster}} · 峰值",
           "range": true,
           "refId": "B"
         },
@@ -516,9 +516,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(workspace_total_instances)",
+          "expr": "max by (cluster) (workspace_total_instances{cluster=~\"$cluster\"})",
           "instant": false,
-          "legendFormat": "工作空间总数",
+          "legendFormat": "{{cluster}} · 总数",
           "range": true,
           "refId": "C"
         }
@@ -585,8 +585,8 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "Running"
+              "id": "byRegexp",
+              "options": ".* · Running"
             },
             "properties": [
               {
@@ -600,8 +600,8 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "Starting"
+              "id": "byRegexp",
+              "options": ".* · Starting"
             },
             "properties": [
               {
@@ -615,8 +615,8 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "Pending"
+              "id": "byRegexp",
+              "options": ".* · Pending"
             },
             "properties": [
               {
@@ -630,8 +630,8 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "Sleeping"
+              "id": "byRegexp",
+              "options": ".* · Sleeping"
             },
             "properties": [
               {
@@ -645,8 +645,8 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "Stopped"
+              "id": "byRegexp",
+              "options": ".* · Stopped"
             },
             "properties": [
               {
@@ -660,8 +660,8 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "Unknown"
+              "id": "byRegexp",
+              "options": ".* · Unknown"
             },
             "properties": [
               {
@@ -705,9 +705,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (phase) (workspace_active_instances)",
+          "expr": "sum by (phase, cluster) (workspace_active_instances{cluster=~\"$cluster\"})",
           "instant": false,
-          "legendFormat": "{{phase}}",
+          "legendFormat": "{{cluster}} · {{phase}}",
           "range": true,
           "refId": "A"
         }
@@ -791,9 +791,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(workspace_reconcile_duration_seconds_count[$__rate_interval]))",
+          "expr": "sum by (cluster) (rate(workspace_reconcile_duration_seconds_count{cluster=~\"$cluster\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "调谐/秒",
+          "legendFormat": "{{cluster}}",
           "range": true,
           "refId": "A"
         }
@@ -860,9 +860,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(controller_runtime_reconcile_errors_total{controller=\"workspace\"}[5m]))",
+          "expr": "sum by (cluster) (increase(controller_runtime_reconcile_errors_total{controller=\"workspace\", cluster=~\"$cluster\"}[5m]))",
           "instant": false,
-          "legendFormat": "错误数(5m)",
+          "legendFormat": "{{cluster}}",
           "range": true,
           "refId": "A"
         }
@@ -954,9 +954,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(workspace_reconcile_duration_seconds_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le, cluster) (rate(workspace_reconcile_duration_seconds_bucket{cluster=~\"$cluster\"}[$__rate_interval])))",
           "instant": false,
-          "legendFormat": "P50",
+          "legendFormat": "{{cluster}} · P50",
           "range": true,
           "refId": "A"
         },
@@ -966,9 +966,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(workspace_reconcile_duration_seconds_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, cluster) (rate(workspace_reconcile_duration_seconds_bucket{cluster=~\"$cluster\"}[$__rate_interval])))",
           "instant": false,
-          "legendFormat": "P95",
+          "legendFormat": "{{cluster}} · P95",
           "range": true,
           "refId": "B"
         },
@@ -978,9 +978,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(workspace_reconcile_duration_seconds_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, cluster) (rate(workspace_reconcile_duration_seconds_bucket{cluster=~\"$cluster\"}[$__rate_interval])))",
           "instant": false,
-          "legendFormat": "P99",
+          "legendFormat": "{{cluster}} · P99",
           "range": true,
           "refId": "C"
         }
@@ -1064,9 +1064,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(workqueue_queue_duration_seconds{controller=\"workspace\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le, cluster) (rate(workqueue_queue_duration_seconds{controller=\"workspace\", cluster=~\"$cluster\"}[$__rate_interval])))",
           "instant": false,
-          "legendFormat": "P50",
+          "legendFormat": "{{cluster}} · P50",
           "range": true,
           "refId": "A"
         },
@@ -1076,9 +1076,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(workqueue_queue_duration_seconds{controller=\"workspace\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, cluster) (rate(workqueue_queue_duration_seconds{controller=\"workspace\", cluster=~\"$cluster\"}[$__rate_interval])))",
           "instant": false,
-          "legendFormat": "P95",
+          "legendFormat": "{{cluster}} · P95",
           "range": true,
           "refId": "B"
         },
@@ -1088,9 +1088,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(workqueue_queue_duration_seconds{controller=\"workspace\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, cluster) (rate(workqueue_queue_duration_seconds{controller=\"workspace\", cluster=~\"$cluster\"}[$__rate_interval])))",
           "instant": false,
-          "legendFormat": "P99",
+          "legendFormat": "{{cluster}} · P99",
           "range": true,
           "refId": "C"
         }
@@ -1137,8 +1137,8 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "入队速率"
+              "id": "byRegexp",
+              "options": ".* · 入队速率"
             },
             "properties": [
               {
@@ -1183,9 +1183,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(workqueue_depth{name=\"workspace\"})",
+          "expr": "sum by (cluster) (workqueue_depth{name=\"workspace\", cluster=~\"$cluster\"})",
           "instant": false,
-          "legendFormat": "队列深度",
+          "legendFormat": "{{cluster}} · 队列深度",
           "range": true,
           "refId": "A"
         },
@@ -1195,9 +1195,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(workqueue_adds_total{name=\"workspace\"}[$__rate_interval]))",
+          "expr": "sum by (cluster) (rate(workqueue_adds_total{name=\"workspace\", cluster=~\"$cluster\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "入队速率",
+          "legendFormat": "{{cluster}} · 入队速率",
           "range": true,
           "refId": "B"
         }
@@ -1244,8 +1244,8 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "错误率"
+              "id": "byRegexp",
+              "options": ".* · 错误率"
             },
             "properties": [
               {
@@ -1293,9 +1293,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(workspace_reconcile_duration_seconds_count[$__rate_interval]))",
+          "expr": "sum by (cluster) (rate(workspace_reconcile_duration_seconds_count{cluster=~\"$cluster\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "调谐速率",
+          "legendFormat": "{{cluster}} · 调谐速率",
           "range": true,
           "refId": "A"
         },
@@ -1305,9 +1305,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(controller_runtime_reconcile_errors_total{controller=\"workspace\"}[$__rate_interval]))",
+          "expr": "sum by (cluster) (rate(controller_runtime_reconcile_errors_total{controller=\"workspace\", cluster=~\"$cluster\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "错误率",
+          "legendFormat": "{{cluster}} · 错误率",
           "range": true,
           "refId": "B"
         }
@@ -1358,8 +1358,8 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "worker 并发上限"
+              "id": "byRegexp",
+              "options": ".* · 并发上限"
             },
             "properties": [
               {
@@ -1403,9 +1403,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(workqueue_longest_running_processor_seconds{name=\"workspace\"})",
+          "expr": "max by (cluster) (workqueue_longest_running_processor_seconds{name=\"workspace\", cluster=~\"$cluster\"})",
           "instant": false,
-          "legendFormat": "最长调谐执行",
+          "legendFormat": "{{cluster}} · 最长执行",
           "range": true,
           "refId": "A"
         },
@@ -1415,9 +1415,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(controller_runtime_max_concurrent_reconciles{controller=\"workspace\"})",
+          "expr": "max by (cluster) (controller_runtime_max_concurrent_reconciles{controller=\"workspace\", cluster=~\"$cluster\"})",
           "instant": false,
-          "legendFormat": "worker 并发上限",
+          "legendFormat": "{{cluster}} · 并发上限",
           "range": true,
           "refId": "B"
         }
@@ -1450,6 +1450,38 @@
         "regex": "",
         "skipUrlSync": false,
         "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(workspace_total_instances, cluster)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "集群",
+        "multi": true,
+        "name": "cluster",
+        "options": [],
+        "query": {
+          "query": "label_values(workspace_total_instances, cluster)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
       }
     ]
   },
@@ -1461,6 +1493,6 @@
   "timezone": "browser",
   "title": "Workspace Operator - 规模与调谐水位",
   "uid": "workspace-operator",
-  "version": 2,
+  "version": 3,
   "weekStart": ""
 }

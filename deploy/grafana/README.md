@@ -69,7 +69,7 @@ Prometheus 侧只需一条最简抓取规则，不需要 `bearer_token_file`，�
 | `workspace_total_instances` | Gauge | **工作空间总数**（所有 Phase 之和）。恒等于 `sum(workspace_active_instances)`，免去聚合与 `phase` 选择器拼写错误 |
 | `workspace_running_instances` | Gauge | **当前处于 Running 的个数**。恒等于 `workspace_active_instances{phase="Running"}` |
 | `workspace_running_peak_instances` | Gauge | **同时 Running 的峰值**（高水位，单调递增）。记录每一次相位变化的真实峰值，而不是抓取采样点，因此不会漏掉两个采样点之间的短峰；**进程重启或主备切换后归零**，跨窗口历史峰值请改用 `max_over_time(workspace_running_instances[$__range])` |
-| `workspace_running_peak_timestamp_seconds` | Gauge | 当前峰值**第一次出现**的 Unix 时间戳。`max_over_time()` 只给数值不给时间，需要"什么时候达到峰值"时用这个序列 |
+| `workspace_running_peak_timestamp_seconds` | Gauge | 当前峰值**第一次出现**的 Unix 时间戳（**单位：秒**，符合 Prometheus 约定）。`max_over_time()` 只给数值不给时间，需要"什么时候达到峰值"时用这个序列。**在 Grafana 里用 `dateTimeAsIso` 单位时必须 `×1000`**——该单位按毫秒解析，直接写会显示成 1970 年 |
 
 > 后四个无标签 Gauge 与 `workspace_active_instances` 走**完全相同的代码路径**
 > （`workspacePhaseTracker`）更新，因此两者永不漂移；同时它们也不受
@@ -90,18 +90,43 @@ Prometheus 侧只需一条最简抓取规则，不需要 `bearer_token_file`，�
 
 ## 看板结构
 
-看板分两行，共 13 个面板：
+看板分两行，共 13 个面板。顶部有**「集群」变量**
+（`label_values(workspace_total_instances, cluster)`，支持单选 / 多选 / All）：
+
+- 选 **All**：每套集群各一条线、各一个数值，互不干扰；
+- 选 **某一套**：只看该集群，数字与门户页面对应；
+- 未打 `cluster` 标签的单集群部署仍然兼容（`cluster=~".*"` 匹配空标签）。
+
+所有查询都按 `cluster` 分组（`by (cluster)`），图例形如 `prod · Running`、`prod1 · P95`。
 
 | 行 | 面板 | 说明 |
 | --- | --- | --- |
-| **工作空间规模** | 工作空间总数 | `max(workspace_total_instances)`，全部 Phase 之和 |
-| | Running 实例数 | `max(workspace_running_instances)`，当前实时水位 |
+| **工作空间规模** | 工作空间总数 | `max(workspace_total_instances)`，全部 Phase 之和，**全集群所有命名空间**（门户页面默认只看 `bocomwork`，两者数字通常不相等，见下） |
+| | Running 实例数 | `max(workspace_running_instances)`，全集群所有命名空间，当前实时水位 |
 | | Running 峰值（同时运行数） | `max(workspace_running_peak_instances)`，进程内高水位 |
-| | 峰值出现时间 | `max(workspace_running_peak_timestamp_seconds)`，按 `dateTimeAsIso` 渲染 |
+| | 峰值出现时间 | `max(workspace_running_peak_timestamp_seconds) * 1000`，按 `dateTimeAsIso` 渲染（**必须 ×1000**：指标是秒，Grafana 该单位按毫秒解析；漏乘会显示成 1970 年） |
 | | **Running 工作空间数量随时间变化** | **折线图**：Running（绿实线）+ 进程内峰值（橙虚线）+ 总数（蓝线）。图例 `Max` 列即该时间窗口的峰值 |
 | | 各 Phase 在线实例水位 | 按 `phase` 堆叠，看爬坡与休眠回收 |
 | **调谐引擎** | 调谐吞吐量 / 调谐错误 (5m) | 顶部两个 stat |
 | | 调谐耗时、排队延迟、队列深度、速率与错误率、最长执行与并发 | 引擎容量与健康度 |
+
+> **口径提醒：看板是「全集群」，门户是「单命名空间」**
+>
+> 所有规模指标都由 manager 的**全集群** `List` 得出（`syncActiveInstances` 没有加
+> `InNamespace`），而门户/API 页面默认只查 `bocomwork` 一个命名空间
+> （`web/portal/src/store.ts` 里 `namespace: 'bocomwork'`，请求
+> `GET /api/workspaces?namespace=bocomwork`）。
+>
+> 所以「看板总数 41 / 页面总数 35」这种差异**通常不是算错**，而是另外 6 个
+> 分布在同一集群的其它命名空间（测试、default 等）。核对方法：
+>
+> ```bash
+> kubectl get workspaces.ai.example.com -A --no-headers | wc -l        # 对比看板
+> kubectl get workspaces.ai.example.com -n bocomwork --no-headers | wc -l  # 对比页面
+> ```
+>
+> 指标目前**没有 `namespace` 标签**，因此看板无法按命名空间拆分或过滤，
+> 也就无法与门户数字直接对齐。需要按命名空间看，就得给指标加维度（见下）。
 
 > **峰值看两个口径**：
 > - 面板「Running 峰值（同时运行数）」是**进程内真实峰值**，来自控制器每次相位变化的观测，
@@ -110,10 +135,57 @@ Prometheus 侧只需一条最简抓取规则，不需要 `bearer_token_file`，�
 >   跨重启仍然成立，适合复盘"昨天晚上高峰跑到多少"。
 > 需要长期留存峰值时，用 Recording Rule 固化 `max_over_time`，或直接看进程内峰值并接受重启归零。
 
+> **为什么「峰值出现时间」会早于面板的数据起点？**
+>
+> 这是预期行为，不是数据错乱。`workspace_running_peak_timestamp_seconds` 是 manager
+> 进程的**内存状态**，含义是「本进程启动以来第一次达到峰值的时刻」，
+> 与你的 Prometheus 什么时候开始抓取无关：
+>
+> ```
+> 10-22 manager 启动 ──► 观测到峰值 12，把 (12, 10-22 17:06) 记在内存
+> 10-23 15:00 接入抓取 ──► Prometheus 首次抓取，直接读到已有的 (12, 10-22 17:06)
+> ```
+>
+> 验证：`kubectl -n agent-deploy-system get pod -l control-plane=controller-manager -o jsonpath='{.items[*].status.startTime}'`
+> 输出的时间早于你接入抓取的时间，就说明值来自进程内存。
+>
+> 两个推论：
+> 1. **manager 重启后峰值与时间戳都会重置**（滚动升级也算），重新从「当前 Running 数」起算；
+> 2. **删掉/缩容工作空间不会让峰值下降**——它是高水位，只升不降；`workspace_total_instances`
+>    和 `workspace_running_instances` 会在一分钟内降下来（全量 resync 兜底），但峰值要等重启。
+>
+> 想要「从接入那一刻算起」的峰值，用 `max_over_time(workspace_running_instances[$__range])`，
+> 也就是折线图图例的 `Max` 列。
+
 ## 导入看板
 
 Grafana → Dashboards → New → Import → 上传 `dashboards/workspace-operator.json`，
 选择 Prometheus 数据源即可（uid 固定为 `workspace-operator`）。
+
+## 引擎类面板怎么读
+
+| 面板 | 回答什么问题 | 数据来源 | 异常信号 |
+| --- | --- | --- | --- |
+| **调谐耗时 P50/P95/P99** | 一次调谐端到端要多久 | `workspace_reconcile_duration_seconds`（含创建整个子资源栈，**不含**排队等待） | P99 持续 > 1s 关注、> 5s 告警；P99 与吞吐同时上升＝容量不足 |
+| **队列深度与入队速率** | 有多少活压着、活从哪来 | `sum(workqueue_depth{name="workspace"})`、`rate(workqueue_adds_total{name="workspace"})` | 深度在 0 附近抖动正常；**持续爬升**才是积压 |
+| **调谐速率与错误率** | 每秒消化多少、失败多少 | `rate(workspace_reconcile_duration_seconds_count)`、`rate(controller_runtime_reconcile_errors_total{controller="workspace"})` | 两条线应基本重合；错误率抬升但吞吐不降＝限流重试在兜底；同时恶化＝下游故障 |
+| **最长调谐执行与 Worker 并发** | 有没有卡住的调谐、并发打满没有 | `workqueue_longest_running_processor_seconds`、`controller_runtime_max_concurrent_reconciles`（默认 30） | 该值持续贴近或超过 P99 且不回落＝有调谐卡死 |
+
+**串起来看（容量三角）**：
+
+```
+需要的 worker 数 ≈ 吞吐(次/秒) × 平均耗时(秒)        # Little's law
+```
+
+例：50 次/秒 × 0.2 秒 = 10 个 worker，上限 30 时余量充足。
+若「队列深度」持续上涨 **且**「排队延迟 P95」上涨 → worker 不够或下游变慢，
+先调大 `--max-concurrent-reconciles`（默认 30）并确认 API QPS 余量
+（`--kube-api-qps` 默认 300 / burst 600）；若「错误率」也在涨，是下游故障，扩容无用。
+
+> 两个易错读法：
+> - 「最长调谐执行」是**此刻正在跑的那一个**已耗时多久（会回落），不是历史最大值；
+> - 它与「Worker 并发」共用一张图但**单位不同**（秒 vs 个，右轴是并发数），
+>   不要拿两个数值直接相减/相除。
 
 ## 大促 / 早高峰观察要点
 

@@ -1,4 +1,4 @@
-# 集群外 Prometheus 用的 scrape 配置片段。
+# 集群外 Prometheus 用的 scrape 配置片段（支持多集群）。
 #
 # 前置：先按 metrics-external-service.yaml 把指标暴露出来，并在云上放行
 #       「Prometheus 主机 -> 节点/内网 SLB」的访问。
@@ -7,34 +7,46 @@
 # 所以这里用 static_configs 直接写地址。
 
 scrape_configs:
-  # 默认方式（配合 metrics-external-service.yaml 的 NodePort）
-  #   targets 填「任意一个 worker 节点 IP:30080」。
-  #   因为 Service 的 externalTrafficPolicy 是默认的 Cluster，任意节点都会转发到
-  #   manager Pod；节点 IP 建议选一个稳定的（或用内网 DNS 固定解析）。
   - job_name: workspace-operator
     scheme: http
     metrics_path: /metrics
     scrape_interval: 30s
     scrape_timeout: 10s
+
+    # 每套集群一行。targets 填「该集群任意一个 worker 节点的内网 IP : 该集群分配的 nodePort」。
+    # 注意：nodePort 是每个集群各自分配的，prod 的 30080 不代表 prod1 也是 30080，
+    #       用下面的命令在对应集群里查实际值：
+    #         kubectl -n agent-deploy-system get svc agent-deploy-controller-manager-metrics-external \
+    #           -o jsonpath='{.spec.ports[0].nodePort}{"\n"}'
     static_configs:
       - targets:
-          - 10.0.0.11:30080        # ← 改成你的节点 IP:nodePort
+          - 10.0.0.11:30080
         labels:
-          cluster: prod            # 抓多套集群时用这个区分，必填否则数据混在一起
+          cluster: prod          # 集群标识；必须唯一，否则两套集群的序列会撞在一起
+          env: prod              # 环境层级（prod/staging/...），同环境的多套集群可以共用
+      - targets:
+          - 10.0.1.11:30080      # ← prod1 集群的节点 IP 与它自己的 nodePort
+        labels:
+          cluster: prod1
           env: prod
+
+    # instance 从 cluster 派生，避免多个 target 都叫同一个名字，
+    # 也避免节点 IP 换了之后图表断层。
+    # 结果：instance=workspace-operator-prod / workspace-operator-prod1
     relabel_configs:
-      # 把 instance 从「IP:端口」改成可读的固定名，避免节点 IP 换了图就断层。
-      - source_labels: [__address__]
+      - source_labels: [cluster]
         target_label: instance
-        replacement: workspace-operator-prod
+        regex: (.+)
+        replacement: workspace-operator-$1
       - target_label: job
         replacement: workspace-operator
 
   # ---------------------------------------------------------------------------
-  # 如果用的是内网 SLB / LoadBalancer（metrics-external-service.yaml 的方式 2），
-  # 把上面的 targets 换成 SLB 的地址即可，端口是 8080：
+  # 如果某套集群用的是内网 SLB（metrics-external-service.yaml 的方式 2），
+  # 把该集群的 targets 换成 SLB 地址 + 8080 即可：
   #
   #     - targets: ['192.168.10.20:8080']
+  #       labels: {cluster: prod1, env: prod}
   #
   # ---------------------------------------------------------------------------
   # 加固方式（可选，需要先把 manager 的 --metrics-secure 改回 true）：
@@ -48,14 +60,10 @@ scrape_configs:
   #      kubectl create clusterrolebinding workspace-operator-metrics-reader \
   #        --clusterrole=agent-deploy-metrics-reader \
   #        --serviceaccount=agent-deploy-system:agent-deploy-controller-manager
-  # 3) 抓取配置：
-  #  - job_name: workspace-operator
+  # 3) 抓取配置（多集群时每套集群各自的 token 文件）：
   #    scheme: https
   #    tls_config:
   #      insecure_skip_verify: true        # 自签证书；生产建议配 trust_file / CA bundle
   #    authorization:
   #      type: Bearer
   #      credentials_file: /etc/prometheus/workspace-operator-token
-  #    static_configs:
-  #      - targets: ['10.0.0.11:30080']
-  #        labels: {cluster: prod, env: prod}

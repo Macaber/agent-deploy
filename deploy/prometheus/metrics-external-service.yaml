@@ -23,12 +23,26 @@ spec:
   # 方式 1（默认，最通用）：NodePort
   # 需要同时在云上放行「worker 节点安全组 -> Prometheus 所在 IP」的 nodePort。
   # externalTrafficPolicy 保持 Cluster：任意节点 IP 都能转发，单节点故障不影响抓取。
+  #
+  # ⚠️ NodePort 是「全集群唯一」的（跨命名空间共享，默认范围 30000-32767）。
+  #    换集群部署时 30080 很可能已被别的 Service 占用，报错形如：
+  #      spec.ports[0].nodePort: Invalid value: 30080: provided port is already allocated
+  #
+  #    两种处理：
+  #    a) 【推荐】删掉下面的 nodePort 行，让 Kubernetes 自动分配，再读回实际端口：
+  #         kubectl -n agent-deploy-system get svc agent-deploy-controller-manager-metrics-external \
+  #           -o jsonpath='{.spec.ports[0].nodePort}{"\n"}'
+  #       同一个 Service 不删除就一直稳定；但 delete 重建会换端口。
+  #    b) 自己挑一个空闲端口。先列出全集群已占用的：
+  #         kubectl get svc -A -o jsonpath='{range .items[*]}{range .spec.ports[*]}{.nodePort}{"\n"}{end}{end}' | sort -n | uniq
+  #       再在 30000-32767 里选一个没用过的填进去（便于提前写死安全组规则）。
   # ==========================================================================
   type: NodePort
   ports:
     - name: http
       port: 8080          # 集群内访问用的端口（与官方 Service 一致）
       targetPort: 8080    # manager 容器的 http 端口
+      # 端口被占用就删掉下面这行，让集群自动分配
       nodePort: 30080     # 固定端口，方便写死安全组规则；必须在 30000-32767 且未被占用
       protocol: TCP
   selector:
