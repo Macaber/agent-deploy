@@ -34,7 +34,16 @@ metadata:
   labels:
     app: api-server
 spec:
-  replicas: 1
+  # 双副本：api-server 是创建/唤醒 workspace 的唯一入口，单副本重启期间所有请求
+  # 都会变成 502。需要 HA 的场景可继续上调，并配合下方 PDB。
+  replicas: 2
+  # 滚动更新时先起新 Pod 并通过 readiness（缓存同步）后再摘旧 Pod，避免出现
+  # 没有任何可用端点的窗口。
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: api-server
@@ -44,6 +53,14 @@ spec:
         app: api-server
     spec:
       serviceAccountName: api-server-sa
+      # 尽量把两副本分散到不同节点；单节点测试集群下退化为同节点部署（不阻塞调度）。
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: api-server
       containers:
       - name: api-server
         image: api-server:v1.0.0 # 建议根据实际私有镜像仓库重命名，如 myharbor.local/library/api-server:v1.0.0
@@ -82,11 +99,26 @@ spec:
           failureThreshold: 3
         resources:
           requests:
-            cpu: 100m
-            memory: 128Mi
+            cpu: 200m
+            memory: 256Mi
+          # 压测时进程要承接数百条并发的创建/唤醒长轮询，并维护全量 Workspace 的
+          # informer 视图。512Mi 在高并发下会被 OOMKilled（表现为批量 502），这里
+          # 放宽到 1Gi；CPU 上限同步放宽，避免 JSON 编码与探活被严重限流。
           limits:
-            cpu: "1"
-            memory: 512Mi
+            cpu: "2"
+            memory: 1Gi
+---
+# 驱逐/节点维护时至少保留一个可用副本，避免滚动重启把服务打成单点。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-server-pdb
+  namespace: default
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: api-server
 ---
 apiVersion: v1
 kind: Service
@@ -112,9 +144,17 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
-    nginx.ingress.kubernetes.io/limit-connections: "200"
-    nginx.ingress.kubernetes.io/proxy-next-upstream: "error timeout invalid_header http_502 http_503"
-    nginx.ingress.kubernetes.io/proxy-next-upstream-tries: "3"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    # 创建/唤醒是同步长轮询（WORKSPACE_POLL_TIMEOUT 默认 30s），nginx 默认 60s
+    # 读超时余量太小，这里显式放宽到 90s。
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "90"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "90"
+    # 单 IP 并发连接上限：压测机通常只有一两个出口 IP，200 会被误伤成 503。
+    nginx.ingress.kubernetes.io/limit-connections: "1000"
+    # 只在连接级错误上重试一次：POST 创建请求被多次重试会在故障时放大流量。
+    nginx.ingress.kubernetes.io/proxy-next-upstream: "error"
+    nginx.ingress.kubernetes.io/proxy-next-upstream-tries: "2"
+    nginx.ingress.kubernetes.io/proxy-next-upstream-timeout: "5"
 spec:
   ingressClassName: nginx
   rules:

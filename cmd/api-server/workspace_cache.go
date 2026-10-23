@@ -67,7 +67,7 @@ type workspaceCache struct {
 	// rebuildDelay coalesces bursts of events into one index rebuild.
 	rebuildDelay time.Duration
 
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	pending map[string]workspaceItem // key: "<namespace>/<name>"
 	timer   *time.Timer
 
@@ -105,6 +105,22 @@ func (c *workspaceCache) size() int {
 // isReady reports whether at least one successful rebuild has completed.
 func (c *workspaceCache) isReady() bool {
 	return c.ready.Load()
+}
+
+// get returns the projected view of a single Workspace. It reads the pending
+// map rather than the published snapshot so a caller observes the newest
+// informer event even while a debounced rebuild is still armed; the cost is one
+// short read lock. Misses mean "the informer has not delivered this object
+// yet" (freshly created) or "it is gone" (deleted) — callers decide whether to
+// fall back to a direct API read.
+func (c *workspaceCache) get(namespace, name string) (workspaceItem, bool) {
+	if c == nil {
+		return workspaceItem{}, false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	item, ok := c.pending[namespace+"/"+name]
+	return item, ok
 }
 
 // --- ResourceEventHandler implementation (informer events) ---
@@ -319,6 +335,9 @@ func toWorkspaceItem(ws *aiv1alpha1.Workspace) workspaceItem {
 		Image:     ws.Spec.Runtime.Image,
 		CPU:       ws.Spec.Runtime.CPU,
 		Memory:    ws.Spec.Runtime.Memory,
+		// Internal probe inputs (never serialized to clients).
+		Endpoint:   ws.Status.Endpoint,
+		HealthPath: ws.Spec.Runtime.HealthPath,
 	}
 }
 

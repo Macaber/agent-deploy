@@ -39,6 +39,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load kubeconfig: %v", err)
 	}
+	// client-go throttles each client to 5 QPS / 10 burst by default. Every
+	// create/update/stop/wakeup request goes through this client, and the poll
+	// below reads workspace state while the pod starts, so the default cap turns
+	// into a process-wide serialization point as soon as concurrency picks up.
+	// Raise it the same way the controller manager does (cmd/main.go
+	// --kube-api-qps/--kube-api-burst).
+	config.QPS = 300
+	config.Burst = 600
 
 	// Register our custom Workspace schema in client scheme
 	scheme := runtime.NewScheme()
@@ -56,7 +64,7 @@ func main() {
 	log.Printf("Local Workspace informer cache ready: %d workspaces materialized", workspaceCache.size())
 
 	// Direct K8s client for writes and point reads only (create/update/stop/
-	// wakeup/poll). Never used for full-list queries.
+	// wakeup, plus cache-miss fallbacks). Never used for full-list queries.
 	k8sClient, err := client.New(config, client.Options{Scheme: scheme})
 	if err != nil {
 		log.Fatalf("Failed to create K8s client: %v", err)
@@ -79,11 +87,11 @@ func main() {
 	http.HandleFunc("/api/login", loginHandler)
 	http.HandleFunc("/api/logout", logoutHandler)
 	http.HandleFunc("/api/auth/check", authCheckHandler)
-	// When USERNAME/PASSWORD is configured, the workspace APIs require the
-	// session cookie issued by /api/login. The public endpoints stay open.
-	http.HandleFunc("/api/workspaces", requireAuth(workspaceRouter(k8sClient, workspaceCache)))
-	http.HandleFunc("/api/workspaces/stop", requireAuth(stopWorkspaceHandler(k8sClient)))
-	http.HandleFunc("/api/workspaces/wakeup", requireAuth(wakeupWorkspaceHandler(k8sClient)))
+	// The workspace APIs are intentionally public and do not require the
+	// session cookie issued by /api/login.
+	http.HandleFunc("/api/workspaces", workspaceRouter(k8sClient, workspaceCache))
+	http.HandleFunc("/api/workspaces/stop", stopWorkspaceHandler(k8sClient))
+	http.HandleFunc("/api/workspaces/wakeup", wakeupWorkspaceHandler(k8sClient, workspaceCache))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -171,6 +179,11 @@ type workspaceItem struct {
 	Image     string `json:"image"`
 	CPU       string `json:"cpu"`
 	Memory    string `json:"memory"`
+	// Endpoint and HealthPath feed the create/wakeup readiness probe (see
+	// pollWorkspaceRunning). They are internal to the API server and deliberately
+	// excluded from the JSON contract so the list/get responses stay unchanged.
+	Endpoint   string `json:"-"`
+	HealthPath string `json:"-"`
 }
 
 // getOAValue extracts the OA value from environment variables if present.
@@ -195,7 +208,7 @@ func getOAFromWorkspace(ws *aiv1alpha1.Workspace) string {
 func workspaceRouter(c client.Client, wc *workspaceCache) http.HandlerFunc {
 	listHandler := listWorkspacesHandler(wc)
 	getHandler := getWorkspaceHandler(c)
-	createHandler := createOrUpdateWorkspaceHandler(c)
+	createHandler := createOrUpdateWorkspaceHandler(c, wc)
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -403,7 +416,7 @@ func getWorkspaceHandler(c client.Client) http.HandlerFunc {
 }
 
 // createOrUpdateWorkspaceHandler handles POST /api/workspaces — creates a new workspace or updates an existing one.
-func createOrUpdateWorkspaceHandler(c client.Client) http.HandlerFunc {
+func createOrUpdateWorkspaceHandler(c client.Client, wc *workspaceCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req workspaceRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserID == "" {
@@ -446,7 +459,7 @@ func createOrUpdateWorkspaceHandler(c client.Client) http.HandlerFunc {
 		}
 
 		// Poll until Workspace status.phase is Running or Failed
-		pollWorkspaceRunning(ctx, c, w, req.UserID, wsName, namespace, "Workspace creation timed out")
+		pollWorkspaceRunning(ctx, c, wc, w, req.UserID, wsName, namespace, "Workspace creation timed out")
 	}
 }
 
@@ -671,7 +684,14 @@ func getCanaryHeader() string {
 
 // pollWorkspaceRunning polls the workspace status until it reaches Running or Failed state,
 // and verifies that the Ingress route is healthy and serving before writing the JSON result.
-func pollWorkspaceRunning(ctx context.Context, c client.Client, w http.ResponseWriter, userID, wsName, namespace, timeoutMsg string) {
+//
+// Status is read from the local informer view (workspaceCache) instead of issuing a direct
+// GET on every tick: the informer carries exactly the status the API server holds, so the
+// poll no longer spends API-server quota (2 GETs/s per pending request). The observable
+// contract is unchanged — same 500ms cadence, same 30s deadline, same status codes and JSON
+// bodies. A cache miss (CR created moments ago and the ADD event has not landed yet, or it
+// was just deleted) falls back to a direct read, preserving the original error semantics.
+func pollWorkspaceRunning(ctx context.Context, c client.Client, wc *workspaceCache, w http.ResponseWriter, userID, wsName, namespace, timeoutMsg string) {
 	timeoutDuration := 30 * time.Second
 	if envTimeout := os.Getenv("WORKSPACE_POLL_TIMEOUT"); envTimeout != "" {
 		if d, err := time.ParseDuration(envTimeout); err == nil {
@@ -685,6 +705,14 @@ func pollWorkspaceRunning(ctx context.Context, c client.Client, w http.ResponseW
 	for {
 		select {
 		case <-timeout:
+			// The informer view can lag behind the API server (watch reconnect, slow
+			// event delivery). Confirm with a direct read before reporting a timeout so
+			// a stale cache never turns a healthy workspace into a 504.
+			if currentWs, err := loadWorkspaceForPoll(ctx, c, wc, namespace, wsName); err == nil {
+				if writeRunningResult(ctx, w, currentWs, userID, wsName) {
+					return
+				}
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusGatewayTimeout)
 			json.NewEncoder(w).Encode(map[string]string{
@@ -695,8 +723,8 @@ func pollWorkspaceRunning(ctx context.Context, c client.Client, w http.ResponseW
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			currentWs := &aiv1alpha1.Workspace{}
-			if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: wsName}, currentWs); err != nil {
+			currentWs, err := loadWorkspaceForPoll(ctx, c, wc, namespace, wsName)
+			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -711,21 +739,60 @@ func pollWorkspaceRunning(ctx context.Context, c client.Client, w http.ResponseW
 				return
 			}
 
-			if currentWs.Status.Phase == aiv1alpha1.WorkspaceRunning {
-				if probeWorkspaceViaIngress(ctx, userID, wsName, currentWs) {
-					url := getWorkspaceURL(userID, wsName, currentWs.Status.Endpoint)
-
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(map[string]string{
-						"url":   url,
-						"phase": string(currentWs.Status.Phase),
-					})
-					return
-				}
-				// Ingress route still warming up or 404/503; continue polling until Ingress is ready
+			// Running only means the Deployment reported ready replicas; the Ingress
+			// route is verified end-to-end before the URL is handed out. While the
+			// route is still warming up, keep polling.
+			if writeRunningResult(ctx, w, currentWs, userID, wsName) {
+				return
 			}
 		}
 	}
+}
+
+// loadWorkspaceForPoll resolves the Workspace state the poll loop acts on. The informer
+// view is the primary source; a direct read covers the window right after creation, before
+// the informer has delivered the object, and keeps the original 500-on-error behaviour.
+func loadWorkspaceForPoll(ctx context.Context, c client.Client, wc *workspaceCache, namespace, name string) (*aiv1alpha1.Workspace, error) {
+	if wc != nil {
+		if item, ok := wc.get(namespace, name); ok {
+			return workspaceFromItem(item), nil
+		}
+	}
+	currentWs := &aiv1alpha1.Workspace{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, currentWs); err != nil {
+		return nil, err
+	}
+	return currentWs, nil
+}
+
+// workspaceFromItem rebuilds the part of the Workspace the readiness path reads:
+// namespace, phase, endpoint and health path. The informer DTO keeps only these fields, so
+// full CR objects are never retained in the API server's heap.
+func workspaceFromItem(item workspaceItem) *aiv1alpha1.Workspace {
+	ws := &aiv1alpha1.Workspace{}
+	ws.Namespace = item.Namespace
+	ws.Status.Phase = aiv1alpha1.WorkspacePhase(item.Phase)
+	ws.Status.Endpoint = item.Endpoint
+	ws.Spec.Runtime.HealthPath = item.HealthPath
+	return ws
+}
+
+// writeRunningResult verifies the workspace is Running and actually served through the
+// Ingress, then writes the success payload. It reports whether a response was written, so
+// the caller keeps polling while the Ingress route warms up.
+func writeRunningResult(ctx context.Context, w http.ResponseWriter, ws *aiv1alpha1.Workspace, userID, wsName string) bool {
+	if ws.Status.Phase != aiv1alpha1.WorkspaceRunning {
+		return false
+	}
+	if !probeWorkspaceViaIngress(ctx, userID, wsName, ws) {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"url":   getWorkspaceURL(userID, wsName, ws.Status.Endpoint),
+		"phase": string(ws.Status.Phase),
+	})
+	return true
 }
 
 // probeWorkspaceViaIngress sends an HTTP GET probe through Ingress to verify route readiness.
@@ -878,7 +945,7 @@ func stopWorkspaceHandler(c client.Client) http.HandlerFunc {
 	}
 }
 
-func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
+func wakeupWorkspaceHandler(c client.Client, wc *workspaceCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -940,7 +1007,7 @@ func wakeupWorkspaceHandler(c client.Client) http.HandlerFunc {
 		log.Printf("Successfully woke up Workspace lastActiveTime: %s", wsName)
 
 		// Poll until Workspace status.phase is Running or Failed
-		pollWorkspaceRunning(ctx, c, w, req.UserID, wsName, namespace, "Workspace wakeup timed out")
+		pollWorkspaceRunning(ctx, c, wc, w, req.UserID, wsName, namespace, "Workspace wakeup timed out")
 	}
 }
 

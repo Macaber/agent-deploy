@@ -896,7 +896,7 @@ spec:
           value: bocomcode
         - name: NETPOL_ALLOWED_NAMESPACES
           value: '[{"namespace":"monitoring","podSelector":{"app.kubernetes.io/name":"otel-collector"},"ports":[4318]}]'
-        image: workspace-operator:v1.0.39
+        image: workspace-operator:v1.0.40
         livenessProbe:
           httpGet:
             path: /healthz
