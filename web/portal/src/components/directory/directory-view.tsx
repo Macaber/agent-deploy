@@ -4,6 +4,7 @@ import {
   Activity,
   ChevronLeft,
   ChevronRight,
+  Download,
   ExternalLink,
   Folder,
   Inbox,
@@ -28,7 +29,7 @@ import { Segmented } from '@/components/ui/segmented';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Tip } from '@/components/ui/tooltip';
-import { cn, formatTime, initials, safeExternalUrl } from '@/lib/utils';
+import { cn, downloadText, formatTime, initials, safeExternalUrl, toCsv } from '@/lib/utils';
 import { useMediaQuery } from '@/lib/use-media-query';
 
 const PAGE_SIZE = 50;
@@ -61,6 +62,7 @@ export function DirectoryView() {
   const inlineStop = useApp((state) => state.inlineStop);
   const inlineWakeup = useApp((state) => state.inlineWakeup);
   const askConfirm = useApp((state) => state.askConfirm);
+  const pushToast = useApp((state) => state.pushToast);
   const searchRef = useRef<HTMLInputElement>(null);
   const isDesktop = useMediaQuery('(min-width: 1024px)');
   const [page, setPage] = useState(1);
@@ -127,8 +129,26 @@ export function DirectoryView() {
     });
   };
 
-  const initialLoading = !directory.initialized || (directory.loading && directory.items.length === 0);
+  const exportOa = () => {
+    // Only export users that actually have an OA bound, from the current
+    // filtered view (honours namespace + search + status filter).
+    const rows = filtered
+      .filter((item) => (item.oa || '').trim() !== '')
+      .map((item) => [item.userId || '', (item.oa || '').trim()]);
+    if (rows.length === 0) {
+      pushToast('info', '没有可导出的 OA', '当前列表中没有已绑定 OA 的用户');
+      return;
+    }
+    const stamp = new Date()
+      .toISOString()
+      .slice(0, 19)
+      .replace(/[:T]/g, '-');
+    const content = toCsv(['用户ID', 'OA'], rows);
+    downloadText(`workspace-oa-${stamp}.csv`, content);
+    pushToast('success', '已导出 OA 信息', `共 ${rows.length} 个用户`);
+  };
 
+  const initialLoading = !directory.initialized || (directory.loading && directory.items.length === 0);
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
   const pageItems = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
@@ -239,6 +259,16 @@ export function DirectoryView() {
               >
                 <RefreshCw className={cn('size-3.5', directory.loading && 'animate-spin')} />
                 刷新
+              </Button>
+              <Button
+                variant="outline"
+                onClick={exportOa}
+                disabled={!directory.initialized || filtered.length === 0}
+                className="flex-1 sm:flex-none"
+                title="导出已绑定 OA 的用户为 CSV"
+              >
+                <Download className="size-3.5" />
+                导出 OA
               </Button>
               <Button onClick={() => setTab('studio')} className="flex-1 sm:flex-none">
                 <Plus className="size-4" />

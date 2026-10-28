@@ -1088,6 +1088,9 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 
 	selectorLabels := buildSelectorLabels(ws)
 	labels := buildWorkspaceLabels(ws)
+	// Hardened security context shared with the update path, so a reconcile always
+	// converges on the same values.
+	podSecurityContext, containerSecurityContext := buildWorkspaceSecurityContexts()
 	// Pods are the only resources that carry the managed-by marker (the shared
 	// NetworkPolicy selects on it); PVCs/Services/Ingresses must stay clean.
 	podLabels := buildPodLabels(ws)
@@ -1136,6 +1139,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 						Spec: corev1.PodSpec{
 							RuntimeClassName:              ws.Spec.Runtime.RuntimeClassName,
 							InitContainers:                initContainers,
+							SecurityContext:               podSecurityContext,
 							TerminationGracePeriodSeconds: int64Ptr(2),
 							AutomountServiceAccountToken:  boolPtr(false),
 							EnableServiceLinks:            boolPtr(false),
@@ -1149,6 +1153,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 									Ports:           ports,
 									Env:             envVars,
 									Resources:       resources,
+									SecurityContext: containerSecurityContext,
 									VolumeMounts:    volumeMounts,
 									Lifecycle:       lifecycle,
 									StartupProbe:    getStartupProbe(ws),
@@ -1213,6 +1218,10 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		podSpec.EnableServiceLinks = boolPtr(false)
 		needsUpdate = true
 	}
+	if !equality.Semantic.DeepEqual(podSpec.SecurityContext, podSecurityContext) {
+		podSpec.SecurityContext = podSecurityContext
+		needsUpdate = true
+	}
 
 	targetContainer := &podSpec.Containers[0]
 	if targetContainer.Image != ws.Spec.Runtime.Image {
@@ -1245,6 +1254,10 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	}
 	if !equality.Semantic.DeepEqual(targetContainer.VolumeMounts, volumeMounts) {
 		targetContainer.VolumeMounts = volumeMounts
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(targetContainer.SecurityContext, containerSecurityContext) {
+		targetContainer.SecurityContext = containerSecurityContext
 		needsUpdate = true
 	}
 	if !equality.Semantic.DeepEqual(targetContainer.Lifecycle, lifecycle) {
@@ -2008,6 +2021,71 @@ func int64Ptr(i int64) *int64 {
 	return &i
 }
 
+// buildWorkspaceSecurityContexts returns the pod-level and container-level security
+// contexts applied to every workspace Pod.
+//
+// The workspace image is still expected to run as root, so the user/group of the
+// image is deliberately left untouched (no runAsUser/runAsNonRoot): switching to a
+// non-root UID changes the ownership requirements of the /workspace data and of the
+// hardcoded /root/.config mounts, and must be rolled out separately together with a
+// data ownership migration. Everything below removes attack surface without changing
+// the effective UID, so it does not affect reading or writing files in the workspace:
+//
+//   - seccompProfile RuntimeDefault: filters the syscall surface (blocks e.g.
+//     unshare(CLONE_NEWUSER), shrinking the cgroup/userns escape primitives).
+//   - capabilities: drop the dangerous capabilities outright (privileged syscalls,
+//     raw sockets, device access) while keeping the small set a root entrypoint needs
+//     to prepare the volume. In particular CAP_CHOWN must be kept: workspace images
+//     run `tar`/`chown` on the volume at startup (e.g. the portal bundle is extracted
+//     with uid/gid 20008), and dropping ALL makes that fail with
+//     "Cannot change ownership ... Operation not permitted" and the Pod never starts.
+//   - allowPrivilegeEscalation false: blocks setuid-based escalation.
+//
+// CAP_SYS_ADMIN is never present in the default set, so this does not weaken the
+// host-escape protection; it only removes capabilities the default container runtime
+// would otherwise hand to the image.
+var workspaceDroppedCapabilities = []corev1.Capability{
+	"SYS_ADMIN",
+	"SYS_MODULE",
+	"SYS_PTRACE",
+	"SYS_RAWIO",
+	"SYS_BOOT",
+	"NET_ADMIN",
+	"NET_RAW",
+	"MKNOD",
+	"AUDIT_CONTROL",
+	"BPF",
+	"PERFMON",
+}
+
+// workspaceAddedCapabilities keeps the capabilities a root entrypoint legitimately
+// needs while unpacking/preparing the workspace volume (chown the extracted files to
+// the runtime UID). These are all unprivileged, DAC-scoped capabilities: they cannot
+// be used to escape the container namespace.
+var workspaceAddedCapabilities = []corev1.Capability{
+	"CHOWN",
+	"DAC_OVERRIDE",
+	"FOWNER",
+	"FSETID",
+	"SETGID",
+	"SETUID",
+	"SYS_CHROOT",
+}
+
+func buildWorkspaceSecurityContexts() (*corev1.PodSecurityContext, *corev1.SecurityContext) {
+	return &corev1.PodSecurityContext{
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}, &corev1.SecurityContext{
+		AllowPrivilegeEscalation: boolPtr(false),
+		Capabilities: &corev1.Capabilities{
+			Drop: workspaceDroppedCapabilities,
+			Add:  workspaceAddedCapabilities,
+		},
+	}
+}
+
 func getWorkspaceHost(wsName string) string {
 	domain := os.Getenv("WORKSPACE_DOMAIN")
 	if domain == "" {
@@ -2039,10 +2117,15 @@ func getStartupProbe(ws *aiv1alpha1.Workspace) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler:        getProbeHandler(ws),
 		InitialDelaySeconds: 1,
-		TimeoutSeconds:      1,
-		PeriodSeconds:       2,
-		SuccessThreshold:    1,
-		FailureThreshold:    30,
+		// 3s instead of 1s: the workspace data volume may be backed by a network
+		// filesystem (ossfs/NAS) where the first /health answer takes longer than a
+		// second while the FUSE client warms up. A 1s timeout turns that into a
+		// spurious "Startup probe failed", and with FailureThreshold 30 it can end
+		// in a container restart.
+		TimeoutSeconds:   3,
+		PeriodSeconds:    2,
+		SuccessThreshold: 1,
+		FailureThreshold: 30,
 	}
 }
 
@@ -2050,10 +2133,13 @@ func getReadinessProbe(ws *aiv1alpha1.Workspace) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler:        getProbeHandler(ws),
 		InitialDelaySeconds: 1,
-		TimeoutSeconds:      1,
-		PeriodSeconds:       2,
-		SuccessThreshold:    1,
-		FailureThreshold:    3,
+		// Keep the readiness timeout in line with the startup probe: a /health that
+		// is slow because of network-backed storage must not flap the Pod out of the
+		// Service endpoints.
+		TimeoutSeconds:   3,
+		PeriodSeconds:    2,
+		SuccessThreshold: 1,
+		FailureThreshold: 3,
 	}
 }
 

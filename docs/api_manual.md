@@ -20,7 +20,9 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 ## 接口定义
 
 ### 1. 静态主页 Web UI (Launcher)
+
 提供可视化的用户工作空间启动、停止、休眠监控及跳转网页管理面板。
+
 - **请求方法**：`GET`
 - **请求路径**：`/`
 - **请求参数**：无
@@ -29,7 +31,9 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 ---
 
 ### 2. 获取用户工作空间状态
+
 用于页面加载或刷新时，动态获取指定用户的工作空间是否已部署、当前生命周期状态以及对应访问入口链接。
+
 - **请求方法**：`GET`
 - **请求路径**：`/api/workspaces`
 - **请求参数 (Query Params)**：
@@ -38,6 +42,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 - **返回响应 (HTTP 200 OK)**：
   - **单个工作空间查询 (`userId` 存在)**:
     - 若不存在:
+
       ```json
       {
         "exists": false,
@@ -45,7 +50,9 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
         "url": ""
       }
       ```
+
     - 若已创建:
+
       ```json
       {
         "exists": true,
@@ -55,6 +62,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
         "spec": { ... }
       }
       ```
+
   - **工作空间列表查询 (不传 `userId`)**：
 
     列表数据由 API-Server 本地 Informer 内存缓存（物化视图）直接提供，不直连 K8s API Server 做全量 List，可支撑 5,000+ 实例规模的高并发查询（实测分页查询 1,000+ QPS 验收线的 50 倍以上）。
@@ -70,6 +78,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
     - **注意**：`page` 与 `pageSize` 均不提供时，保持旧版兼容——返回**裸 JSON 数组**（全量）；任一提供时返回**分页信封**。
 
     *分页响应示例* (`GET /api/workspaces?page=1&pageSize=50&namespace=bocomwork`)：
+
     ```json
     {
       "items": [
@@ -93,6 +102,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
     ```
 
     *旧版兼容响应示例*（不带分页参数，裸数组，前端 Portal 使用）：
+
     ```json
     [
       {
@@ -107,6 +117,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
       }
     ]
     ```
+
 - **错误响应**：
   - `400 Bad Request`：`page`/`pageSize` 参数非法（非正整数）。
   - `500 Internal Server Error`：获取 Kubernetes 集群状态异常。
@@ -114,12 +125,15 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 ---
 
 ### 3. 创建 / 启动工作空间
+
 为指定用户创建一个全新工作空间（如果不存在）。如果该工作空间已经存在，且用户在请求体中传入了规格参数，API-Server 将动态更新该工作空间的资源规格（例如调整 CPU、内存、环境变量或休眠时间）。
 *注：该接口是一个**阻塞式接口**，调用后会启动轮询检测，直到 K8s Pod 就绪且状态（Phase）变为 `Running` 才会返回成功响应。轮询超时时间为 90 秒。*
+
 - **请求方法**：`POST`
 - **请求路径**：`/api/workspaces`
 - **请求体格式**：`application/json`
 - **请求体参数说明**：
+
   | 参数名 | 数据类型 | 是否必填 | 默认值 | 作用描述 |
   | :--- | :--- | :--- | :--- | :--- |
   | **`userId`** | `string` | **是** | - | 用户唯一标识（决定 workspace 资源名称 `ws-<userId>`）。 |
@@ -129,7 +143,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   | **`cpu`** | `string` | 否 | `"500m"` (0.5核) | CPU 资源配额限制与请求，若为空则缺省为 0.5 核。 |
   | **`memory`** | `string` | 否 | `"1Gi"` | 内存资源配额限制与请求，若为空则缺省为 1G。 |
   | **`storageSize`** | `string` | 否 | `"1Gi"` | 持久化 PVC 大小规格，例如 `"10Gi"`。 |
-  | **`storageClass`** | `string`| 否 | - | 指定使用的 StorageClass 名称。 |
+  | **`storageClass`** | `string` | 否 | - | 指定使用的 StorageClass 名称。 |
   | **`idleTimeout`** | `string` | 否 | `"5m"` (API 创建默认) | 自 `lastActiveTime` 起的最长运行窗口，超时后 Operator 将工作空间缩容为 `Sleeping`。**不是**实时“无操作闲置”检测；唤醒/再次创建会刷新 `lastActiveTime`。Go 持续时间格式，如 `"30m"`。 |
   | **`env`** | `array` | 否 | - | 环境变量列表，格式为 `[{"name": "KEY", "value": "VAL"}]`。当命名空间为 `bocomwork` 且包含 `OA` 环境变量时，会自动为 Workspace 资源打上 `oa=<value>` 标签（支持 `-l oa=xxx` 检索）。 |
   | **`command`** 或 **`cmd`** | `array` | 否 | - | 自定义容器的启动入口命令 (对应 `ENTRYPOINT`)，如 `["bocomwork-entrypoint"]` 或 `["/bin/bash"]`。 |
@@ -143,6 +157,7 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
   | **`healthPath`** | `string` | 否 | - | **自定义就绪探针 HTTP 路径**。若指定（例如 `"/health"`），K8s 将使用 HTTP GET 探测此路径；若不指定或为空，默认回退使用 TCP 协议对暴露端口（`port`）进行存活健康探测。 |
 
 - **完整请求体示例**：
+
   ```json
   {
     "userId": "alice",
@@ -214,13 +229,16 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
     "healthPath": "/health"
   }
   ```
+
 - **返回响应 (HTTP 200 OK - 成功运行后返回)**：
+
   ```json
   {
     "url": "http://ws-alice.localhost",
     "phase": "Running"
   }
   ```
+
 - **错误响应**：
   - `400 Bad Request`：请求体 JSON 格式错误或缺失 `userId`。
   - `503 Service Unavailable`：工作空间启动失败（Phase 变更为 `Failed`），快速失败而无需等待超时。返回 JSON 示例：`{"error": "Workspace failed to start", "phase": "Failed"}`。
@@ -230,25 +248,31 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 ---
 
 ### 4. 唤醒工作空间
+
 当工作空间已存在且处于已休眠（`Sleeping`）或手动停止（`Stopped`）状态时，用于快速将其唤醒恢复运行。该接口仅支持传入用户 ID，不会对原有的规格配置做任何修改。
 *注：该接口是一个**阻塞式接口**，轮询超时时间为 90 秒。*
+
 - **请求方法**：`POST`
 - **请求路径**：`/api/workspaces/wakeup`
 - **请求体格式**：`application/json`
 - **请求体示例**：
+
   ```json
   {
     "userId": "alice",
     "namespace": "default"
   }
   ```
+
 - **返回响应 (HTTP 200 OK - 唤醒成功且 Running 后返回)**：
+
   ```json
   {
     "url": "http://ws-alice.localhost",
     "phase": "Running"
   }
   ```
+
 - **错误响应**：
   - `400 Bad Request`：请求体 JSON 格式错误或缺失 `userId`。
   - `404 Not Found`：指定用户的工作空间不存在（需要先通过启动接口进行创建）。
@@ -259,23 +283,29 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 ---
 
 ### 5. 停止 / 挂起工作空间
+
 手动关闭指定用户的工作空间。触发后，API-Server 将 Workspace 资源的 `spec.stopped` 设为 `true`，触发 Operator 控制器安全销毁运行的 Pod 容器并释放 CPU/内存等集群算力，持久化的配置文件与聊天日志保存在磁盘卷中不受影响。
+
 - **请求方法**：`POST`
 - **请求路径**：`/api/workspaces/stop`
 - **请求体格式**：`application/json`
 - **请求体示例**：
+
   ```json
   {
     "userId": "alice",
     "namespace": "default"
   }
   ```
+
 - **返回响应 (HTTP 200 OK)**：
+
   ```json
   {
     "status": "stopped"
   }
   ```
+
 - **错误响应**：
   - `400 Bad Request`：请求体 JSON 格式错误或缺失 `userId`。
   - `500 Internal Server Error`：修改 Kubernetes 中资源规格失败。
@@ -302,10 +332,10 @@ API-Server 作为一个轻量级网关/控制面板服务，用于与 Kubernetes
 ```
 
 1. **Kernel 隔离 (Kata Containers / MicroVM)**：
-   * 在创建请求中指定 `"runtimeClassName": "kata"`，Pod 将运行在轻量级独立虚拟机（MicroVM）内核中，与宿主机内核物理隔离，从底层阻断任何容器逃逸提权。
+   - 在创建请求中指定 `"runtimeClassName": "kata"`，Pod 将运行在轻量级独立虚拟机（MicroVM）内核中，与宿主机内核物理隔离，从底层阻断任何容器逃逸提权。
 2. **API & 环境变量隔离 (RBAC & 阻断服务发现)**：
-   * **阻断环境变量互现 (`EnableServiceLinks: false`)**：默认关闭同 Namespace 下其他 Service 的环境变量注入，彻底解决 `ws-a` 在容器环境变量中嗅探到 `ws-b` 内网路由地址的问题。
-   * **阻断 K8s API 访问 (`AutomountServiceAccountToken: false`)**：默认不挂载 ServiceAccount Token，防止 Agent 容器内调用 K8s API 进行集群侦察。
+   - **阻断环境变量互现 (`EnableServiceLinks: false`)**：默认关闭同 Namespace 下其他 Service 的环境变量注入，彻底解决 `ws-a` 在容器环境变量中嗅探到 `ws-b` 内网路由地址的问题。
+   - **阻断 K8s API 访问 (`AutomountServiceAccountToken: false`)**：默认不挂载 ServiceAccount Token，防止 Agent 容器内调用 K8s API 进行集群侦察。
 3. **网络隔离 (NetworkPolicy 自定义管控)**：
-   * **入站（Ingress）不限制端口与协议**：命名空间级共享模板的入站规则为空，等价于**所有来源、所有端口、所有协议（含 ICMP）放行**。这是 Task 2.1 收敛为单一共享模板后的**有意取舍**：各 Workspace 业务端口不同，且 Ingress controller 可能 SNAT 或使用 hostNetwork，静态模板无法在不误伤流量的前提下按端口收口；该模板的安全边界是**出站隔离**（见下一条）。"外部流量可访问 Workspace HTTP 端口"的语义不变，但不再承诺"其他端口与 ICMP 不放行"。
-   * **出站（Egress）管控**：放行 DNS 与公网，Ingress 入站连接的响应回包自动放行；默认排除常用私网、CGNAT 和链路本地网段。内部白名单（如私有 LLM 网关）与集群内共享服务（如 OTel Collector）的放行已收敛为**集群级**配置：请使用 controller-manager 的 `NETPOL_ALLOWED_NAMESPACES` 环境变量（或 `--netpol-allowed-namespaces` 参数）；per-workspace 的 `allowedCIDRs` / `allowedNamespaces` **已废弃**（仍接受但忽略）。
+   - **入站（Ingress）不限制端口与协议**：命名空间级共享模板的入站规则为空，等价于**所有来源、所有端口、所有协议（含 ICMP）放行**。这是 Task 2.1 收敛为单一共享模板后的**有意取舍**：各 Workspace 业务端口不同，且 Ingress controller 可能 SNAT 或使用 hostNetwork，静态模板无法在不误伤流量的前提下按端口收口；该模板的安全边界是**出站隔离**（见下一条）。"外部流量可访问 Workspace HTTP 端口"的语义不变，但不再承诺"其他端口与 ICMP 不放行"。
+   - **出站（Egress）管控**：放行 DNS 与公网，Ingress 入站连接的响应回包自动放行；默认排除常用私网、CGNAT 和链路本地网段。内部白名单（如私有 LLM 网关）与集群内共享服务（如 OTel Collector）的放行已收敛为**集群级**配置：请使用 controller-manager 的 `NETPOL_ALLOWED_NAMESPACES` 环境变量（或 `--netpol-allowed-namespaces` 参数）；per-workspace 的 `allowedCIDRs` / `allowedNamespaces` **已废弃**（仍接受但忽略）。

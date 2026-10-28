@@ -130,6 +130,29 @@ var _ = Describe("Workspace Controller", func() {
 			Expect(deploy.Spec.Template.Spec.AutomountServiceAccountToken).NotTo(BeNil())
 			Expect(*deploy.Spec.Template.Spec.AutomountServiceAccountToken).To(BeFalse())
 
+			By("Verifying Deployment hardened security context (seccomp, caps, no privilege escalation)")
+			podSC := deploy.Spec.Template.Spec.SecurityContext
+			Expect(podSC).NotTo(BeNil())
+			Expect(podSC.SeccompProfile).NotTo(BeNil())
+			Expect(podSC.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+			// The workspace image keeps running as its own (root) user: the UID is not
+			// pinned here on purpose, see buildWorkspaceSecurityContexts.
+			Expect(podSC.RunAsUser).To(BeNil())
+			Expect(podSC.RunAsNonRoot).To(BeNil())
+
+			ctrSC := deploy.Spec.Template.Spec.Containers[0].SecurityContext
+			Expect(ctrSC).NotTo(BeNil())
+			Expect(ctrSC.AllowPrivilegeEscalation).NotTo(BeNil())
+			Expect(*ctrSC.AllowPrivilegeEscalation).To(BeFalse())
+			Expect(ctrSC.Capabilities).NotTo(BeNil())
+			// We drop the dangerous capabilities (SYS_ADMIN etc.) but must keep the
+			// DAC-scoped ones (CHOWN in particular) so the root entrypoint can chown
+			// the unpacked workspace volume; see buildWorkspaceSecurityContexts.
+			Expect(ctrSC.Capabilities.Drop).To(ContainElement(corev1.Capability("SYS_ADMIN")))
+			Expect(ctrSC.Capabilities.Add).To(ContainElement(corev1.Capability("CHOWN")))
+			Expect(ctrSC.Capabilities.Add).NotTo(ContainElement(corev1.Capability("SYS_ADMIN")))
+			Expect(ctrSC.Privileged).To(BeNil())
+
 			By("Verifying Deployment container resources (50% request ratio)")
 			Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 			Expect(deploy.Spec.Template.Spec.Containers[0].Resources.Limits.Cpu().String()).To(Equal("500m"))
