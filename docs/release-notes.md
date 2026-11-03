@@ -43,8 +43,10 @@
 - 新增 Prometheus 指标与 Grafana 看板（`deploy/grafana/`），抓取前提与最简配置
   见该目录 README；
 - **队列延迟指标改名**：删除自建的 `workspace_queue_latency_seconds`，改用
-  controller-runtime 内置的 `workqueue_queue_duration_seconds{controller="workspace"}`
-  （语义一致、少一把热路径锁）。若存量告警/看板引用了旧指标名，需同步修改；
+  controller-runtime 内置的 `workqueue_queue_duration_seconds{name="workspace"}`
+  （语义一致、少一把热路径锁）。**注意该指标只有 `name` 标签、没有 `controller` 标签**
+  （由 client-go/component-base 注册），写成 `{controller="workspace"}` 会静默返回空结果；
+  若存量告警/看板引用了旧指标名或错误标签，需同步修改；
 - **调谐错误指标去重**：删除自建的 `workspace_reconcile_errors_total`，统一使用
   controller-runtime 内置的 `controller_runtime_reconcile_errors_total{controller="workspace"}`；
   存量告警/看板若引用旧名称需同步修改；

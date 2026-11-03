@@ -1064,7 +1064,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le, cluster) (rate(workqueue_queue_duration_seconds{controller=\"workspace\", cluster=~\"$cluster\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le, cluster) (rate(workqueue_queue_duration_seconds_bucket{name=\"workspace\", cluster=~\"$cluster\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "{{cluster}} · P50",
           "range": true,
@@ -1076,7 +1076,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, cluster) (rate(workqueue_queue_duration_seconds{controller=\"workspace\", cluster=~\"$cluster\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, cluster) (rate(workqueue_queue_duration_seconds_bucket{name=\"workspace\", cluster=~\"$cluster\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "{{cluster}} · P95",
           "range": true,
@@ -1088,7 +1088,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, cluster) (rate(workqueue_queue_duration_seconds{controller=\"workspace\", cluster=~\"$cluster\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, cluster) (rate(workqueue_queue_duration_seconds_bucket{name=\"workspace\", cluster=~\"$cluster\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "{{cluster}} · P99",
           "range": true,
@@ -1493,6 +1493,6 @@
   "timezone": "browser",
   "title": "Workspace Operator - 规模与调谐水位",
   "uid": "workspace-operator",
-  "version": 3,
+  "version": 5,
   "weekStart": ""
 }

@@ -82,11 +82,20 @@ Prometheus 侧只需一条最简抓取规则，不需要 `bearer_token_file`，�
 | 内置指标 | 标签 | 说明 |
 | --- | --- | --- |
 | **`controller_runtime_reconcile_errors_total`** | `controller` | **调谐错误数**（controller 名固定为 `workspace`）。看板/告警用它代替已删除的 `workspace_reconcile_errors_total` |
-| `workqueue_depth` | `name`, `controller`, `priority` | 队列深度。priority queue 下带 `priority` 标签，看板用 `sum(...)` 聚合 |
-| `workqueue_adds_total` | `name`, `controller` | 累计入队次数，看板用 `rate(...)` |
-| **`workqueue_queue_duration_seconds`** | `name`, `controller` | **排队延迟**（进入 ready → 被 worker 取走，不含 rate-limited 重试）。controller 名固定为 `workspace`；看板/告警用它代替已删除的 `workspace_queue_latency_seconds` |
-| `workqueue_longest_running_processor_seconds` | `name`, `controller` | 当前最长执行时长 |
+| `workqueue_depth` | **`name`** | 队列深度，`name="workspace"`。看板用 `sum(...)` 聚合 |
+| `workqueue_adds_total` | **`name`** | 累计入队次数，看板用 `rate(...)` |
+| **`workqueue_queue_duration_seconds`** | **`name`** | **排队延迟**（进入 ready → 被 worker 取走，不含 rate-limited 重试）。`name="workspace"`；看板/告警用它代替已删除的 `workspace_queue_latency_seconds` |
+| `workqueue_longest_running_processor_seconds` | **`name`** | 当前最长执行时长 |
 | `controller_runtime_max_concurrent_reconciles` | **`controller`**（无 `name`） | worker 并发上限 |
+
+> ⚠️ **`workqueue_*` 系列只有 `name` 标签，没有 `controller` 标签。**
+> 它们由 client-go / component-base 注册（见
+> `k8s.io/component-base/metrics/prometheus/workqueue`），队列名通过 `name` 暴露，
+> 本项目固定为 `name="workspace"`。
+> `controller` 标签只存在于 controller-runtime 自有的 `controller_runtime_*` 指标上。
+>
+> 写成 `workqueue_queue_duration_seconds{controller="workspace"}` 会**静默返回空结果**
+> （面板显示 No data，不报错），这是本项目曾经踩过的坑。
 
 ## 看板结构
 
@@ -211,8 +220,8 @@ Grafana → Dashboards → New → Import → 上传 `dashboards/workspace-opera
 # 调谐错误持续出现（内置指标，controller 名固定为 workspace）
 sum(rate(controller_runtime_reconcile_errors_total{controller="workspace"}[5m])) > 0.1
 
-# 队列积压：排队延迟 P95 超过 2 秒（内置 workqueue 直方图，controller 名固定为 workspace）
-histogram_quantile(0.95, sum by (le) (rate(workqueue_queue_duration_seconds{controller="workspace"}[5m]))) > 2
+# 队列积压：排队延迟 P95 超过 2 秒（内置 workqueue 直方图，过滤用 name 而不是 controller）
+histogram_quantile(0.95, sum by (le, cluster) (rate(workqueue_queue_duration_seconds_bucket{name="workspace"}[5m]))) > 2
 
 # Pending/Starting 实例长时间无法进入 Running
 sum(workspace_active_instances{phase=~"Pending|Starting"}) > 100

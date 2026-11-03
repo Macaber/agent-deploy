@@ -133,7 +133,7 @@
     - 暴露并打通 Prometheus 指标：
       - `workspace_reconcile_duration_seconds`（调谐耗时直方图）
       - `controller_runtime_reconcile_errors_total{controller="workspace"}`（调谐失败计数，controller-runtime 内置）
-      - `workqueue_queue_duration_seconds{controller="workspace"}`（工作队列排队延迟，controller-runtime 内置，自带 `controller` 标签）
+      - `workqueue_queue_duration_seconds{name="workspace"}`（工作队列排队延迟，controller-runtime 内置；**只有 `name` 标签，无 `controller` 标签**）
       - `workspace_active_instances`（按 Phase 统计在线实例数）
       - `workspace_total_instances` / `workspace_running_instances`（总数与当前 Running 数，免聚合）
       - `workspace_running_peak_instances` / `workspace_running_peak_timestamp_seconds`

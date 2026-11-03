@@ -14,6 +14,11 @@
 #   ossutil cp -r -f bocomwork oss://<bucket>/workspaces/ws-<ID>/bocomwork/
 #   ossutil cp -r -f bocomcode oss://<bucket>/workspaces/ws-<ID>/bocomcode/
 #
+# 排除规则（默认）：
+#   bocomwork/server/skills/builtin 不进 OSS（平台内置 skills，随镜像分发）。
+#   实现方式不是 ossutil 的 --exclude 通配符，而是在上传前把目录树裁开：
+#   该目录的上级每一层只上传"非排除"的兄弟项，排除项本身既不列举也不上传。
+#
 # 同步语义（默认）：
 #   先探测 oss://<bucket>/workspaces/ws-<ID>/ 下是否已有对象；
 #   - 已有数据 -> 整个工作空间跳过，一个字节都不上传，不覆盖、不删除；
@@ -51,6 +56,11 @@ LOG_EXPLICIT=0
 [ -n "${OSS_MIGRATE_LOG:-}" ] && LOG_EXPLICIT=1
 EXTRA_ARGS=${OSSUTIL_EXTRA_ARGS:-}
 CP_FORCE_ARGS=${OSSUTIL_CP_FORCE_ARGS:--f}
+DEFAULT_EXCLUDES="bocomwork/server/skills/builtin"
+EXCLUDES_RAW=${OSS_MIGRATE_EXCLUDES-$DEFAULT_EXCLUDES}
+EXTRA_EXCLUDES=()
+NO_EXCLUDE=0
+EXCLUDE_PATHS=()
 RETRIES=${OSS_MIGRATE_RETRIES:-3}
 RETRY_SLEEP=${OSS_MIGRATE_RETRY_SLEEP:-5}
 
@@ -106,6 +116,11 @@ usage() {
                       FILE 为 - 时从标准输入读取
   --limit N           最多迁移 N 个（按 ID 排序；可配合 --all / -id / -f 使用，实现分批迁移）
   --list              仅列出本地已有的 Workspace ID 及目录，不做任何迁移（不需要 ossutil）
+
+排除:
+  --exclude PATH      不迁移该目录（相对 PVC 根目录），可重复
+                      默认已排除: bocomwork/server/skills/builtin
+  --no-exclude        取消所有排除，全量上传
 
 数据源:
   --root DIR          local-path 数据根目录；支持相对路径
@@ -272,6 +287,7 @@ read_id_lines() {
         esac
         # 逗号、空格、Tab 都是分隔符
         IFS=$', \t' read -r -a parts <<< "$line" || true
+        [ "${#parts[@]}" -eq 0 ] && continue
         for p in "${parts[@]}"; do
             [ -n "$p" ] && printf '%s\n' "$p"
         done
@@ -286,9 +302,11 @@ collect_raw_ids() {
     if [ -n "$RAW_IDS" ]; then
         RAW_IDS=${RAW_IDS//，/,}
         IFS=$', \t' read -r -a parts <<< "$RAW_IDS" || true
+        if [ "${#parts[@]}" -gt 0 ]; then
         for p in "${parts[@]}"; do
             [ -n "$p" ] && printf '%s\n' "$p"
         done
+        fi
     fi
 
     [ "${#IDS_FILES[@]}" -gt 0 ] || return 0
@@ -417,6 +435,11 @@ while [ $# -gt 0 ]; do
         --ossutil-arg)
             [ $# -ge 2 ] || die "--ossutil-arg 需要一个参数"; EXTRA_ARGS="$EXTRA_ARGS $2"; shift ;;
         --ossutil-arg=*)    EXTRA_ARGS="$EXTRA_ARGS ${1#*=}" ;;
+        --exclude)
+            [ $# -ge 2 ] || die "--exclude 需要一个相对路径，例如 --exclude bocomwork/tmp"
+            EXTRA_EXCLUDES[${#EXTRA_EXCLUDES[@]}]=$2; shift ;;
+        --exclude=*)        EXTRA_EXCLUDES[${#EXTRA_EXCLUDES[@]}]=${1#*=} ;;
+        --no-exclude)       NO_EXCLUDE=1 ;;
         --no-verify)        DO_VERIFY=0 ;;
         --no-stats)         DO_STATS=0 ;;
         -v|--verbose)       VERBOSE=1 ;;
@@ -489,6 +512,7 @@ resolve_root() {
 
 preflight() {
     resolve_root
+    build_excludes
 
     case "$OSS_BUCKET" in
         oss://*) ;;
@@ -632,6 +656,11 @@ print_plan() {
     printf '  本地根目录 : %s\n' "$ROOT"
     printf '  目标前缀   : %s/%s/\n' "$OSS_BUCKET" "$OSS_PREFIX"
     printf '  迁移子目录 : %s\n' "$DIRS_CSV"
+    if [ "${#EXCLUDE_PATHS[@]}" -eq 0 ]; then
+        printf '  排除目录   : 无（全量上传）\n'
+    else
+        printf '  排除目录   : %s\n' "$(csv "${EXCLUDE_PATHS[@]}")"
+    fi
     if [ "$FORCE_UPLOAD" -eq 1 ]; then
         printf '  远端已有数据 : --force 已开启，忽略远端状态，直接覆盖上传\n'
     else
@@ -754,12 +783,143 @@ remote_count() {
     printf '%s' "$n"
 }
 
+# ------------------------------------------------------------------ 排除规则
+# 解析 --exclude / 环境变量，规范成相对 PVC 根目录的路径（去掉 ./ 和结尾 /）
+build_excludes() {
+    EXCLUDE_PATHS=()
+    if [ "$NO_EXCLUDE" -eq 1 ]; then
+        return 0
+    fi
+
+    local item e
+    local -a items=()
+    IFS=$', \t' read -r -a items <<< "$EXCLUDES_RAW" || true
+    if [ "${#EXTRA_EXCLUDES[@]}" -gt 0 ]; then
+        for item in "${EXTRA_EXCLUDES[@]}"; do
+            items[${#items[@]}]=$item
+        done
+    fi
+
+    [ "${#items[@]}" -eq 0 ] && return 0
+    for item in "${items[@]}"; do
+        [ -n "$item" ] || continue
+        case "$item" in
+            /*) die "--exclude 必须是相对 PVC 根目录的路径: ${item}" ;;
+        esac
+        item=${item#./}
+        item=${item%/}
+        case "$item" in
+            ''|.|..|..*|*/..|*/../*)
+                die "--exclude 路径非法: ${item}" ;;
+        esac
+        # 去重
+        local dup=0
+        if [ "${#EXCLUDE_PATHS[@]}" -gt 0 ]; then
+            for e in "${EXCLUDE_PATHS[@]}"; do
+                [ "$e" = "$item" ] && dup=1
+            done
+        fi
+        [ "$dup" -eq 0 ] && EXCLUDE_PATHS[${#EXCLUDE_PATHS[@]}]=$item
+    done
+    return 0
+}
+
+# rel 本身是否被排除（等于排除路径，或位于其下）
+is_excluded_path() {
+    local rel=$1 e
+    [ "${#EXCLUDE_PATHS[@]}" -gt 0 ] || return 1
+    for e in "${EXCLUDE_PATHS[@]}"; do
+        [ "$rel" = "$e" ] && return 0
+        case "$rel" in
+            "$e"/*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# rel 下面是否还有被排除的路径（需要继续往下拆）
+has_excluded_below() {
+    local rel=$1 e
+    [ "${#EXCLUDE_PATHS[@]}" -gt 0 ] || return 1
+    for e in "${EXCLUDE_PATHS[@]}"; do
+        case "$e" in
+            "$rel"/*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# 统计某子目录下"实际要迁移"的文件数（扣除被排除目录里的文件）
+count_files() {
+    local pvc=$1 sub=$2 e
+    local -a ex=()
+    if [ "${#EXCLUDE_PATHS[@]}" -gt 0 ]; then
+        for e in "${EXCLUDE_PATHS[@]}"; do
+            ex[${#ex[@]}]=-not
+            ex[${#ex[@]}]=-path
+            ex[${#ex[@]}]="$pvc/$e"
+            ex[${#ex[@]}]=-not
+            ex[${#ex[@]}]=-path
+            ex[${#ex[@]}]="$pvc/$e/*"
+        done
+        find "$pvc/$sub" -type f "${ex[@]}" 2>/dev/null | wc -l | tr -d ' '
+    else
+        find "$pvc/$sub" -type f 2>/dev/null | wc -l | tr -d ' '
+    fi
+}
+
+# 上传单个相对路径（文件或目录）
+UPLOAD_UNITS=0
+cp_one() {
+    local pvc=$1 remote=$2 rel=$3
+    UPLOAD_UNITS=$((UPLOAD_UNITS + 1))
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        if [ -d "$pvc/$rel" ]; then
+            note "[dry-run] (cd ${pvc} && ossutil cp -r ${CP_FORCE_ARGS} ${rel} ${remote}/${rel}/)"
+        else
+            note "[dry-run] (cd ${pvc} && ossutil cp ${CP_FORCE_ARGS} ${rel} ${remote}/${rel})"
+        fi
+        return 0
+    fi
+
+    if [ -d "$pvc/$rel" ]; then
+        # shellcheck disable=SC2086
+        ( cd "$pvc" && run_ossutil_with_retry "cp ${rel}" cp -r $CP_FORCE_ARGS "$rel" "$remote/$rel/" )
+    else
+        # shellcheck disable=SC2086
+        ( cd "$pvc" && run_ossutil_with_retry "cp ${rel}" cp $CP_FORCE_ARGS "$rel" "$remote/$rel" )
+    fi
+}
+
+# 递归上传：遇到被排除的分支就整体跳过，其上级只上传兄弟项
+upload_tree() {
+    local pvc=$1 remote=$2 rel=$3
+    local entry base
+
+    if is_excluded_path "$rel"; then
+        note "排除（不上传）: ${rel}"
+        return 0
+    fi
+
+    if [ -d "$pvc/$rel" ] && has_excluded_below "$rel"; then
+        for entry in "$pvc/$rel"/* "$pvc/$rel"/.[!.]* "$pvc/$rel"/..?*; do
+            [ -e "$entry" ] || [ -L "$entry" ] || continue
+            base=${entry##*/}
+            upload_tree "$pvc" "$remote" "$rel/$base" || return 1
+        done
+        return 0
+    fi
+
+    cp_one "$pvc" "$remote" "$rel"
+}
+
 # ------------------------------------------------------------------ 单个迁移
 # 返回: 0=成功 1=失败 3=跳过
 migrate_one() {
     local id=$1 dir=$2
     local remote="${OSS_BUCKET}/${OSS_PREFIX}/ws-${id}"
-    local d present=() paths=() rc size files dirs_str failed_dir="" remote_cnt
+    local d present=() rc size files dirs_str failed_dir="" remote_cnt
 
     printf '\n%s==== ws-%s ====%s\n' "$C_INFO" "$id" "$C_END"
     note "本地: ${dir}"
@@ -815,19 +975,21 @@ migrate_one() {
         note "已指定 --force，忽略远端已有数据，直接覆盖上传"
     fi
 
-    # 2) 逐个子目录上传
+    # 2) 逐个子目录上传（按排除规则裁剪目录树）
+    UPLOAD_UNITS=0
     for d in "${present[@]}"; do
-        if [ "$DRY_RUN" -eq 1 ]; then
-            note "[dry-run] (cd ${dir} && ossutil cp -r ${CP_FORCE_ARGS} ${d} ${remote}/${d}/)"
-            continue
-        fi
-        info "上传 ${d} -> ${remote}/${d}/（已存在则覆盖）"
-        # shellcheck disable=SC2086
-        if ! ( cd "$dir" && run_ossutil_with_retry "cp ${d}" cp -r $CP_FORCE_ARGS "$d" "$remote/$d/" ); then
+        info "上传 ${d} -> ${remote}/${d}/"
+        if ! upload_tree "$dir" "$remote" "$d"; then
             failed_dir=$d
             break
         fi
     done
+
+    if [ "$UPLOAD_UNITS" -eq 0 ] && [ -z "$failed_dir" ]; then
+        warn "ws-${id} 所有内容都在排除列表中，跳过"
+        log_write SKIP "ws-${id}" "$dir" "$remote" "" "" "" "全部内容被排除"
+        return 3
+    fi
 
     if [ -n "$failed_dir" ]; then
         err "ws-${id} 上传子目录 ${failed_dir} 失败（已重试 ${RETRIES} 次）"
@@ -850,7 +1012,7 @@ migrate_one() {
     if [ "$DO_VERIFY" -eq 1 ]; then
         local local_files=0 d_lc warn_dirs=""
         for d in "${present[@]}"; do
-            d_lc=$(find "$dir/$d" -type f 2>/dev/null | wc -l | tr -d ' ')
+            d_lc=$(count_files "$dir" "$d")
             local_files=$((local_files + ${d_lc:-0}))
             if [ "${d_lc:-0}" -gt 0 ] && ! remote_prefix_has_objects "$remote/$d/"; then
                 warn_dirs="${warn_dirs} ${d}"
@@ -871,14 +1033,24 @@ migrate_one() {
         fi
     fi
 
-    # 4) 本地统计 + 成功日志
-    for d in "${present[@]}"; do
-        paths[${#paths[@]}]=$dir/$d
-    done
+    # 4) 本地统计 + 成功日志（大小/文件数都扣除被排除目录）
     size="-"; files="-"
     if [ "$DO_STATS" -eq 1 ]; then
-        size=$(human_size "$(du -sk "${paths[@]}" 2>/dev/null | awk '{s += $1} END {printf "%d", s + 0}')")
-        files=$(find "${paths[@]}" -type f 2>/dev/null | wc -l | tr -d ' ')
+        local kb=0 e_kb f=0
+        for d in "${present[@]}"; do
+            kb=$((kb + $(du -sk "$dir/$d" 2>/dev/null | awk '{printf "%d", $1 + 0}')))
+            f=$((f + $(count_files "$dir" "$d")))
+        done
+        if [ "${#EXCLUDE_PATHS[@]}" -gt 0 ]; then
+            for d in "${EXCLUDE_PATHS[@]}"; do
+                [ -d "$dir/$d" ] || continue
+                e_kb=$(du -sk "$dir/$d" 2>/dev/null | awk '{printf "%d", $1 + 0}')
+                kb=$((kb - ${e_kb:-0}))
+            done
+        fi
+        [ "$kb" -lt 0 ] && kb=0
+        size=$(human_size "$kb")
+        files=$f
     fi
 
     log_write OK "ws-${id}" "$dir" "$remote" "$dirs_str" "$size" "$files" "remote_objects=${remote_cnt}"

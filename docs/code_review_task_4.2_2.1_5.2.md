@@ -54,7 +54,7 @@ KUBEBUILDER_ASSETS=$PWD/bin/k8s/1.36.0-darwin-arm64 \
 | P2-1 | 4.2 | 🟡 | ✅ | `byOwner`/`byOA` 索引建了但没用 | `matchOffsets` 改为从最小候选集起步（`workspace_cache.go:221-300`），三个索引都参与选路 |
 | P2-2 | 2.1 | 🟡 | ✅ | 并发 Update 同一份 NetworkPolicy | `workspace_controller.go:1593-1606`：`IsConflict` 时静默返回，由 netpol watch 触发下一次收敛 |
 | P2-3 | 5.2 | 🟡 | ✅ | `publish()` 为 O(N)，调谐 O(N²) | 改为增量 `Inc/Dec`（`metrics.go:162-198`），仅 `resetAll` 全量重建；`BenchmarkWorkspacePhaseTrackerSet` 5000 跟踪项下 122ns/op |
-| P2-4 | 5.2 | 🟡 | ✅ | 自建 queue 与内置指标重复 + 全局锁 | 删除 wrapper 与 `NewQueue` 注入，看板 3 个面板改用内置 `workqueue_queue_duration_seconds{controller="workspace"}` |
+| P2-4 | 5.2 | 🟡 | ✅ | 自建 queue 与内置指标重复 + 全局锁 | 删除 wrapper 与 `NewQueue` 注入，看板 3 个面板改用内置 `workqueue_queue_duration_seconds{name="workspace"}`（勘误：该指标只有 `name`，无 `controller` 标签，见下方勘误说明） |
 | P3-1 | 4.2 | 🟢 | 🟡 | 防抖窗口导致创建后列表短暂不可见 | 文档已写明窗口 `api_manual.md:13`，但仍无 upsert-after-create |
 | P3-2 | 4.2 | 🟢 | ✅ | `/healthz` 就绪门禁无消费者 | `deploy/api-server-deploy.yaml:65,75` readiness/liveness |
 | P3-3 | 4.2 | 🟢 | ❌ | `rebuildNow` 与 timer rebuild 旧快照覆盖 | `workspace_cache.go:162-186` 无串行化 |
@@ -467,11 +467,15 @@ func (t *workspacePhaseTracker) set(key types.NamespacedName, phase aiv1alpha1.W
 controllerOptions.NewQueue = newInstrumentedWorkspaceQueue
 ```
 
-`workqueue_queue_duration_seconds{name,controller}` 的语义与自定义 `workspace_queue_latency_seconds` **完全一致**（进入 ready 树 → 被 worker 取走，均不含 rate-limited 重试），且内置指标自带 `controller` label、无额外锁。而包装器让每次 `Add`/`Get` 都过一遍 `q.mu`（`:232-280`），在事件风暴下是真实争用点。
+`workqueue_queue_duration_seconds{name}` 的语义与自定义 `workspace_queue_latency_seconds` **完全一致**（进入 ready 树 → 被 worker 取走，均不含 rate-limited 重试），且内置指标无额外锁。
+
+> **勘误（2026-11-03，实机验证）**：本节原写作"内置指标自带 `controller` label"是**错误**的。workqueue 系列指标由 client-go / component-base 注册（`k8s.io/component-base/metrics/prometheus/workqueue`），**只有 `name` 标签**（本项目为 `name="workspace"`），`controller` 标签只存在于 `controller_runtime_*` 自有指标上。按错误标签写的 `workqueue_queue_duration_seconds{controller="workspace"}` 会静默返回空结果，表现为看板「工作队列排队延迟」整块 **No data**。看板与 README/告警示例已一并修正为 `name="workspace"`（另需注意 `histogram_quantile` 的输入必须带 `_bucket` 后缀）。
+
+而包装器让每次 `Add`/`Get` 都过一遍 `q.mu`（`:232-280`），在事件风暴下是真实争用点。
 
 **修复建议**：优先删掉包装器与 `NewQueue` 注入，看板/告警改查内置指标（P1-5 已改用内置指标，删掉不影响看板）。若确需业务口径，至少用分片锁/`sync.Map` 并给 histogram 加 `controller` label。
 
-**处置结论（已修复，选删除）**：`metrics.go` 删除 `workspaceQueueLatency`、`newInstrumentedWorkspaceQueue`、`instrumentedWorkspaceQueue` 与 `nonNegativeDuration`；`workspace_controller.go` 删除 `controllerOptions.NewQueue` 注入，恢复 controller-runtime 默认队列（内置指标自带 `controller="workspace"` 标签、无需额外锁）。看板 3 个 P50/P95/P99 面板与 README 指标表/告警 PromQL 同步改为 `workqueue_queue_duration_seconds{controller="workspace"}`；对应的 4 个 wrapper 单测删除。
+**处置结论（已修复，选删除）**：`metrics.go` 删除 `workspaceQueueLatency`、`newInstrumentedWorkspaceQueue`、`instrumentedWorkspaceQueue` 与 `nonNegativeDuration`；`workspace_controller.go` 删除 `controllerOptions.NewQueue` 注入，恢复 controller-runtime 默认队列（内置指标无需额外锁）。看板 3 个 P50/P95/P99 面板与 README 指标表/告警 PromQL 同步改为 `workqueue_queue_duration_seconds{name="workspace"}`（原先误用了 `controller` 标签，已勘误）；对应的 4 个 wrapper 单测删除。
 
 ---
 
@@ -643,4 +647,4 @@ Monitor 仍是旧的 secure 配置：
 - [ ] `docs/large_scale_optimization_todo.md` 5.2 完成记录包含 metrics 端口/安全模式变更（见 N-6）；
 - [x] 发布说明写明"本次升级会重建所有 Workspace Pod"（见 P3-4，`docs/release-notes.md`）；
 - [x] `workspace_active_instances` 的 per-reconcile 开销不再随实例数线性增长（见 P2-3，增量 `Inc/Dec`，benchmark 122ns/op）；
-- [x] 无自建 queue 包装器，且排队延迟改用内置 `workqueue_queue_duration_seconds{controller="workspace"}`（见 P2-4）；
+- [x] 无自建 queue 包装器，且排队延迟改用内置 `workqueue_queue_duration_seconds_bucket{name="workspace"}`（见 P2-4 及其勘误）；

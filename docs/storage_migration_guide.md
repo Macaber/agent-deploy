@@ -219,6 +219,34 @@ ossutil cp -r -f bocomcode oss://<bucket>/workspaces/ws-<ID>/bocomcode/
 * 探测只看"是否有非目录对象"，因此**误判风险很低**；但请注意：若某个 Workspace 曾在 OSS 上被上传过一部分，之后会被整体跳过，需用 `--force` 补齐。
 * 切勿给 `ossutil cp` 传 `-u/--update`：该参数会跳过"远端不旧于本地"的文件，与 `--force` 覆盖语义相反。
 
+#### 7.2.1 默认排除的目录
+
+`bocomwork/server/skills/builtin` 里的内容**不迁移**（平台内置 skills，随镜像/部署分发，不属于工作空间数据）。
+
+脚本不是用 `ossutil --exclude` 通配符，而是在上传前把目录树裁开：排除路径的每一层只上传"非排除"的兄弟项，被排除目录完全不列举、不上传。
+
+```text
+bocomwork/                          -> 上传 server 之外的所有项
+bocomwork/server/                   -> 上传 skills 之外的所有项
+bocomwork/server/skills/            -> 上传 builtin 之外的所有项
+bocomwork/server/skills/builtin/    -> 完全跳过
+```
+
+这样做的好处是：不依赖 ossutil v1/v2 对 `--exclude` 通配符的匹配差异，排除规则不会"静默失效"。
+
+相关参数：
+
+| 用法 | 说明 |
+| --- | --- |
+| 默认 | 排除 `bocomwork/server/skills/builtin` |
+| `--exclude PATH` | 追加排除，路径相对 PVC 根目录，可重复（如 `--exclude bocomwork/tmp`，也可排除单个文件） |
+| `--no-exclude` | 取消所有排除，全量上传 |
+| `OSS_MIGRATE_EXCLUDES="a/b,c/d"` | 环境变量方式覆盖默认排除；设为空字符串即不排除 |
+
+日志里的大小/文件数会**扣除被排除目录**，与实际上传量一致。
+
+> ⚠️ 注意：排除意味着 OSS 侧没有 `builtin` 目录。Workspace 切到 OSS 存储后，需要保证启动流程（镜像内置或初始化脚本）会重新把这批内置 skills 写回 PVC，否则容器里会缺 `bocomwork/server/skills/builtin`。
+
 ### 7.3 用法
 
 > **可以直接在数据目录里执行**，不需要记生产路径：
@@ -288,6 +316,8 @@ ws-0001-pvc
 | `--root DIR` | local-path 数据根目录；支持相对路径。省略时自动识别（当前目录 → `/data/local-path-storage`） |
 | `--bucket` / `--prefix` | OSS 目标，默认 `oss://euvduatc-oss` + `workspaces` |
 | `--dirs LIST` | 需要迁移的子目录，默认 `workspace,bocomwork,bocomcode` |
+| `--exclude PATH` | 额外排除某个目录/文件（相对 PVC 根目录），可重复 |
+| `--no-exclude` | 取消所有排除（含默认的 `bocomwork/server/skills/builtin`），全量上传 |
 | `--force` | 忽略远端已有数据，强制覆盖上传（默认：远端有数据就跳过） |
 | `--ossutil-arg ARG` | 透传 ossutil 参数（如 `--ossutil-arg=--jobs=10` 提升并发） |
 | `--dry-run` | 演练模式 |
