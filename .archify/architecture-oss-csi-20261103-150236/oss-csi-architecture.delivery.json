@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "760223a2-de2e-4ca0-aea7-18927eb89e59",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/Users/yfsun/mywork/myproject/agent-deploy/.archify/architecture-oss-csi-20261103-150236/candidate.json",
+  "output": "/Users/yfsun/mywork/myproject/agent-deploy/.archify/architecture-oss-csi-20261103-150236/oss-csi-architecture.html",
+  "specification": {
+    "sha256": "5c2699627013ae5685ce61839db11cc855d366d4e078c2ed847c1bacbaac2aac",
+    "bytes": 5885
+  },
+  "artifact": {
+    "sha256": "e90d92c8009becc0da3794fdaad6889bcffb9ea5ddcca2df673e9ded0047ed1b",
+    "bytes": 757965
+  }
+}

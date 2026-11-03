@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "OSS 工作空间存储四组件架构",
+    "locale": "zh-CN",
+    "output": ".archify/architecture-oss-csi-20261103-150236/oss-csi-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/Macaber/agent-deploy",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "574f1cf639d99698b4c8751c9b569478dc40af15"
+    }
+  },
+  "components": [
+    {
+      "id": "kubelet",
+      "type": "external",
+      "label": "kubelet",
+      "sublabel": "节点 N · 卷挂载协调",
+      "tag": "节点 N",
+      "pos": [40, 320],
+      "size": [150, 74],
+      "sources": [
+        { "path": "deploy/oss/csi-plugin.yaml", "line": 87, "end_line": 96, "label": "CSIDriver attachRequired" },
+        { "path": "deploy/oss/csi-plugin.yaml", "line": 117, "end_line": 125, "label": "driver registrar 注册" },
+        { "path": "deploy/oss/csi-controller.yaml", "line": 1, "end_line": 10, "label": "VolumeAttachment 与 FUSE Pod 流程" }
+      ]
+    },
+    {
+      "id": "controller",
+      "type": "backend",
+      "label": "csi-controller-oss",
+      "sublabel": "Deployment · 1 副本",
+      "tag": "CSI 控制面",
+      "pos": [650, 100],
+      "size": [200, 74],
+      "sources": [
+        { "path": "deploy/oss/csi-controller.yaml", "line": 11, "end_line": 76, "label": "controller + external-attacher" }
+      ]
+    },
+    {
+      "id": "nodeplugin",
+      "type": "backend",
+      "label": "csi-plugin-oss",
+      "sublabel": "DaemonSet · 每节点 1 Pod",
+      "tag": "CSI 节点面",
+      "pos": [340, 320],
+      "size": [190, 74],
+      "sources": [
+        { "path": "deploy/oss/csi-plugin.yaml", "line": 98, "end_line": 209, "label": "节点插件 DaemonSet" }
+      ]
+    },
+    {
+      "id": "fusepod",
+      "type": "backend",
+      "label": "ossfs FUSE Pod",
+      "sublabel": "每个卷 1 个 · 运行 ossfs",
+      "tag": "ack-csi-fuse",
+      "pos": [650, 320],
+      "size": [200, 74],
+      "sources": [
+        { "path": "deploy/oss/csi-controller.yaml", "line": 1, "end_line": 10, "label": "FUSE Pod 创建流程" },
+        { "path": "deploy/oss/csi-plugin.yaml", "line": 17, "end_line": 26, "label": "ack-csi-fuse 命名空间" }
+      ]
+    },
+    {
+      "id": "workspace",
+      "type": "frontend",
+      "label": "Workspace Pod",
+      "sublabel": "用户开发容器 · /workspace",
+      "tag": "用户容器",
+      "pos": [650, 560],
+      "size": [200, 76],
+      "sources": [
+        { "path": "internal/controller/workspace_controller.go", "line": 968, "end_line": 978, "label": "/workspace 挂载" },
+        { "path": "internal/controller/workspace_controller.go", "line": 549, "end_line": 555, "label": "PV 子路径 /workspaces/<ws>" }
+      ]
+    },
+    {
+      "id": "oss",
+      "type": "database",
+      "label": "OSS Bucket",
+      "sublabel": "workspaces/<ws-name>/",
+      "tag": "对象存储",
+      "pos": [960, 322],
+      "size": [170, 70],
+      "sources": [
+        { "path": "deploy/oss/storageclass.yaml", "line": 1, "end_line": 22, "label": "OSS StorageClass" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Kubernetes 集群",
+      "wraps": ["kubelet", "controller", "nodeplugin", "fusepod", "workspace"],
+      "pad": 22
+    },
+    {
+      "kind": "security-group",
+      "label": "工作节点 N",
+      "wraps": ["nodeplugin", "fusepod", "workspace"],
+      "pad": 18
+    }
+  ],
+  "connections": [
+    {
+      "from": "kubelet",
+      "to": "nodeplugin",
+      "label": "挂载 / 卸载",
+      "fromSide": "right",
+      "toSide": "left",
+      "route": "straight",
+      "labelAt": [265, 342]
+    },
+    {
+      "from": "kubelet",
+      "to": "controller",
+      "label": "VolumeAttachment",
+      "fromSide": "top",
+      "toSide": "left",
+      "via": [[115, 137]],
+      "labelAt": [380, 122]
+    },
+    {
+      "from": "controller",
+      "to": "fusepod",
+      "label": "创建 / 删除 FUSE Pod",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight",
+      "labelAt": [750, 247]
+    },
+    {
+      "from": "nodeplugin",
+      "to": "fusepod",
+      "label": "FUSE 挂载点",
+      "fromSide": "right",
+      "toSide": "left",
+      "route": "straight",
+      "labelAt": [590, 342]
+    },
+    {
+      "from": "nodeplugin",
+      "to": "workspace",
+      "label": "bind-mount",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "via": [[435, 598]],
+      "labelAt": [540, 583]
+    },
+    {
+      "from": "workspace",
+      "to": "fusepod",
+      "label": "读写 /workspace",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "route": "straight",
+      "labelAt": [750, 478]
+    },
+    {
+      "from": "fusepod",
+      "to": "oss",
+      "label": "HTTPS 读写",
+      "fromSide": "right",
+      "toSide": "left",
+      "route": "straight",
+      "labelAt": [905, 342]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "两阶段挂载",
+      "items": [
+        "kubelet 创建 VolumeAttachment，驱动 Attach / Detach",
+        "Controller 在目标节点拉起或删除 FUSE Pod",
+        "Node plugin 执行 NodePublish / Unpublish，把挂载点 bind-mount 进 Pod"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "数据面",
+      "items": [
+        "应用写 /workspace → 内核 FUSE → ossfs",
+        "ossfs 异步上传 OSS，close / flush / fsync 触发",
+        "停止时先 unmount flush，再回收 FUSE Pod"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "故障域",
+      "items": [
+        "Node plugin 异常：新挂载失败，已有 I/O 通常继续",
+        "FUSE Pod 异常：/workspace I/O 报错，缓存可能丢失",
+        "Controller 异常：已有挂载不受影响，新启动与回收停滞"
+      ]
+    }
+  ]
+}
