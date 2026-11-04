@@ -11,7 +11,7 @@
 | **控制器 (Operator)** | 单 Worker 串行调谐；每次调谐无条件执行 4 次 `r.Update`；无索引全局扫描 PodList | 调谐严重滞后排队（单轮排队数分钟）；API Server 遭遇写放大与 APF 限流；级联触发事件风暴 |
 | **网络与路由** | 每个 Workspace 独立维护 1 个 Ingress | 5,000 个 Ingress 导致 Nginx 配置文件膨胀数十 MB，频繁变更引发无休止的 `nginx -s reload`，长连接（WebIDE WebSocket）频繁断连 |
 | **K8s 控制面** | 1 个 Workspace 对应 7~9 个关联资源（Deployment, RS, Pod, Svc, Ingress, NetPol, PVC 等） | 集群对象数膨胀至 3.5 万 ~ 4.5 万个，etcd 内存剧增，CoreDNS 与 Kube-proxy iptables 链饱和 |
-| **底层存储** | 单点 NFS 服务端或单 Bucket OSSFS 直挂 | 5,000 个活跃开发容器高频文件监控（inotify/git/编译）压垮 NFS 锁与 RPC；打穿 OSS 单 Bucket QPS 导致 503 SlowDown |
+| **底层存储** | 当前主线为 OSS 对象存储卷 + ossfs 1.0（单 Bucket、每卷一个 FUSE Pod）；存量集群仍有单点 NFS 服务端 | 5,000 个活跃开发容器高频文件监控（inotify/git/编译）压垮存量 NFS 锁与 RPC；打穿 OSS 单 Bucket QPS 导致 503 SlowDown |
 | **API-Server** | `GET /api/workspaces` 内存全量 List；创建/唤醒时 90 秒同步阻塞轮询 + Ingress 探活 | 管理后台高频查询导致 API-Server 内存 OOM；早高峰数百人并发唤醒产生海量轮询探活流量，雪崩故障 |
 
 ---
@@ -84,17 +84,20 @@
 
 ### 🟡 阶段三：底层存储并发升级与分层加速 (P1)
 
-- [ ] **Task 3.1：废弃单机 NFS，迁移至分布式共享文件存储**
-  - **位置**：`deploy/nfs/`、`deploy-ack/storageclass.yaml`
-  - **内容**：
-    - 废弃单节点 `nfs-client-provisioner`。
-    - 生产迁移至云厂商全托管分布式存储（如阿里云 NAS 极速型 / CPFS）或开源 CephFS / GlusterFS。
-  - **验收标准**：支撑 5,000 客户端并发读写无 RPC 挂起与元数据锁死。
+> 存储主线已定版为 **OSS 对象存储卷 + ossfs 1.0**（见 [storage_plan.md](storage_plan.md)）。本节是 OSS 主线的性能演进项；Task 3.1 只适用于附录 B 的存量 NAS/NFS 集群，不代表当前落地方案。
 
-- [ ] **Task 3.2：引入 JuiceFS 优化 OSS 挂载性能**
-  - **位置**：`deploy/oss/`、`deploy-ack/storageclass-ossfs2.yaml`
+- [ ] **Task 3.1：废弃单机 NFS（仅适用于附录/存量集群方案）**
+  - **位置**：`deploy/nfs/`（部署手册附录 B，存量集群）
   - **内容**：
-    - 针对 OSS 存储方案，使用 **JuiceFS**（Redis/TiKV 存储元数据，OSS 存储数据块）替代传统单 Pod FUSE 直挂。
+    - 适用范围仅限仍在跑附录 B NAS/NFS 方案的存量集群，不属于当前施工范围；新集群生产主线已是 OSS + ossfs 1.0。
+    - 废弃单节点 `nfs-client-provisioner`。
+    - 存量集群的首选收敛方向是**迁移到 OSS**（见 [storage_migration_guide.md](storage_migration_guide.md) 第 4 章）；仅在确需保留共享文件语义时才考虑云厂商全托管分布式存储（如阿里云 NAS 极速型 / CPFS）或开源 CephFS / GlusterFS。
+  - **验收标准**：存量集群不再以 NAS/NFS 作为生产 Workspace 的默认存储；收敛后无 RPC 挂起与元数据锁死。
+
+- [ ] **Task 3.2：引入 JuiceFS 优化 OSS 挂载性能（长期演进，不改变主线）**
+  - **位置**：`deploy/oss/`（当前主线）；`deploy-ack/` 属附录 C（ACK 部署包，暂不启用），其中的 `storageclass-ossfs2.yaml` 为附录/历史方案，不是当前施工位置。
+  - **内容**：
+    - 在**保持 OSS + ossfs 1.0 主线不变**的前提下，评估用 **JuiceFS**（Redis/TiKV 存储元数据，OSS 存储数据块）替代"每卷一个 FUSE Pod 的 ossfs 1.0 直挂"这一长期性能演进选项。
     - 开启工作空间节点本地 Cache（SSD 缓存加速工作区依赖如 node_modules、pip cache）。
   - **验收标准**：规避 OSS 原生小文件元数据瓶颈，杜绝 OSS Bucket 503 SlowDown 告警。
 

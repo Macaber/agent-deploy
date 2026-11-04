@@ -20,7 +20,9 @@ spec:
         value: "agentpass123"
   storage:
     size: "10Gi"
-    storageClass: "standard"
+    # 生产定版：OSS 对象存储卷 + ossfs 1.0（StorageClass alicloud-oss）。
+    # 若测试集群未部署 OSS CSI/StorageClass，可留空走集群默认存储类，或临时指定其他 StorageClass。
+    storageClass: "alicloud-oss"
   # configMapVolumeMounts:
   #   - configMapName: "bocomwork-config"
   #     mountPath: "/etc/bocomwork"

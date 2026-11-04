@@ -3,6 +3,8 @@
 > 适用版本：本文基于 `agent-deploy` 仓库 commit `574f1cf639d99698b4c8751c9b569478dc40af15` 的代码与清单整理。
 > 涵盖内容：OSS 数据写入链路、`csi-controller-oss` / `csi-plugin-oss` / `ossfs FUSE Pod` / `Workspace Pod` 四组件关系、Node Plugin 职责、关闭工作空间对同步的影响，以及排障命令。
 
+> **方案定位（定版）**：OSS 对象存储卷 + **ossfs 1.0**（`fuseType: ossfs`）是当前**唯一生产方案**，本文描述其运行期实现。阿里云 ACK 部署包（`deploy-ack/`）暂不启用，NAS/NFS 与 Local Path 已降级为附录备选；结论见 [storage_plan.md](storage_plan.md)。
+
 ---
 
 ## 0. 结论速览
@@ -31,7 +33,7 @@
 |---|---|
 | `csi-controller-oss` | CSI 控制面 Deployment，负责 Attach/Detach 与 FUSE Pod 生命周期 |
 | `csi-plugin-oss` | CSI 节点面 DaemonSet，每节点一个，负责驱动注册与节点侧挂载操作 |
-| `ossfs FUSE Pod` | 每个卷一个，运行 ossfs 客户端，真正挂载 OSS 并上传/下载数据 |
+| `ossfs FUSE Pod` | 每个卷一个，运行 **ossfs 1.0** 客户端，真正挂载 OSS 并上传/下载数据 |
 | `Workspace Pod` | 用户开发容器，消费 `/workspace` 挂载点 |
 | `kubelet` | 协调 Attach/Publish 流程，调用节点插件 |
 | `OSS Bucket` | 数据最终落点，路径前缀 `workspaces/<ws-name>/` |
@@ -69,7 +71,7 @@ Workspace Pod 写 /workspace
 
 对应清单与代码：
 
-- OSS StorageClass：`deploy/oss/storageclass.yaml:1-22`（`provisioner: ossplugin.csi.alibabacloud.com`）
+- OSS StorageClass：`deploy/oss/storageclass.yaml:1-32`（`provisioner: ossplugin.csi.alibabacloud.com`）
 - Operator 创建静态 PV，子路径 `/workspaces/<ws-name>`：`internal/controller/workspace_controller.go:504-599`，其中 `subPath` 在 `:549`
 - 容器内 `/workspace` 挂载：`internal/controller/workspace_controller.go:968-1001`
 
@@ -83,7 +85,7 @@ Workspace Pod 写 /workspace
 |---|---|---|---|
 | `csi-controller-oss` | Deployment，1 副本，`default` 命名空间 | CSI 控制面：处理 Attach/Detach、扩容协调，**创建/删除 FUSE Pod** | 集群级常驻 |
 | `csi-plugin-oss` | DaemonSet，**每个节点 1 个**，`default` 命名空间 | CSI 节点面：向 kubelet 注册驱动、执行 NodeStage/NodePublish/NodeUnpublish、bind-mount | 节点级常驻 |
-| ossfs（FUSE Pod） | Pod，**每个卷 1 个**，`ack-csi-fuse` 命名空间 | 数据面客户端：运行 ossfs，挂载 Bucket 子路径，负责读写和上传 | 跟随卷的 attach/detach |
+| ossfs（FUSE Pod） | Pod，**每个卷 1 个**，`ack-csi-fuse` 命名空间 | 数据面客户端：运行 **ossfs 1.0**，挂载 Bucket 子路径，负责读写和上传 | 跟随卷的 attach/detach |
 | `Workspace Pod` | 用户工作空间 Pod | 数据消费者：只看到 `/workspace`、`/data` 等挂载点，**不直接连 OSS** | 跟随 Workspace 启停 |
 
 一句话概括：
@@ -326,7 +328,7 @@ ossfs 是 FUSE 文件系统，**写入是异步的**：
 
 `idleTimeout` 到期后，Controller 同样通过 `computeDesiredReplicas` 把副本数缩到 0（`internal/controller/workspace_controller.go:1298-1318`），走的是和手动停止相同的终止流程，因此有相同的 flush 窗口。
 
-注意：`idleTimeout` **不是**“检测用户停止操作后的闲置”，而是“自 `lastActiveTime` 起的最大运行窗口”；`lastActiveTime` 不会因业务 HTTP 流量自动刷新（见 `docs/workspace_user_manual.md:45-46`）。
+注意：`idleTimeout` **不是**“检测用户停止操作后的闲置”，而是“自 `lastActiveTime` 起的最大运行窗口”；`lastActiveTime` 不会因业务 HTTP 流量自动刷新（见 `docs/workspace_user_manual.md:48`）。
 
 ---
 
@@ -370,8 +372,9 @@ kubectl get workspace ws-<id> -o jsonpath='{.status.phase}'
 
 更多部署细节见：
 
-- [`docs/offline_deployment_guide.md`](offline_deployment_guide.md)
-- [`deploy-ack/README.md`](../deploy-ack/README.md)
+- [`docs/offline_deployment_guide.md`](offline_deployment_guide.md)（主线：OSS + ossfs 1.0）
+- [`docs/storage_plan.md`](storage_plan.md)（存储方案定版结论）
+- [`deploy-ack/README.md`](../deploy-ack/README.md)（**附录 C：ACK 部署包，暂不启用**）
 - [`docs/storage_migration_guide.md`](storage_migration_guide.md)
 
 ---
@@ -380,7 +383,7 @@ kubectl get workspace ws-<id> -o jsonpath='{.status.phase}'
 
 | 主题 | 文件 / 位置 |
 |---|---|
-| OSS StorageClass | `deploy/oss/storageclass.yaml:1-22` |
+| OSS StorageClass | `deploy/oss/storageclass.yaml:1-32` |
 | CSI 节点插件 DaemonSet | `deploy/oss/csi-plugin.yaml:98-209` |
 | CSIDriver（attachRequired） | `deploy/oss/csi-plugin.yaml:87-96` |
 | driver-registrar | `deploy/oss/csi-plugin.yaml:118-125` |
@@ -397,7 +400,7 @@ kubectl get workspace ws-<id> -o jsonpath='{.status.phase}'
 | 删除 Workspace 不清理 PV/PVC | `internal/controller/workspace_controller.go:164-169` |
 | 停止接口 | `cmd/api-server/main.go:903-948` |
 | 前端停止调用 | `web/portal/src/lib/api.ts:84-86`、`web/portal/src/store.ts:539-546` |
-| Workspace 用户手册（Stopped/IdleTimeout） | `docs/workspace_user_manual.md:45-46`、`:158` |
+| Workspace 用户手册（Stopped/IdleTimeout） | `docs/workspace_user_manual.md:48`、`:168` |
 | OSS 迁移脚本（一次性） | `hack/migrate-localpath-to-oss.sh` |
 
 ---
@@ -420,3 +423,4 @@ kubectl get workspace ws-<id> -o jsonpath='{.status.phase}'
 | 日期 | 说明 |
 |---|---|
 | 2026-11-03 | 初版：整理 OSS 同步机制、四组件关系、Node Plugin 详解与关闭工作空间影响 |
+| 2026-11-04 | 补充方案定位：OSS + ossfs 1.0 为唯一生产方案；ACK 部署包暂不启用；NAS/Local 降为附录 |

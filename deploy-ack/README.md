@@ -1,4 +1,12 @@
-# Agent 工作空间平台 - 阿里云 ACK 部署包（OSS 存储方案）
+# Agent 工作空间平台 - 阿里云 ACK 部署包（OSS 存储方案，暂不启用）
+
+> ⚠️ **状态：暂不启用（附录 C）**
+>
+> 2026-11-04 起，本目录仅作为**后续上阿里云 ACK 的参考资料**保留，**当前生产部署不引用、不执行**：
+>
+> - 当前生产存储底座已定版为 **OSS 对象存储卷 + ossfs 1.0**，运行在自建/离线 Kubernetes 集群，部署主线见 [docs/offline_deployment_guide.md](../docs/offline_deployment_guide.md)；
+> - 选型结论与文档地图见 [docs/storage_plan.md](../docs/storage_plan.md)；
+> - 重新启用本目录前必须另行评审，并先修正下文与当前代码不一致之处（尤其：**当前 Operator 删除 Workspace 时不会清理 OSS 前缀**，仅保留 PV/PVC；原第 9/12 节相关描述已按现状校正）。
 
 本目录是面向**阿里云 ACK 集群**的开箱部署包，存储底座采用 **OSS 对象存储卷（默认 ossfs 1.0 客户端，随机写安全；ossfs 2.0 作为读多写少场景的可选项）**。Agent（opencode）的 edit、编译、依赖安装均为随机写操作，ossfs 2.0 官方明示该场景不建议使用，故默认采用 ossfs 1.0。平台整体架构（Workspace Operator + API-Server + Ingress + CRD）与自建集群方案完全一致，本手册仅覆盖 ACK 环境的差异部分；组件原理见 [docs/deployment_architecture.md](../docs/deployment_architecture.md)。
 
@@ -28,7 +36,7 @@ Operator / CRD 一键安装包不在本目录，构建方式见步骤 5：`GOWOR
 
 | 镜像 | 版本 | 来源 | 说明 |
 | :--- | :--- | :--- | :--- |
-| **workspace-operator** | `v1.1.0`（新构建） | 本仓库 Dockerfile | **必须重新构建**：本次新增 OSS V4 签名透传（`sigVersion`/`region` 进 PV、清理侧 SDK 走 V4），构建命令见步骤 5 |
+| **workspace-operator** | `v1.1.0`（新构建） | 本仓库 Dockerfile | **必须重新构建**：本次新增 OSS V4 签名透传（`sigVersion`/`region` 进 PV），构建命令见步骤 5 |
 | **api-server** | `v1.0.0` | 复用 `deploy/api-server.tar` | 无代码改动，`docker load` 后重新打 ACR tag 即可 |
 | **opencode（Agent 运行镜像）** | `smanx/opencode:latest` | 复用镜像名，需重新拉取 | `deploy/` 目录无现成 tar，按步骤 4 `docker pull` 后推 ACR |
 | csi-plugin / csi-ossfs 等 FUSE 镜像 | 由 ACK 托管 | ACK 内置 | **无需准备**，托管 csi-plugin 自动维护（仅 ossfs 2.0 可选方案要求 csi-plugin ≥ v1.33.1） |
@@ -206,7 +214,7 @@ kubectl get pv ws-ack-oss-test-pv -o jsonpath='{.spec.csi.volumeAttributes}' | t
 # 3. PVC Bound
 kubectl get pvc ws-ack-oss-test-pvc -n default
 
-# 4. FUSE Pod（ossfs2 客户端运行于此）已创建且 Running
+# 4. FUSE Pod（ossfs 1.0 客户端运行于此）已创建且 Running
 kubectl -n ack-csi-fuse get pods
 
 # 5. 数据读写持久化：写入 → 停止 → 唤醒 → 文件仍在
@@ -216,9 +224,10 @@ kubectl exec -it <ws-pod> -- cat /workspace/ack-test.txt
 # 6. 公共共享卷挂载成功
 kubectl exec -it <ws-pod> -- ls /data/oss-shared
 
-# 7. 删除清理：OSS 上 workspaces/ws-ack-oss-test/ 前缀被清空、PV 无残留
+# 7. 删除语义：PV/PVC 与 OSS 数据均保留（当前 Operator 不做清理），仅供人工确认
 kubectl delete workspace ws-ack-oss-test
-kubectl get pv | grep ws-ack-oss-test
+kubectl get pv | grep ws-ack-oss-test        # PV 仍在
+kubectl get pvc | grep ws-ack-oss-test       # PVC 仍在
 ```
 
 ## 10. 步骤 8：安全隔离（ACK 适配）
@@ -243,7 +252,9 @@ spec:
 | 旧集群已用 OSS（专有云） | `ossutil sync` 同步旧 Bucket 的 `workspaces/`、`shared-assets/` 前缀到新 Bucket，保持目录结构不变（Workspace 名称不变即可无缝接管）。注意：若新建的公共云 Bucket 强制 V4 签名，ossutil 使用最新版本即可 |
 | 旧集群 Local Path / NFS | 停止对应 Workspace → 节点上定位数据目录（参考 [storage_migration_guide.md](../docs/storage_migration_guide.md)）→ `ossutil cp -rf` 上传到新 Bucket 的 `workspaces/<workspace-name>/` → 在 ACK 按原名称重建 Workspace |
 
-要点：上传前先停止（休眠）Workspace；个人数据必须落在 `workspaces/<workspace-name>/` 前缀（挂载与删除清理都按此约定）；`ossutil` 走内网 Endpoint（`-e oss-cn-hangzhou-internal.aliyuncs.com`）。
+要点：上传前先停止（休眠）Workspace；个人数据必须落在 `workspaces/<workspace-name>/` 前缀（挂载与数据定位都按此约定）；`ossutil` 走内网 Endpoint（`-e oss-cn-hangzhou-internal.aliyuncs.com`）。
+
+> 当前 Operator **不会**在删除 Workspace 时清理 OSS 数据；如需回收空间，请按 `workspaces/<name>/` 前缀用 `ossutil rm -r` 手工清理（先确认已备份）。
 
 ## 12. 常见问题排查（FAQ）
 
@@ -256,7 +267,15 @@ kubectl -n ack-csi-fuse describe pod && kubectl -n ack-csi-fuse logs <fuse-pod>
 
 **Q2：删除 Workspace 后 OSS 数据残留？**
 
-检查 `default/oss-secret` 是否存在且有效——清理逻辑直接读取该凭证；PV 带 `sigVersion=v4` 时 Operator(≥v1.1.0) 会以 V4 签名调用清理接口。清理失败不阻塞删除，按 `workspaces/<name>/` 前缀用 `ossutil rm -r` 手工清理。
+当前 Operator **不清理** PV/PVC，也不会删除 OSS 上 `workspaces/<name>/` 前缀——这是刻意的数据保护语义，不是故障。如需回收空间，由管理员按前缀手工清理：
+
+```bash
+ossutil rm -r oss://<bucket>/workspaces/<workspace-name>/   # 先确认已备份
+kubectl delete pvc <workspace-name>-pvc -n <namespace>
+kubectl delete pv <workspace-name>-pv
+```
+
+> 旧版本手册中「Operator 会读取 `oss-secret` 调用清理接口」的描述与当前代码不符，已废弃。
 
 **Q3：Ingress 已创建但 404 / 不通？**
 
@@ -272,7 +291,7 @@ Flannel 集群不支持，需 Terway + 网络策略能力；`kubectl get netpol 
 
 **Q6：还能用 NAS / 云盘吗？**
 
-可以，`spec.storage.storageClass` 支持多存储类并存（如 ACK 内置 `alicloud-nas`）。所有存储类型的 PV 与 PVC 在 Workspace 删除时均予保留，不作自动清理；云盘为 RWO 块存储，跨节点漂移受限。
+可以但不推荐：`spec.storage.storageClass` 支持多存储类并存（如 ACK 内置 `alicloud-nas`），但 NAS/NFS 与 Local Path 已降级为附录备选（见 [storage_plan.md](../docs/storage_plan.md)），当前生产主线是 OSS + ossfs 1.0。所有存储类型的 PV 与 PVC 在 Workspace 删除时均予保留，不作自动清理；云盘为 RWO 块存储，跨节点漂移受限。
 
 ## 13. 卸载
 

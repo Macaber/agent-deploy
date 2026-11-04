@@ -8,11 +8,24 @@
 
 **核心特性：**
 
-- **存储与配置挂载：** 支持独立工作区 PVC、预先存在的共享存储卷（`sharedVolumeMounts`）以及 Kubernetes ConfigMap 卷挂载（`configMapVolumeMounts`），方便为 Agent 注入共享资源和外部配置文件（如 `bocomwork-config`）。
+- **存储与配置挂载：** 存储底座已定版为 **OSS 对象存储卷 + ossfs 1.0**（CSI，`fuseType: ossfs`），支持独立工作区 PVC、预先存在的共享存储卷（`sharedVolumeMounts`，如 `global-oss-share-pvc`）以及 Kubernetes ConfigMap 卷挂载（`configMapVolumeMounts`），方便为 Agent 注入共享资源和外部配置文件（如 `bocomwork-config`）。NAS/NFS 与 Local Path 降级为附录备选。
 - **副本与休眠：**
   - `stopped=true`：Operator 将 Deployment 副本置为 0（手动停止）。
   - 配置了 `idleTimeout`：自 `status.lastActiveTime` 起超过该时长后缩容为 0（`Sleeping`）。`lastActiveTime` 在创建/API 唤醒时刷新，**不是** Ingress 实时流量闲置探测。
   - 省略 `idleTimeout`：不会按会话窗口自动休眠，副本由 Operator 保持为 1（除非手动停止）。
+
+---
+
+## 存储方案（已定版）
+
+当前生产环境统一采用 **OSS 对象存储卷 + ossfs 1.0**，不再以 NAS/NFS 或 Local Path 作为生产存储；阿里云 ACK 部署包（`deploy-ack/`）**暂不启用**。
+
+- 定版结论、选型依据与文档地图：[docs/storage_plan.md](docs/storage_plan.md)
+- 离线部署主线（OSS + ossfs 1.0，附录含 Local/NAS/ACK）：[docs/offline_deployment_guide.md](docs/offline_deployment_guide.md)
+- 运行期数据链路与排障：[docs/oss_storage_architecture.md](docs/oss_storage_architecture.md)
+- 存量数据迁移到 OSS：[docs/storage_migration_guide.md](docs/storage_migration_guide.md)
+
+> Operator 在 StorageClass 为 OSS（`ossplugin.csi.alibabacloud.com`）时会自动创建静态 PV（子路径 `/workspaces/<workspace-name>`，`ReadWriteMany`，`Retain`）并绑定 PVC；删除 Workspace 不删除 PV/PVC，也不清空 OSS 数据。
 
 ---
 
@@ -46,18 +59,25 @@
 │   └── samples/            # 样本 Workspace 实例 YAML 示例配置
 │
 ├── deploy/         # 离线交付部署包目录 (专用于生产无网环境下部署)
-│   ├── nfs/                # NFS-client-provisioner 动态分配器的 K8s 配置
+│   ├── oss/                # 【主线】OSS CSI 控制面/节点面/Secret/StorageClass (ossfs 1.0)
+│   ├── oss-public/         # 【主线】公共共享 OSS PV/PVC 模板
+│   ├── local/              # 附录 A：Local Path 本地盘方案（备选）
+│   ├── nfs/                # 附录 B：NFS-client-provisioner 动态分配器（备选）
+│   ├── nfs-public/         # 附录 B：NFS 公共共享 PV/PVC 模板（备选）
 │   ├── api-server-deploy.yaml # API-Server 网关的 K8s 部署配置
 │   ├── ingress-deploy.yaml    # Ingress-Nginx 网关控制器的 K8s 部署配置
 │   ├── install.yaml           # 本项目 Operator 的一键式部署清单
-│   └── docs/                  # 离线部署辅助手册
+│   └── grafana/ prometheus/   # 监控与看板配置
+│
+├── deploy-ack/             # 附录 C：阿里云 ACK 部署包（暂不启用）
 │
 ├── docs/                   # 项目主要系统设计与操作文档
+│   ├── storage_plan.md        # 【定版】存储方案结论：OSS + ossfs 1.0
 │   ├── api_manual.md          # API-Server 网关接口调用手册 (Curl 示例)
 │   ├── workspace_user_manual.md # 工作空间使用与规格定义手册
 │   ├── deployment_architecture.md # 系统整体架构设计与组件协作说明
-│   ├── offline_deployment_guide.md # 离线生产环境部署指南 (Local Path / NFS / OSS 三方案)
-│   └── ../deploy-ack/README.md  # 阿里云 ACK 部署包与手册 (OSS / ossfs 1.0 方案)
+│   ├── offline_deployment_guide.md # 离线生产部署指南（主线 OSS；附录 Local/NFS/ACK）
+│   └── oss_storage_architecture.md # OSS 运行期数据链路与排障
 │
 ├── bin/                    # 内部编译出的可执行文件及 envtest 环境包 (K8s API 本地模拟)
 ├── test/                   # 集群端到端 (E2E) 测试代码
@@ -109,7 +129,7 @@ GOWORK=off make deploy IMG=<your-registry>/agent-deploy:tag
 kubectl apply -k config/samples/
 ```
 
-> **注意**: 请在应用前确保样本 manifest 中已配置符合测试环境的默认值。
+> **注意**: 请在应用前确保样本 manifest 中已配置符合测试环境的默认值；生产环境 `spec.storage.storageClass` 应填写 `alicloud-oss`（OSS + ossfs 1.0），并按 [docs/offline_deployment_guide.md](docs/offline_deployment_guide.md) 先完成 CSI 与 StorageClass 部署。
 
 ---
 

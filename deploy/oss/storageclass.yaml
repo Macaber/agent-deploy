@@ -1,3 +1,13 @@
+# OSS 个人工作空间 StorageClass（生产定版：OSS 对象存储卷 + ossfs 1.0）
+#
+# Operator 检测到 Workspace 的 storageClass 命中本 SC（provisioner 为
+# ossplugin.csi.alibabacloud.com）时，会读取以下 parameters 自动创建静态 PV
+# （子路径 /workspaces/<workspace-name>，RWX，Retain）并绑定 PVC。
+# 换 Bucket / 换 Endpoint 只需修改本文件。
+#
+# 签名注意：存量专有云 Bucket（V1 签名）保持现状即可；若 Bucket 为公共云
+# 2025-09-01 之后新建（强制 V4 签名），需追加 `sigVersion: "v4"` 与 `region`，
+# 并把 url 改为 https 内网 Endpoint（Operator 会将其透传到 PV）。
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
@@ -7,10 +17,10 @@ parameters:
   bucket: "your-user-workspaces-bucket"        # 用于存储个人工作空间数据的 OSS Bucket
   # 内网 OSS Endpoint：显式带 http:// 协议（内网/专有云 OSS 走 http，不写协议会被 driver 强制补 https://）
   url: "http://oss-cn-hangzhou-internal.aliyuncs.com"
-  otherOpts: "-o max_stat_cache_size=100000 -o allow_other"
+  otherOpts: "-o max_stat_cache_size=100000 -o allow_other"  # ossfs 1.0 参数
   # v1.30.4+ 仅支持 ossfs / ossfs2。不能填 direct：
   # direct=true 是 rund/coco 沙箱专用，普通 containerd 集群上会跳过 FUSE Pod 创建导致挂载失败
-  fuseType: "ossfs"
+  fuseType: "ossfs"                            # ossfs 1.0 客户端（随机写安全，生产定版）
 
   # 凭证统一由 PV 的 controllerPublishSecretRef / nodePublishSecretRef 引用 Secret
   # （新架构中 akIdSecret/akSecretSecret 参数已被 driver 废弃）

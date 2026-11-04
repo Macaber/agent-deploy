@@ -28,8 +28,10 @@ spec:
         value: "mysecret123"
   storage:                     # 8. 存储配额与策略
     size: 10Gi
-    storageClass: standard
+    storageClass: alicloud-oss # 当前生产定版：OSS + ossfs 1.0
 ```
+
+> 存储方案已定版为 **OSS 对象存储卷 + ossfs 1.0**（见 [storage_plan.md](storage_plan.md)）。NAS/NFS 与 Local Path 仅作为附录备选，不建议在新工作空间中指定。
 
 ---
 
@@ -42,7 +44,7 @@ spec:
 | 参数名 | 数据类型 | 是否必填 | 作用描述 | 示例值 |
 | :--- | :--- | :--- | :--- | :--- |
 | **`owner`** | `string` | **是** | 声明该独立工作空间归属的用户 ID。 | `"alice"`, `"user_1001"` |
-| **`stopped`** | `boolean` | 否 | 手动启停控制开关。<br>设为 `true`：触发手动挂起，副本数降为 0（容器销毁以释放 CPU/内存算力，数据保存在 PVC/NAS 磁盘中）。<br>设为 `false` 或不填：处于正常激活运行状态。 | `true`, `false` |
+| **`stopped`** | `boolean` | 否 | 手动启停控制开关。<br>设为 `true`：触发手动挂起，副本数降为 0（容器销毁以释放 CPU/内存算力，数据保存在 OSS 持久卷中）。<br>设为 `false` 或不填：处于正常激活运行状态。 | `true`, `false` |
 | **`idleTimeout`** | `string` | 否 | **会话/最大运行窗口**：自 `status.lastActiveTime` 起经过该时长后自动缩容至 0（`Sleeping`）。**不是**“检测用户停止操作后的闲置”。`lastActiveTime` 在创建、API 唤醒/创建更新、以及从 Sleeping/Stopped 等进入 Running 时刷新；**不会**因业务 HTTP 流量自动刷新。省略则不会按该规则自动休眠。Go 时长格式。 | `"15m"` (15分钟)<br>`"2h"` (2小时) |
 
 ---
@@ -77,8 +79,16 @@ env:
 
 | 子参数名 | 数据类型 | 是否必填 | 作用描述 | 示例值 |
 | :--- | :--- | :--- | :--- | :--- |
-| **`size`** | `string` | **是** | 持久化磁盘的容量大小。 | `"1Gi"`, `"20Gi"` |
-| **`storageClass`** | `string` | 否 | 绑定的 Kubernetes StorageClass 名称。如果为空，则使用集群中默认的 StorageClass（例如生产环境部署的 `nfs-client`）。 | `"standard"`, `"nfs-storage"` |
+| **`size`** | `string` | **是** | 持久化卷的容量声明。OSS 方案下该值是 **PVC/PV 的声明容量**，不代表 OSS 实际上限（对象存储按实际用量计费）。 | `"1Gi"`, `"20Gi"` |
+| **`storageClass`** | `string` | 否 | 绑定的 Kubernetes StorageClass 名称。**生产环境填写 `alicloud-oss`**（OSS + ossfs 1.0）。省略时按以下顺序解析：① controller 的 `DEFAULT_STORAGE_CLASS` 环境变量；② 集群默认 StorageClass（带 `storageclass.kubernetes.io/is-default-class="true"` 注解）。 | `"alicloud-oss"` |
+
+> **OSS 方案下的卷语义（重要）**
+>
+> * Operator 检测到 StorageClass 的 provisioner 为 `ossplugin.csi.alibabacloud.com`（或名称含 `oss`）时，会为该 Workspace 自动创建**静态 PV**（名称 `<workspace>-pv`，子路径固定 `/workspaces/<workspace-name>`，`ReadWriteMany`，`reclaimPolicy: Retain`），再创建精确绑定的 PVC `<workspace>-pvc`。
+> * 容器内 `/workspace` 挂载该 OSS 卷的 `workspace` 子路径；opencode 镜像还会额外挂载 `config` / `share` / `state` / `cache` 子路径。
+> * **删除 Workspace 不会删除 PV/PVC，也不会清空 OSS 数据**；如需彻底清理，必须由管理员显式删除 PVC/PV 并清理 OSS 前缀。
+> * 写入由 ossfs（1.0 客户端）异步上传；写完大文件后建议在容器内执行 `sync` 再停止工作空间，详见 [oss_storage_architecture.md](oss_storage_architecture.md) 第 5 节。
+> * NAS/NFS 与 Local Path 为附录备选方案（见 [offline_deployment_guide.md](offline_deployment_guide.md) 附录 A/B），不作为生产默认。
 
 ---
 
@@ -94,15 +104,16 @@ env:
 #### 配置示例：
 ```yaml
 sharedVolumeMounts:
-  - pvcName: "bocomwork-local-share"
-    mountPath: "/opt/bocom-defaults/skill"
-    subPath: "skill"
+  - pvcName: "global-oss-share-pvc"   # 公共共享 OSS PVC（OSS + ossfs 1.0）
+    mountPath: "/data/oss-shared"
     readOnly: true
 configMapVolumeMounts:
   - configMapName: "bocomwork-config"
     mountPath: "/etc/bocomwork"
     readOnly: true
 ```
+
+> 共享 PVC 由管理员预先创建（生产默认 `global-oss-share-pvc`，对应 OSS PV `global-oss-share-pv`，`path: /shared-assets`）。同一 PV 使用 `ReadWriteMany`，可被多个 Workspace 同时挂载。
 
 ---
 
@@ -151,9 +162,9 @@ networkPolicy:
 
 ### 状态阶段 (Status.Phase) 转换定义
 
-* **`Pending`**: 准备中。Operator 正在处理基础资源（例如在等待 NAS/NFS 磁盘卷 PVC 成功绑定）。
+* **`Pending`**: 准备中。Operator 正在处理基础资源（例如等待 OSS 持久卷 PVC 绑定、FUSE Pod 就绪）。
 * **`Starting`**: 启动中。正在调度 Pod、拉取镜像或初始化存储子路径。
 * **`Running`**: 运行中。容器内部的服务已准备就绪，可以通过 `endpoint` 域名正常打开网页访问。
-* **`Sleeping`**: 休眠中。因自 `lastActiveTime` 起已超过 `idleTimeout`（会话运行窗口到期），容器已销毁释放算力，数据仍在 PVC/NAS。通过 API「唤醒」更新 `lastActiveTime` 后可再拉起。
+* **`Sleeping`**: 休眠中。因自 `lastActiveTime` 起已超过 `idleTimeout`（会话运行窗口到期），容器已销毁释放算力，数据仍在 OSS 持久卷。通过 API「唤醒」更新 `lastActiveTime` 后可再拉起。
 * **`Stopped`**: 已停止。用户手动点击了“关闭工作空间”，副本数被安全缩容到 0，数据完整保留。
 * **`Failed`**: 运行失败。可能由于镜像拉取失败、CPU/内存配额不足或持久化挂载出错等原因导致。
