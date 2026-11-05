@@ -335,6 +335,13 @@ type WorkspaceStatus struct {
 	// +optional
 	LastActiveTime *metav1.Time `json:"lastActiveTime,omitempty"`
 
+	// StartedAt is the timestamp when the workspace transitioned into the Running state.
+	// When the workspace is Running, this represents the start time of the current active run.
+	// When the workspace is not Running (e.g. Sleeping, Stopped, Failed), this retains the
+	// start time of the most recent run (or empty if it has never run).
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+
 	// Conditions represent the current state of the Workspace resource.
 	// +listType=map
 	// +listMapKey=type
@@ -347,6 +354,7 @@ type WorkspaceStatus struct {
 // +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Owner",type=string,JSONPath=".spec.owner"
+// +kubebuilder:printcolumn:name="Started",type=date,JSONPath=".status.startedAt"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
 // Workspace is the Schema for the workspaces API

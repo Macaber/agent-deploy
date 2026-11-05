@@ -21,6 +21,9 @@ spec:
     - jsonPath: .spec.owner
       name: Owner
       type: string
+    - jsonPath: .status.startedAt
+      name: Started
+      type: date
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -522,6 +525,14 @@ spec:
               pvcName:
                 description: PVCName is the name of the persistent volume claim allocated
                   for the workspace
+                type: string
+              startedAt:
+                description: |-
+                  StartedAt is the timestamp when the workspace transitioned into the Running state.
+                  When the workspace is Running, this represents the start time of the current active run.
+                  When the workspace is not Running (e.g. Sleeping, Stopped, Failed), this retains the
+                  start time of the most recent run (or empty if it has never run).
+                format: date-time
                 type: string
             type: object
         type: object

@@ -335,6 +335,7 @@ func toWorkspaceItem(ws *aiv1alpha1.Workspace) workspaceItem {
 		Image:     ws.Spec.Runtime.Image,
 		CPU:       ws.Spec.Runtime.CPU,
 		Memory:    ws.Spec.Runtime.Memory,
+		StartedAt: ws.Status.StartedAt,
 		// Internal probe inputs (never serialized to clients).
 		Endpoint:   ws.Status.Endpoint,
 		HealthPath: ws.Spec.Runtime.HealthPath,

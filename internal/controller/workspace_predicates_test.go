@@ -79,8 +79,9 @@ func TestWorkspacePredicate(t *testing.T) {
 		}
 	})
 
-	t.Run("Update with only Phase, PodName, or Endpoint changed returns false", func(t *testing.T) {
+	t.Run("Update with only Phase, PodName, Endpoint, or StartedAt changed returns false", func(t *testing.T) {
 		t1 := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+		t2 := metav1.NewTime(time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC))
 		oldWs := &aiv1alpha1.Workspace{
 			ObjectMeta: metav1.ObjectMeta{Generation: 1},
 			Status: aiv1alpha1.WorkspaceStatus{
@@ -99,10 +100,11 @@ func TestWorkspacePredicate(t *testing.T) {
 				Endpoint:       "ws.domain.com",
 				PVCName:        "ws-pvc",
 				LastActiveTime: &t1,
+				StartedAt:      &t2,
 			},
 		}
 		if pred.Update(event.UpdateEvent{ObjectOld: oldWs, ObjectNew: newWs}) {
-			t.Error("expected status-only update (Phase/PodName/Endpoint) to return false and be ignored")
+			t.Error("expected status-only update (Phase/PodName/Endpoint/StartedAt) to return false and be ignored")
 		}
 	})
 }

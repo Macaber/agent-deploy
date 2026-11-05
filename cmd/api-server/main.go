@@ -170,15 +170,16 @@ type workspaceRequest struct {
 
 // workspaceItem is the JSON response type for listing workspaces.
 type workspaceItem struct {
-	UserID    string `json:"userId"`
-	Name      string `json:"name"`
-	Namespace string `json:"namespace,omitempty"`
-	OA        string `json:"oa,omitempty"`
-	Phase     string `json:"phase"`
-	URL       string `json:"url"`
-	Image     string `json:"image"`
-	CPU       string `json:"cpu"`
-	Memory    string `json:"memory"`
+	UserID    string       `json:"userId"`
+	Name      string       `json:"name"`
+	Namespace string       `json:"namespace,omitempty"`
+	OA        string       `json:"oa,omitempty"`
+	Phase     string       `json:"phase"`
+	URL       string       `json:"url"`
+	Image     string       `json:"image"`
+	CPU       string       `json:"cpu"`
+	Memory    string       `json:"memory"`
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
 	// Endpoint and HealthPath feed the create/wakeup readiness probe (see
 	// pollWorkspaceRunning). They are internal to the API server and deliberately
 	// excluded from the JSON contract so the list/get responses stay unchanged.
@@ -406,11 +407,12 @@ func getWorkspaceHandler(c client.Client) http.HandlerFunc {
 		url := getWorkspaceURL(userID, wsName, ws.Status.Endpoint)
 		oa := getOAFromWorkspace(ws)
 		json.NewEncoder(w).Encode(map[string]any{
-			"exists": true,
-			"phase":  ws.Status.Phase,
-			"url":    url,
-			"oa":     oa,
-			"spec":   ws.Spec,
+			"exists":    true,
+			"phase":     ws.Status.Phase,
+			"url":       url,
+			"oa":        oa,
+			"startedAt": ws.Status.StartedAt,
+			"spec":      ws.Spec,
 		})
 	}
 }

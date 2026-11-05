@@ -291,6 +291,7 @@ func newTestWorkspaceCache(tb testing.TB, workspaces ...*aiv1alpha1.Workspace) *
 // owner u2, Stopped).
 func newListFixture(tb testing.TB) (wc *workspaceCache, handler http.HandlerFunc) {
 	tb.Helper()
+	start1 := metav1.NewTime(time.Date(2026, 11, 5, 8, 30, 0, 0, time.UTC))
 	ws1 := &aiv1alpha1.Workspace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ws-u1",
@@ -301,7 +302,8 @@ func newListFixture(tb testing.TB) (wc *workspaceCache, handler http.HandlerFunc
 			Owner: "u1",
 		},
 		Status: aiv1alpha1.WorkspaceStatus{
-			Phase: aiv1alpha1.WorkspaceRunning,
+			Phase:     aiv1alpha1.WorkspaceRunning,
+			StartedAt: &start1,
 		},
 	}
 	ws2 := &aiv1alpha1.Workspace{
@@ -362,6 +364,10 @@ func TestListWorkspacesHandler(t *testing.T) {
 		if items[0].Namespace != "bocomwork" {
 			t.Errorf("expected namespace bocomwork, got %s", items[0].Namespace)
 		}
+		wantStart := metav1.NewTime(time.Date(2026, 11, 5, 8, 30, 0, 0, time.UTC))
+		if items[0].StartedAt == nil || !items[0].StartedAt.Equal(&wantStart) {
+			t.Errorf("expected startedAt %v, got %v", wantStart, items[0].StartedAt)
+		}
 	})
 
 	t.Run("query all namespaces", func(t *testing.T) {
@@ -378,6 +384,85 @@ func TestListWorkspacesHandler(t *testing.T) {
 		}
 	})
 
+}
+
+// TestGetWorkspaceHandler_StartedAt verifies the single-workspace GET endpoint
+// (which reads live from the client, not the informer cache) surfaces
+// status.startedAt so the portal can render the run start time and duration.
+func TestGetWorkspaceHandler_StartedAt(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = aiv1alpha1.AddToScheme(scheme)
+
+	start := metav1.NewTime(time.Date(2026, 11, 5, 8, 30, 0, 0, time.UTC))
+	runningWs := &aiv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-user1", Namespace: "default"},
+		Spec:       aiv1alpha1.WorkspaceSpec{Owner: "user1"},
+		Status: aiv1alpha1.WorkspaceStatus{
+			Phase:     aiv1alpha1.WorkspaceRunning,
+			StartedAt: &start,
+		},
+	}
+	// A workspace that has never run: startedAt must be omitted from the JSON.
+	neverRunWs := &aiv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-user2", Namespace: "default"},
+		Spec:       aiv1alpha1.WorkspaceSpec{Owner: "user2"},
+		Status:     aiv1alpha1.WorkspaceStatus{Phase: aiv1alpha1.WorkspaceStopped},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&aiv1alpha1.Workspace{}).
+		WithObjects(runningWs, neverRunWs).Build()
+	handler := getWorkspaceHandler(c)
+
+	decode := func(t *testing.T, rr *httptest.ResponseRecorder) map[string]any {
+		t.Helper()
+		var out map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+			t.Fatalf("failed to unmarshal JSON: %v", err)
+		}
+		return out
+	}
+
+	t.Run("running workspace returns startedAt", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/workspaces?userId=user1&namespace=default", nil)
+		rr := httptest.NewRecorder()
+		handler(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rr.Code)
+		}
+		out := decode(t, rr)
+		if out["exists"] != true {
+			t.Fatalf("expected exists=true, got %v", out["exists"])
+		}
+		raw, ok := out["startedAt"].(string)
+		if !ok || raw == "" {
+			t.Fatalf("expected startedAt string in response, got %v", out["startedAt"])
+		}
+		got, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			t.Fatalf("startedAt not RFC3339: %v", err)
+		}
+		if !got.Equal(start.Time) {
+			t.Errorf("expected startedAt %v, got %v", start.Time, got)
+		}
+	})
+
+	t.Run("never-run workspace omits startedAt", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/workspaces?userId=user2&namespace=default", nil)
+		rr := httptest.NewRecorder()
+		handler(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rr.Code)
+		}
+		out := decode(t, rr)
+		if out["exists"] != true {
+			t.Fatalf("expected exists=true, got %v", out["exists"])
+		}
+		// omitempty mirrors the WorkspaceStatus field: absent when never run.
+		if v, ok := out["startedAt"]; ok && v != nil {
+			t.Errorf("expected startedAt to be omitted, got %v", v)
+		}
+	})
 }
 
 func TestListWorkspacesPagination(t *testing.T) {

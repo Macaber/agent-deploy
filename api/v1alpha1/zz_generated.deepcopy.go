@@ -369,6 +369,10 @@ func (in *WorkspaceStatus) DeepCopyInto(out *WorkspaceStatus) {
 		in, out := &in.LastActiveTime, &out.LastActiveTime
 		*out = (*in).DeepCopy()
 	}
+	if in.StartedAt != nil {
+		in, out := &in.StartedAt, &out.StartedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

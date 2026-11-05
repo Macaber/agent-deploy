@@ -17,6 +17,7 @@ export interface WorkspaceItem {
   image: string;
   cpu: string;
   memory: string;
+  startedAt?: string;
 }
 
 export interface VolumeMount {

@@ -26,6 +26,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -93,6 +94,8 @@ type WorkspaceReconciler struct {
 	// is rebuilt from a cluster-wide Workspace list (Task 5.2). Defaults to 1 minute
 	// if unset or <= 0.
 	ActiveInstancesSyncInterval time.Duration
+	// backfillStartedAtOnce ensures historical Workspaces missing StartedAt are backfilled only once on startup.
+	backfillStartedAtOnce sync.Once
 }
 
 // +kubebuilder:rbac:groups=ai.example.com,resources=workspaces,verbs=get;list;watch;create;update;patch;delete
@@ -317,11 +320,13 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 	oldPodName := ws.Status.PodName
 	oldPVCName := ws.Status.PVCName
 	oldEndpoint := ws.Status.Endpoint
+	oldStartedAt := ws.Status.StartedAt
 
 	ws.Status.PVCName = pvcName
 	ws.Status.Endpoint = endpoint
 
 	// Check underlying Deployment/Pod status to update phase
+	var selectedPodStartTime *metav1.Time
 	deploy := &appsv1.Deployment{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: deployName}, deploy); err == nil {
 		if ws.Spec.Stopped {
@@ -352,9 +357,11 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 				}
 				if err == nil && len(podList.Items) > 0 {
 					selectedPod := podList.Items[0].Name
+					selectedPodStartTime = podList.Items[0].Status.StartTime
 					for _, p := range podList.Items {
 						if p.DeletionTimestamp.IsZero() && p.Status.Phase == corev1.PodRunning {
 							selectedPod = p.Name
+							selectedPodStartTime = p.Status.StartTime
 							break
 						}
 					}
@@ -376,6 +383,10 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 			ws.Status.LastActiveTime = &metav1.Time{Time: time.Now()}
 		}
 
+		// Update StartedAt when transitioning to Running from any non-Running phase,
+		// or when StartedAt has not been initialized yet on a Running workspace.
+		ws.Status.StartedAt = computeStartedAt(oldPhase, ws.Status.StartedAt, selectedPodStartTime)
+
 		// Calculate next requeue for idle timeout
 		if ws.Spec.IdleTimeout != "" {
 			idleDuration, err := time.ParseDuration(ws.Spec.IdleTimeout)
@@ -395,13 +406,15 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Update status if anything changed
-	if oldPhase != ws.Status.Phase || oldPodName != ws.Status.PodName || oldPVCName != ws.Status.PVCName || oldEndpoint != ws.Status.Endpoint {
+	startedAtChanged := !equality.Semantic.DeepEqual(oldStartedAt, ws.Status.StartedAt)
+	if oldPhase != ws.Status.Phase || oldPodName != ws.Status.PodName || oldPVCName != ws.Status.PVCName || oldEndpoint != ws.Status.Endpoint || startedAtChanged {
 		log.Info("Updating Workspace status", "phase", ws.Status.Phase, "podName", ws.Status.PodName)
 		desiredPhase := ws.Status.Phase
 		desiredPodName := ws.Status.PodName
 		desiredPVCName := ws.Status.PVCName
 		desiredEndpoint := ws.Status.Endpoint
 		desiredLastActiveTime := ws.Status.LastActiveTime
+		desiredStartedAt := ws.Status.StartedAt
 
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			latestWs := &aiv1alpha1.Workspace{}
@@ -415,6 +428,10 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 			if desiredLastActiveTime != nil && (latestWs.Status.LastActiveTime == nil || desiredLastActiveTime.After(latestWs.Status.LastActiveTime.Time)) {
 				latestWs.Status.LastActiveTime = desiredLastActiveTime
 			}
+			// Only advance or preserve StartedAt: monotonic protection against concurrent reconciles.
+			if merged, ok := mergeStartedAt(latestWs.Status.StartedAt, desiredStartedAt); ok {
+				latestWs.Status.StartedAt = merged
+			}
 			return r.Status().Update(ctx, latestWs)
 		})
 		if err != nil {
@@ -426,6 +443,38 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 	workspacePhases.set(req.NamespacedName, ws.Status.Phase)
 
 	return ctrl.Result{RequeueAfter: nextRequeue}, nil
+}
+
+// computeStartedAt decides the StartedAt value to record for a Running workspace.
+// It only (re)initializes StartedAt when the workspace has just transitioned into
+// Running from a non-Running phase, or when a Running workspace has no StartedAt
+// yet. While the workspace stays Running, the previous value is preserved so the
+// current run's start time is not moved forward on every reconcile. When a fresh
+// value is needed, the running Pod's StartTime is preferred (the real container
+// start), falling back to the current time when it is unavailable.
+func computeStartedAt(oldPhase aiv1alpha1.WorkspacePhase, current, podStartTime *metav1.Time) *metav1.Time {
+	if oldPhase == aiv1alpha1.WorkspaceRunning && current != nil {
+		return current
+	}
+	if podStartTime != nil {
+		return podStartTime
+	}
+	now := metav1.Now()
+	return &now
+}
+
+// mergeStartedAt merges the desired StartedAt into the latest persisted value with
+// monotonic semantics: it never moves StartedAt backwards. This protects against
+// out-of-order updates from concurrent reconciles. It returns the value to write
+// and whether a change is needed.
+func mergeStartedAt(latest, desired *metav1.Time) (*metav1.Time, bool) {
+	if desired == nil {
+		return latest, false
+	}
+	if latest == nil || desired.After(latest.Time) {
+		return desired, true
+	}
+	return latest, false
 }
 
 // getDefaultStorageClass returns the default StorageClass and its name.
@@ -1950,6 +1999,80 @@ func (r *WorkspaceReconciler) syncActiveInstances(ctx context.Context) {
 		phases[types.NamespacedName{Namespace: wsList.Items[i].Namespace, Name: wsList.Items[i].Name}] = wsList.Items[i].Status.Phase
 	}
 	workspacePhases.resetAll(phases)
+
+	// Backfill StartedAt for historical workspaces on startup so UI displays start time immediately.
+	r.backfillStartedAtOnce.Do(func() {
+		r.backfillMissingStartedAt(ctx, wsList)
+	})
+}
+
+// backfillMissingStartedAt performs a one-time startup backfill of StartedAt for historical Workspaces
+// that were created before StartedAt was tracked.
+func (r *WorkspaceReconciler) backfillMissingStartedAt(ctx context.Context, wsList *aiv1alpha1.WorkspaceList) {
+	log := logf.FromContext(ctx).WithValues("task", "backfill-started-at")
+	for i := range wsList.Items {
+		ws := &wsList.Items[i]
+		if ws.Status.StartedAt != nil {
+			continue
+		}
+
+		var backfillTime *metav1.Time
+		if ws.Status.Phase == aiv1alpha1.WorkspaceRunning {
+			// Try to find the running Pod's StartTime
+			podList := &corev1.PodList{}
+			opts := []client.ListOption{
+				client.InNamespace(ws.Namespace),
+				client.MatchingFields{podWorkspaceIndexKey: ws.Name},
+			}
+			err := r.List(ctx, podList, opts...)
+			if err != nil {
+				opts = []client.ListOption{
+					client.InNamespace(ws.Namespace),
+					client.MatchingLabels(map[string]string{"workspace": ws.Name}),
+				}
+				err = r.List(ctx, podList, opts...)
+			}
+			if err == nil && len(podList.Items) > 0 {
+				for _, p := range podList.Items {
+					if p.DeletionTimestamp.IsZero() && p.Status.Phase == corev1.PodRunning && p.Status.StartTime != nil {
+						backfillTime = p.Status.StartTime
+						break
+					}
+				}
+			}
+			if backfillTime == nil && ws.Status.LastActiveTime != nil {
+				backfillTime = ws.Status.LastActiveTime
+			}
+			if backfillTime == nil {
+				now := metav1.Now()
+				backfillTime = &now
+			}
+		} else if ws.Status.LastActiveTime != nil {
+			// For non-running workspaces (Sleeping/Stopped/Failed), backfill with LastActiveTime
+			// representing the most recent active/run timestamp prior to upgrade.
+			backfillTime = ws.Status.LastActiveTime
+		}
+
+		if backfillTime != nil {
+			targetTime := backfillTime
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				latestWs := &aiv1alpha1.Workspace{}
+				if err := r.Get(ctx, types.NamespacedName{Namespace: ws.Namespace, Name: ws.Name}, latestWs); err != nil {
+					return err
+				}
+				if latestWs.Status.StartedAt != nil {
+					return nil
+				}
+				latestWs.Status.StartedAt = targetTime
+				return r.Status().Update(ctx, latestWs)
+			})
+			if err != nil {
+				log.V(1).Info("Could not backfill StartedAt for workspace", "namespace", ws.Namespace, "name", ws.Name, "error", err)
+			} else {
+				log.Info("Backfilled missing StartedAt for historical Workspace", "namespace", ws.Namespace, "name", ws.Name, "phase", ws.Status.Phase, "startedAt", targetTime.String())
+			}
+		}
+	}
 }
 
 // sharedNetpolPredicate filters NetworkPolicy events down to the shared

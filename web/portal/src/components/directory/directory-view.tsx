@@ -4,6 +4,7 @@ import {
   Activity,
   ChevronLeft,
   ChevronRight,
+  Clock,
   Download,
   ExternalLink,
   Folder,
@@ -29,7 +30,7 @@ import { Segmented } from '@/components/ui/segmented';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Tip } from '@/components/ui/tooltip';
-import { cn, downloadText, formatTime, initials, safeExternalUrl, toCsv } from '@/lib/utils';
+import { cn, downloadText, formatDateTime, formatDuration, formatTime, initials, safeExternalUrl, toCsv } from '@/lib/utils';
 import { useMediaQuery } from '@/lib/use-media-query';
 
 const PAGE_SIZE = 50;
@@ -66,6 +67,14 @@ export function DirectoryView() {
   const searchRef = useRef<HTMLInputElement>(null);
   const isDesktop = useMediaQuery('(min-width: 1024px)');
   const [page, setPage] = useState(1);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (auth.checking || !auth.authenticated || auth.loginOpen) return;
@@ -311,7 +320,7 @@ export function DirectoryView() {
           {isDesktop && (
           <div>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[860px] border-collapse text-sm">
+              <table className="w-full min-w-[960px] border-collapse text-sm">
                 <caption className="sr-only">工作空间实例列表</caption>
                 <thead>
                   <tr className="border-b border-border bg-muted/30 text-left text-[11px] font-medium text-muted-foreground">
@@ -320,6 +329,7 @@ export function DirectoryView() {
                     <th scope="col" className="px-4 py-2.5 font-medium">容器镜像</th>
                     <th scope="col" className="px-4 py-2.5 font-medium">规格</th>
                     <th scope="col" className="px-4 py-2.5 font-medium">状态</th>
+                    <th scope="col" className="px-4 py-2.5 font-medium">运行时间</th>
                     <th scope="col" className="px-4 py-2.5 text-right font-medium">操作</th>
                   </tr>
                 </thead>
@@ -376,6 +386,59 @@ export function DirectoryView() {
                           <StatusBadge phase={item.phase} />
                         </td>
                         <td className="px-4 py-3">
+                          {(() => {
+                            const isRunning = (item.phase || '').toLowerCase() === 'running';
+                            if (isRunning) {
+                              if (item.startedAt) {
+                                const startMs = new Date(item.startedAt).getTime();
+                                const durationText = isNaN(startMs)
+                                  ? '—'
+                                  : formatDuration(Math.max(0, now - startMs));
+                                return (
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5 text-[12px] font-medium text-emerald-600 dark:text-emerald-400">
+                                      <Clock className="size-3.5 shrink-0" />
+                                      <span className="font-mono">已运行 {durationText}</span>
+                                    </div>
+                                    <div
+                                      className="mt-0.5 text-[11px] text-muted-foreground font-mono"
+                                      title={`运行起始时间: ${formatDateTime(item.startedAt)}`}
+                                    >
+                                      起: {formatDateTime(item.startedAt)}
+                                    </div>
+                                  </div>
+                                );
+                              }
+                              return (
+                                <div className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                                  <Clock className="size-3.5 shrink-0" />
+                                  <span>运行中</span>
+                                </div>
+                              );
+                            }
+                            if (item.startedAt) {
+                              return (
+                                <div className="min-w-0">
+                                  <div className="text-[12px] text-muted-foreground">
+                                    最近一次启动
+                                  </div>
+                                  <div
+                                    className="mt-0.5 text-[11px] text-muted-foreground font-mono"
+                                    title={`最近一次启动时间: ${formatDateTime(item.startedAt)}`}
+                                  >
+                                    {formatDateTime(item.startedAt)}
+                                  </div>
+                                </div>
+                              );
+                            }
+                            return (
+                              <div className="text-[12px] text-muted-foreground">
+                                未曾启动
+                              </div>
+                            );
+                          })()}
+                        </td>
+                        <td className="px-4 py-3">
                           <RowActions
                             item={item}
                             onStop={confirmStop}
@@ -399,6 +462,7 @@ export function DirectoryView() {
               <WorkspaceCard
                 key={`${item.namespace}/${item.name}`}
                 item={item}
+                now={now}
                 onStop={confirmStop}
                 onEdit={() => void loadWorkspace(item.userId, item.namespace || 'bocomwork')}
                 onWakeup={() => void inlineWakeup(item.userId, item.namespace || 'bocomwork')}
@@ -577,12 +641,14 @@ function RowActions({
 
 function WorkspaceCard({
   item,
+  now,
   onStop,
   onEdit,
   onWakeup,
   busy,
 }: {
   item: WorkspaceItem;
+  now: number;
   onStop: (item: WorkspaceItem) => void;
   onEdit: () => void;
   onWakeup: () => void;
@@ -616,6 +682,27 @@ function WorkspaceCard({
           <span className="text-border">·</span>
           <span>{item.cpu || '—'} CPU</span>
           <span>{item.memory || '—'}</span>
+        </div>
+        <div className="mt-2 flex items-center gap-1.5 border-t border-border/50 pt-1.5 text-[11px]">
+          <Clock className="size-3.5 shrink-0 text-muted-foreground" />
+          {phase === 'running' ? (
+            item.startedAt ? (
+              <span className="font-mono text-emerald-600 dark:text-emerald-400">
+                已运行 {formatDuration(Math.max(0, now - new Date(item.startedAt).getTime()))}
+                <span className="text-muted-foreground font-sans ml-1.5">
+                  (起: {formatDateTime(item.startedAt)})
+                </span>
+              </span>
+            ) : (
+              <span className="text-muted-foreground">运行中</span>
+            )
+          ) : item.startedAt ? (
+            <span className="text-muted-foreground font-mono">
+              上次启动: {formatDateTime(item.startedAt)}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">未曾启动</span>
+          )}
         </div>
       </div>
 

@@ -42,6 +42,42 @@ export function formatTime(value?: number): string {
   });
 }
 
+export function formatDateTime(value?: string | number | Date): string {
+  if (!value) return '—';
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return '—';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const year = d.getFullYear();
+  const month = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const hours = pad(d.getHours());
+  const minutes = pad(d.getMinutes());
+  const seconds = pad(d.getSeconds());
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+export function formatDuration(ms: number): string {
+  if (ms < 0) ms = 0;
+  const totalSeconds = Math.floor(ms / 1000);
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const totalHours = Math.floor(totalMinutes / 60);
+  const hours = totalHours % 24;
+  const days = Math.floor(totalHours / 24);
+
+  if (days > 0) {
+    return `${days}天 ${hours}小时`;
+  }
+  if (hours > 0) {
+    return `${hours}小时 ${minutes}分`;
+  }
+  if (minutes > 0) {
+    return `${minutes}分 ${seconds}秒`;
+  }
+  return `${seconds}秒`;
+}
+
 export function sanitizeK8sName(value: string): string {
   const cleaned = value
     .toLowerCase()
