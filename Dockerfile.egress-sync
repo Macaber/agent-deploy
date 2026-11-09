@@ -1,0 +1,6 @@
+FROM envoyproxy/envoy@sha256:8de97e654644827d62afdbf7e1d3dc9fee01a8690d410dd1c63a30dc6b6cecbb AS certificates
+FROM scratch
+COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY bin/egress-sync-linux-amd64 /egress-sync
+USER 102:102
+ENTRYPOINT ["/egress-sync"]

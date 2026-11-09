@@ -13,6 +13,7 @@ function MainTabs({ className, layoutId }: { className?: string; layoutId: strin
   const items: Array<{ value: MainTab; label: string; icon: typeof LayoutGrid }> = [
     { value: 'directory', label: '工作空间', icon: LayoutGrid },
     { value: 'studio', label: '编排设计器', icon: SlidersHorizontal },
+    { value: 'egress', label: '出站白名单', icon: SlidersHorizontal },
   ];
 
   return (

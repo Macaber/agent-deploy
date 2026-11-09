@@ -17,3 +17,5 @@ web/
 
 # Re-include the built portal bundle for //go:embed
 !cmd/api-server/portal.html
+!bin/egress-guard-linux-amd64
+!bin/egress-sync-linux-amd64

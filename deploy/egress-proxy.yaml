@@ -1,0 +1,190 @@
+# Development deployment. Requires workspace-egress-boundary ConfigMap with
+# EGRESS_PROTECTED_CIDRS (all Pod/node/service management ranges) and
+# EGRESS_DNS_SERVERS (explicit IPv4 DNS endpoints). Missing values fail closed.
+# Infrastructure inventory is not a business allowlist.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workspace-egress
+  namespace: agent-deploy-system
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workspace-egress-sync
+  namespace: agent-deploy-system
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["workspace-egress-config"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: workspace-egress-sync
+  namespace: agent-deploy-system
+subjects:
+- kind: ServiceAccount
+  name: workspace-egress
+  namespace: agent-deploy-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: workspace-egress-sync
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-egress
+  namespace: agent-deploy-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: workspace-egress
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: workspace-egress
+    spec:
+      # Initial UAT test: images are imported on this node; both replicas run here.
+      nodeSelector:
+        kubernetes.io/hostname: bocomworkuat2
+      serviceAccountName: workspace-egress
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 102
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+      - name: egress-guard
+        image: workspace-egress-guard:egress-test-20261106
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - configMapRef:
+            name: workspace-egress-boundary
+        securityContext:
+          runAsUser: 0
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+            add: [NET_ADMIN]
+      - name: initialize-config
+        image: workspace-egress-sync:egress-test-20261106-r2
+        imagePullPolicy: IfNotPresent
+        args: ["--init"]
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        securityContext:
+          runAsUser: 102
+          runAsGroup: 102
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        volumeMounts:
+        - name: dynamic
+          mountPath: /var/lib/envoy
+      containers:
+      - name: envoy
+        image: workspace-envoy:egress-test-20261106
+        imagePullPolicy: IfNotPresent
+        args: ["-c", "/var/lib/envoy/bootstrap.json", "--concurrency", "2"]
+        securityContext:
+          runAsUser: 101
+          runAsGroup: 101
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        ports:
+        - name: proxy
+          containerPort: 3128
+        resources:
+          requests: {cpu: 100m, memory: 128Mi}
+          limits: {cpu: "2", memory: 512Mi}
+        volumeMounts:
+        - name: dynamic
+          mountPath: /var/lib/envoy
+          readOnly: true
+      - name: sync
+        image: workspace-egress-sync:egress-test-20261106-r2
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 102
+          runAsGroup: 102
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - name: EGRESS_CONFIG_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        readinessProbe:
+          exec:
+            command: ["/egress-sync", "--ready"]
+          periodSeconds: 5
+          timeoutSeconds: 3
+        resources:
+          requests: {cpu: 20m, memory: 64Mi}
+          limits: {cpu: 500m, memory: 192Mi}
+        volumeMounts:
+        - name: dynamic
+          mountPath: /var/lib/envoy
+        - name: api-token
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
+      volumes:
+      - name: dynamic
+        emptyDir: {}
+      - name: api-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              path: token
+              expirationSeconds: 3600
+          - configMap:
+              name: kube-root-ca.crt
+              items:
+              - key: ca.crt
+                path: ca.crt
+          - downwardAPI:
+              items:
+              - path: namespace
+                fieldRef:
+                  fieldPath: metadata.namespace
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: workspace-egress
+  namespace: agent-deploy-system
+spec:
+  selector:
+    app.kubernetes.io/name: workspace-egress
+  ports:
+  - name: proxy
+    port: 3128
+    targetPort: proxy

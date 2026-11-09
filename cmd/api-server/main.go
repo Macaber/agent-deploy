@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -50,6 +52,12 @@ func main() {
 
 	// Register our custom Workspace schema in client scheme
 	scheme := runtime.NewScheme()
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		log.Fatalf("Failed to add apps scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		log.Fatalf("Failed to add core scheme: %v", err)
+	}
 	if err := aiv1alpha1.AddToScheme(scheme); err != nil {
 		log.Fatalf("Failed to add scheme: %v", err)
 	}
@@ -87,6 +95,8 @@ func main() {
 	http.HandleFunc("/api/login", loginHandler)
 	http.HandleFunc("/api/logout", logoutHandler)
 	http.HandleFunc("/api/auth/check", authCheckHandler)
+	http.HandleFunc("/api/egress/config", egressConfigHandler(k8sClient))
+	http.HandleFunc("/api/egress/status", egressStatusHandler(k8sClient))
 	// The workspace APIs are intentionally public and do not require the
 	// session cookie issued by /api/login.
 	http.HandleFunc("/api/workspaces", workspaceRouter(k8sClient, workspaceCache))

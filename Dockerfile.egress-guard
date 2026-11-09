@@ -1,0 +1,5 @@
+FROM envoyproxy/envoy@sha256:8de97e654644827d62afdbf7e1d3dc9fee01a8690d410dd1c63a30dc6b6cecbb
+USER 0
+RUN apt-get update && apt-get install -y --no-install-recommends iptables=1.8.7-1ubuntu5.2 && rm -rf /var/lib/apt/lists/*
+COPY bin/egress-guard-linux-amd64 /usr/local/bin/egress-guard
+ENTRYPOINT ["/usr/local/bin/egress-guard"]

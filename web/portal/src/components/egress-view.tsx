@@ -1,0 +1,83 @@
+import { useEffect, useState } from 'react';
+import { apiUrl } from '@/lib/api';
+import { useApp } from '@/store';
+import { Button } from '@/components/ui/button';
+type Replica = { pod: string; state: string; loadedRevision: string; observedAt: string; error: string };
+type SyncStatus = { revision: string; proxyState: string; desiredReplicas: number; replicas: Replica[]; policyState: string; migrationState: string };
+const stateLabel: Record<string, string> = { loaded: '已加载', syncing: '同步中', failed: '同步失败', unverified: '尚未验证' };
+type Row = Record<string, string | number | Record<string, string>>;
+type Config = Record<'ips' | 'domains' | 'services', Row[]>;
+const groups: Array<{key: keyof Config; title: string; fields: string[]; initial: Row}> = [
+ { key: 'ips' as const, title: 'IP/CIDR 直连规则', fields: ['cidr', 'protocol', 'port'], initial: { cidr: '', protocol: 'TCP', port: 443 } },
+ { key: 'domains' as const, title: '域名代理规则', fields: ['host', 'port'], initial: { host: '', port: 443 } },
+ { key: 'services' as const, title: '必要基础服务规则', fields: ['name', 'namespace', 'podSelector', 'protocol', 'port'], initial: { name: '', namespace: '', podSelector: '', protocol: 'UDP', port: 53 } },
+];
+const labels: Record<string,string> = { cidr:'IP/CIDR', protocol:'协议 TCP/UDP', port:'端口', host:'完整域名', name:'用途', namespace:'命名空间', podSelector:'Pod 标签（key=value，逗号分隔）' };
+async function request(init?: RequestInit) {
+ const r = await fetch(apiUrl('api/egress/config'), { credentials:'same-origin', ...init, headers:{'Content-Type':'application/json'} });
+ if (r.status === 401) window.dispatchEvent(new CustomEvent('bw:unauthorized'));
+ if (!r.ok) throw new Error(r.status === 409 ? '其他管理员已修改配置，请重新加载后合并。' : await r.text());
+ return r.json();
+}
+export function EgressView() {
+ const authenticated = useApp(s=>s.auth.authenticated);
+ const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+ const [statusError, setStatusError] = useState('');
+ useEffect(() => {
+  if (!authenticated) { setSyncStatus(null); return; }
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout>;
+  const controller = new AbortController();
+  async function refresh() {
+   try {
+    const response = await fetch(apiUrl('api/egress/status'), { credentials: 'same-origin', signal: controller.signal });
+    if (response.status === 401) window.dispatchEvent(new CustomEvent('bw:unauthorized'));
+    if (!response.ok) throw new Error(await response.text());
+    const status = await response.json() as SyncStatus;
+    if (!stopped) { setSyncStatus(status); setStatusError(''); }
+   } catch (e) { if (!stopped) { setSyncStatus(null); setStatusError(String(e)); } }
+   finally { if (!stopped) timer = setTimeout(() => void refresh(), 5000); }
+  }
+  void refresh();
+  return () => { stopped = true; clearTimeout(timer); controller.abort(); };
+ }, [authenticated]);
+ const [config,setConfig]=useState<Config>({ips:[],domains:[],services:[]});
+ const [version,setVersion]=useState(''); const [busy,setBusy]=useState(false);
+ const [loaded,setLoaded]=useState(false); const [dirty,setDirty]=useState(false);
+ const [message,setMessage]=useState('尚未读取'); const [error,setError]=useState('');
+ async function load() {
+  setBusy(true);setError('');
+  try { const d=await request();const c=d.config as Config;
+   setConfig({ips:c.ips||[],domains:c.domains||[],services:(c.services||[]).map(r=>({...r,podSelector:Object.entries(r.podSelector||{}).map(([k,v])=>`${k}=${v}`).join(',')}))});
+   setVersion(d.resourceVersion);setDirty(false);setLoaded(true);setMessage((d.state==='unconfigured'?'尚未配置':'已保存；尚未确认执行组件加载状态') + ((d.warnings || []).length ? '；迁移前检查：' + d.warnings.join('；') : ''));
+  } catch(e){setError(String(e));}finally{setBusy(false);}
+ }
+ useEffect(()=>{if(authenticated)void load();},[authenticated]);
+ async function save(){setBusy(true);setError('');try{
+  const services=config.services.map(r=>{const selector:Record<string,string>={};for(const pair of String(r.podSelector).split(',')){const at=pair.indexOf('=');if(at<1||at===pair.length-1)throw new Error('Pod 标签须为 key=value');const key=pair.slice(0,at).trim();if(Object.hasOwn(selector,key))throw new Error('Pod 标签键重复');selector[key]=pair.slice(at+1).trim();}return {...r,podSelector:selector};});
+  await request({method:'PUT',body:JSON.stringify({config:{...config,services},resourceVersion:version})});await load();
+ }catch(e){setError(String(e));}finally{setBusy(false);}}
+ return <div className="h-full overflow-auto p-6"><div className="mx-auto max-w-5xl space-y-5">
+ <h1 className="text-xl font-semibold">统一出站白名单</h1>
+ <p className="text-sm">IP 规则控制直连；域名规则控制 HTTP/HTTPS 代理访问。IP 直连放行可能绕过域名检查。未命中规则的访问应被拒绝。</p>
+ <p role="status">{dirty?'有未保存修改。':''}{message}。保存成功不代表实际生效。</p>
+ <section aria-label="已保存配置的同步状态" className="space-y-2 rounded border p-4">
+ <h2 className="font-semibold">已保存配置的同步状态</h2>
+ {statusError && <p role="alert">无法确认状态：{statusError}</p>}
+ {syncStatus ? <>
+ <p>代理：{stateLabel[syncStatus.proxyState] || syncStatus.proxyState} · 期望副本：{syncStatus.desiredReplicas}</p>
+ <p className="break-all text-xs">目标版本：{syncStatus.revision}</p>
+ <div className="overflow-auto"><table className="w-full text-left text-sm"><thead><tr><th>副本</th><th>状态</th><th>加载版本</th><th>最近报告</th></tr></thead><tbody>
+ {syncStatus.replicas.map(replica => <tr key={replica.pod}><td>{replica.pod}</td><td>{stateLabel[replica.state] || replica.state}{replica.error && <p className="text-red-600">{replica.error}</p>}</td><td title={replica.loadedRevision}>{replica.loadedRevision?.slice(0, 12) || '—'}</td><td>{replica.observedAt || '—'}</td></tr>)}
+ </tbody></table></div>
+ <p>网络策略：{stateLabel[syncStatus.policyState] || syncStatus.policyState}；Workspace 迁移：{stateLabel[syncStatus.migrationState] || syncStatus.migrationState}</p>
+ <p className="text-xs text-muted-foreground">代理副本加载完成不代表所有 Workspace 已迁移，也不代表集群网络策略已完成验收。</p>
+ </> : !statusError && <p>正在读取副本状态</p>}
+ </section>
+ {error&&<p role="alert" className="text-red-600">{error}</p>}
+ {groups.map(g=><section key={g.key} className="space-y-3 rounded border p-4"><h2 className="font-semibold">{g.title}</h2>
+ {config[g.key].map((r,i)=><div key={i} className="flex flex-wrap items-end gap-2">{g.fields.map(f=><label key={f} className="flex min-w-32 flex-1 flex-col text-xs">{labels[f]}<input className="rounded border bg-background p-2 text-sm" disabled={busy} type={f==='port'?'number':'text'} value={String(r[f]??'')} onChange={e=>{setDirty(true);setConfig(c=>({...c,[g.key]:c[g.key].map((v,n)=>n===i?{...v,[f]:f==='port'?Number(e.target.value):e.target.value}:v)}));}}/></label>)}<Button variant="outline" disabled={busy} onClick={()=>{setDirty(true);setConfig(c=>({...c,[g.key]:c[g.key].filter((_,n)=>n!==i)}));}}>删除</Button></div>)}
+ <Button variant="outline" disabled={busy||!loaded} onClick={()=>{setDirty(true);setConfig(c=>({...c,[g.key]:[...c[g.key],{...g.initial}]}));}}>添加规则</Button></section>)}
+ <div className="flex gap-3"><Button disabled={busy||!loaded||!dirty} onClick={()=>void save()}>保存配置</Button><Button variant="outline" disabled={busy} onClick={()=>{if(!dirty||window.confirm('放弃未保存修改并重新加载？'))void load();}}>重新加载</Button></div>
+ </div></div>;
+}

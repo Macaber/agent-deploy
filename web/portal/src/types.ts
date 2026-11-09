@@ -144,5 +144,5 @@ export interface ConfirmRequest {
 }
 
 export type DirectoryFilter = 'all' | 'running' | 'idle' | 'failed';
-export type MainTab = 'directory' | 'studio';
+export type MainTab = 'directory' | 'studio' | 'egress';
 export type InspectorTab = 'json' | 'yaml' | 'curl';

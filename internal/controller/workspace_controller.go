@@ -54,6 +54,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	aiv1alpha1 "github.com/example/workspace-operator/api/v1alpha1"
+	"github.com/example/workspace-operator/internal/egress"
 )
 
 const (
@@ -881,6 +882,27 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	// Operator always owns Deployment.spec.replicas (Stopped / IdleTimeout / default 1).
 	desiredReplicas := computeDesiredReplicas(ws, log)
 
+	// Scale-down must remain available even when the egress configuration or
+	// proxy is unavailable. Never mutate a sleeping Pod template in this path.
+	if desiredReplicas == 0 && (err == nil || apierrors.IsNotFound(err)) {
+		if err == nil && (deploy.Spec.Replicas == nil || *deploy.Spec.Replicas != 0) {
+			before := deploy.DeepCopy()
+			zero := int32(0)
+			deploy.Spec.Replicas = &zero
+			if patchErr := r.Patch(ctx, deploy, client.MergeFrom(before)); patchErr != nil {
+				return "", 0, patchErr
+			}
+		}
+		return deployName, 0, nil
+	}
+	migrateEgress := false
+	if err == nil || apierrors.IsNotFound(err) {
+		var migrationErr error
+		migrateEgress, migrationErr = r.prepareUnifiedEgress(ctx, ws, deploy)
+		if migrationErr != nil {
+			return "", 0, migrationErr
+		}
+	}
 	// Build runtime container environment
 	envVars := []corev1.EnvVar{
 		{Name: "WORKSPACE_OWNER", Value: ws.Spec.Owner},
@@ -890,6 +912,9 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		envVars = append(envVars, corev1.EnvVar{Name: env.Name, Value: env.Value})
 	}
 
+	if migrateEgress {
+		envVars = proxyEnvironment(envVars)
+	}
 	// Parse resource requirements: limit = configured/default, request = 50% limit
 	resources := buildResourceRequirements(ws.Spec.Runtime.CPU, ws.Spec.Runtime.Memory)
 
@@ -1143,6 +1168,10 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	// Pods are the only resources that carry the managed-by marker (the shared
 	// NetworkPolicy selects on it); PVCs/Services/Ingresses must stay clean.
 	podLabels := buildPodLabels(ws)
+	delete(podLabels, egress.MigrationLabel)
+	if migrateEgress {
+		podLabels[egress.MigrationLabel] = egress.MigrationVersion
+	}
 
 	var command []string
 	var containerArgs []string
@@ -1630,6 +1659,9 @@ func (r *WorkspaceReconciler) ensureSharedNetworkPolicy(ctx context.Context, nam
 		Egress:  buildSharedEgressRules(r.GlobalAllowedNamespaces),
 	}
 
+	if unifiedEgressEnabled() {
+		desiredSpec.PodSelector.MatchExpressions = append(desiredSpec.PodSelector.MatchExpressions, metav1.LabelSelectorRequirement{Key: egress.MigrationLabel, Operator: metav1.LabelSelectorOpNotIn, Values: []string{egress.MigrationVersion}})
+	}
 	expectedLabels := map[string]string{
 		"app":             "workspace",
 		managedByLabelKey: managedByLabelValue,
@@ -1951,6 +1983,7 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&networkingv1.NetworkPolicy{},
 			handler.EnqueueRequestsFromMapFunc(r.mapNetworkPolicyToWorkspaces),
 			builder.WithPredicates(sharedNetpolPredicate())).
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.mapEgressConfig)).
 		WithOptions(controllerOptions).
 		Named("workspace").
 		Complete(r)
@@ -2080,7 +2113,7 @@ func (r *WorkspaceReconciler) backfillMissingStartedAt(ctx context.Context, wsLi
 // into Workspace reconciles.
 func sharedNetpolPredicate() predicate.Predicate {
 	isShared := func(obj client.Object) bool {
-		return obj != nil && obj.GetName() == sharedNetpolName
+		return obj != nil && (unifiedEgressEnabled() || obj.GetName() == sharedNetpolName)
 	}
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
@@ -2130,6 +2163,13 @@ func (r *WorkspaceReconciler) mapNetworkPolicyToWorkspaces(ctx context.Context, 
 	}
 	if len(names) == 0 {
 		return nil
+	}
+	if unifiedEgressEnabled() {
+		requests := make([]reconcile.Request, 0, len(names))
+		for _, name := range names {
+			requests = append(requests, reconcile.Request{NamespacedName: keys[name]})
+		}
+		return requests
 	}
 	// Deterministic pick (smallest name) so every replica maps the same event to
 	// the same request.

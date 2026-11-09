@@ -168,3 +168,41 @@ spec:
             name: api-server-svc
             port:
               number: 3000
+
+---
+# Unified egress configuration is stored in the operator namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: api-server-egress
+  namespace: agent-deploy-system
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["workspace-egress-config"]
+  verbs: ["get", "update"]
+# Kubernetes RBAC cannot restrict create by resourceName.
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  resourceNames: ["workspace-egress"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: api-server-egress
+  namespace: agent-deploy-system
+subjects:
+- kind: ServiceAccount
+  name: api-server-sa
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: api-server-egress
