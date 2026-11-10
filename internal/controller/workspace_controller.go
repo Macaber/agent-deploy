@@ -75,6 +75,16 @@ const (
 	// single shared namespace-level NetworkPolicy template manages them all.
 	managedByLabelKey   = "app.kubernetes.io/managed-by"
 	managedByLabelValue = "workspace-operator"
+
+	// workspaceRevisionHistoryLimit bounds the number of old ReplicaSets a workspace
+	// Deployment keeps. The API-server default is 10, and with the Recreate strategy
+	// every Pod template change (image bump, env/volume/probe edit) leaves one more
+	// 0-replica ReplicaSet behind — up to 10 old ones per workspace, retained forever.
+	// At 5,000 workspaces that is up to 40,000 extra API objects (each carrying a full
+	// PodSpec copy) with no functional value: this platform never uses
+	// "kubectl rollout undo", and rolling back a Recreate Deployment is a restart either
+	// way. 2 keeps a cheap rollback margin (see docs/bare_pod_orchestration_evaluation.md).
+	workspaceRevisionHistoryLimit int32 = 2
 )
 
 // WorkspaceReconciler reconciles a Workspace object
@@ -1174,7 +1184,8 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 					Labels:    labels,
 				},
 				Spec: appsv1.DeploymentSpec{
-					Replicas: &desiredReplicas,
+					Replicas:             &desiredReplicas,
+					RevisionHistoryLimit: int32Ptr(workspaceRevisionHistoryLimit),
 					Strategy: appsv1.DeploymentStrategy{
 						Type: appsv1.RecreateDeploymentStrategyType,
 					},
@@ -1239,6 +1250,13 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		deploy.Spec.Strategy = appsv1.DeploymentStrategy{
 			Type: appsv1.RecreateDeploymentStrategyType,
 		}
+		needsUpdate = true
+	}
+	// Converge the revision history bound: existing Deployments keep the API-server
+	// default (10) until this runs once, then the Deployment controller garbage
+	// collects the surplus 0-replica ReplicaSets on its next sync.
+	if deploy.Spec.RevisionHistoryLimit == nil || *deploy.Spec.RevisionHistoryLimit != workspaceRevisionHistoryLimit {
+		deploy.Spec.RevisionHistoryLimit = int32Ptr(workspaceRevisionHistoryLimit)
 		needsUpdate = true
 	}
 	if !maps.Equal(deploy.Labels, labels) {
@@ -2138,6 +2156,10 @@ func (r *WorkspaceReconciler) mapNetworkPolicyToWorkspaces(ctx context.Context, 
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+func int32Ptr(i int32) *int32 {
+	return &i
 }
 
 func int64Ptr(i int64) *int64 {
