@@ -22,29 +22,35 @@ import (
 
 func unifiedEgressEnabled() bool { return os.Getenv("EGRESS_ENABLED") == "true" }
 
-// eligibleForEgressMigration never rolls a live legacy Pod to inject proxy env.
-// Even terminating Pods must be gone before changing its Deployment template.
-func eligibleForEgressMigration(d *apps.Deployment, pods []core.Pod) bool {
-	if d.Spec.Template.Labels[egress.MigrationLabel] == egress.MigrationVersion {
-		return true
-	}
-	return len(pods) == 0
-}
-
 func (r *WorkspaceReconciler) prepareUnifiedEgress(ctx context.Context, ws *ai.Workspace, d *apps.Deployment) (bool, error) {
 	if !unifiedEgressEnabled() {
-		return false, nil
-	}
-	pods := &core.PodList{}
-	if err := r.List(ctx, pods, client.InNamespace(ws.Namespace), client.MatchingLabels{"workspace": ws.Name, "app": "workspace"}); err != nil {
-		return false, err
-	}
-	if !eligibleForEgressMigration(d, pods.Items) {
 		return false, nil
 	}
 	c, _, err := egress.Read(ctx, r.Client, egress.Namespace())
 	if err != nil {
 		return false, err
+	}
+	return r.prepareEgressConfig(ctx, ws, c)
+}
+
+// Use one configuration snapshot for both policies and the Pod template.
+func (r *WorkspaceReconciler) prepareEgressConfig(ctx context.Context, ws *ai.Workspace, c egress.Config) (bool, error) {
+	if err := egress.RememberConfiguration(ctx, r.Client, egress.Namespace()); err != nil {
+		return false, err
+	}
+	if err := r.cleanupUnusedEgressPolicies(ctx, ws.Namespace, c.EffectiveMode()); err != nil {
+		return false, err
+	}
+	if c.EffectiveMode() != egress.ModeAllowlist {
+		// Policies select immutable per-Pod mode labels. Old proxy Pods retain
+		// their strict policy until rollout removes them; no union opens them.
+		if c.EffectiveMode() == egress.ModeUnrestricted {
+			policy := &net.NetworkPolicy{ObjectMeta: meta.ObjectMeta{Name: "workspace-egress-unrestricted", Namespace: ws.Namespace}, Spec: net.NetworkPolicySpec{PodSelector: meta.LabelSelector{MatchLabels: map[string]string{"app": "workspace", egress.MigrationLabel: "unrestricted-v1"}}, PolicyTypes: []net.PolicyType{net.PolicyTypeEgress}, Egress: []net.NetworkPolicyEgressRule{{}}}}
+			if err := r.upsertEgressPolicy(ctx, policy); err != nil {
+				return false, err
+			}
+		}
+		return false, r.ensureSharedNetworkPolicy(ctx, ws.Namespace)
 	}
 	if err := c.MigrationCheck(); err != nil {
 		return false, err
@@ -191,6 +197,62 @@ func (r *WorkspaceReconciler) requireLoadedProxy(ctx context.Context, revision s
 	}
 	if active != desired {
 		return fmt.Errorf("proxy replica count %d does not match desired %d", active, desired)
+	}
+	return nil
+}
+
+// cleanupUnusedEgressPolicies waits for all old Pods (including terminating
+// Pods) and active Deployment templates before removing a mode-specific policy.
+func (r *WorkspaceReconciler) cleanupUnusedEgressPolicies(ctx context.Context, namespace string, target egress.Mode) error {
+	pods := &core.PodList{}
+	if err := r.List(ctx, pods, client.InNamespace(namespace)); err != nil {
+		return err
+	}
+	deployments := &apps.DeploymentList{}
+	if err := r.List(ctx, deployments, client.InNamespace(namespace)); err != nil {
+		return err
+	}
+	for _, item := range []struct {
+		mode        egress.Mode
+		label, name string
+	}{
+		{egress.ModeUnrestricted, "unrestricted-v1", "workspace-egress-unrestricted"},
+		{egress.ModeAllowlist, egress.MigrationVersion, "workspace-egress-v1"},
+	} {
+		if target == item.mode {
+			continue
+		}
+		used := false
+		for _, p := range pods.Items {
+			if p.Labels[egress.MigrationLabel] == item.label {
+				used = true
+			}
+		}
+		for _, d := range deployments.Items {
+			if d.Spec.Replicas != nil && *d.Spec.Replicas == 0 {
+				continue
+			}
+			if d.Spec.Template.Labels[egress.MigrationLabel] == item.label {
+				used = true
+			}
+		}
+		if used {
+			continue
+		}
+		policy := &net.NetworkPolicy{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: item.name}, policy); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		// Refuse to delete a same-name resource whose selector was repurposed.
+		if policy.Spec.PodSelector.MatchLabels[egress.MigrationLabel] != item.label {
+			return fmt.Errorf("refusing cleanup of modified policy %s/%s", namespace, item.name)
+		}
+		if err := r.Delete(ctx, policy); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
 	}
 	return nil
 }

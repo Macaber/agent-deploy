@@ -36,10 +36,10 @@ func TestEgressOptionalAuthAndConflicts(t *testing.T) {
 	}
 	authEnabled = false
 	c := egress.Config{Domains: []egress.Domain{{Host: "model.example.com", Port: 443}}}
-	if w := request(http.MethodPut, egressDocument{Config: c}, ""); w.Code != http.StatusAccepted {
+	if w := request(http.MethodPut, egressDocument{Config: c, ConfirmModeChange: true}, ""); w.Code != http.StatusAccepted {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	if w := request(http.MethodPut, egressDocument{Config: c}, ""); w.Code != http.StatusConflict {
+	if w := request(http.MethodPut, egressDocument{Config: c, ConfirmModeChange: true}, ""); w.Code != http.StatusConflict {
 		t.Fatal("create overwrite accepted", w.Code)
 	}
 	_, version, err := egress.Read(context.Background(), k, "test")
@@ -62,5 +62,84 @@ func TestEgressOptionalAuthAndConflicts(t *testing.T) {
 	}
 	if w := request(http.MethodGet, egressDocument{}, expectedToken); w.Code != http.StatusOK {
 		t.Fatal(w.Code, w.Body.String())
+	}
+}
+
+func TestUnconfirmedModeDoesNotOverwriteSavedRules(t *testing.T) {
+	previous := authEnabled
+	authEnabled = false
+	t.Cleanup(func() { authEnabled = previous })
+	t.Setenv("EGRESS_CONFIG_NAMESPACE", "test")
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	k := fake.NewClientBuilder().WithScheme(scheme).Build()
+	original := egress.Config{Domains: []egress.Domain{{Host: "model.example.com", Port: 443}}}
+	if err := egress.Save(context.Background(), k, "test", "", original); err != nil {
+		t.Fatal(err)
+	}
+	_, version, err := egress.Read(context.Background(), k, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []egress.Mode{egress.ModeLegacy, egress.ModeUnrestricted} {
+		target := original
+		target.Mode = mode
+		body, err := json.Marshal(egressDocument{Config: target, ResourceVersion: version})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		egressConfigHandler(k)(response, httptest.NewRequest(http.MethodPut, "/api/egress/config", bytes.NewReader(body)))
+		if response.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: %d %s", mode, response.Code, response.Body.String())
+		}
+		saved, currentVersion, err := egress.Read(context.Background(), k, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if currentVersion != version || saved.Revision() != original.Revision() {
+			t.Fatalf("%s changed saved rules despite rejection", mode)
+		}
+	}
+}
+
+func TestConfirmedModeSwitchPreservesRules(t *testing.T) {
+	previous := authEnabled
+	authEnabled = false
+	t.Cleanup(func() { authEnabled = previous })
+	t.Setenv("EGRESS_CONFIG_NAMESPACE", "test")
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	k := fake.NewClientBuilder().WithScheme(scheme).Build()
+	cfg := egress.Config{Mode: egress.ModeLegacy, Domains: []egress.Domain{{Host: "model.example.com", Port: 443}}}
+	if err := egress.Save(context.Background(), k, "test", "", cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []egress.Mode{egress.ModeAllowlist, egress.ModeUnrestricted, egress.ModeLegacy, egress.ModeUnrestricted, egress.ModeAllowlist, egress.ModeLegacy} {
+		_, version, err := egress.Read(context.Background(), k, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Mode = mode
+		body, err := json.Marshal(egressDocument{Config: cfg, ResourceVersion: version, ConfirmModeChange: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		egressConfigHandler(k)(response, httptest.NewRequest(http.MethodPut, "/api/egress/config", bytes.NewReader(body)))
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("%s: %d %s", mode, response.Code, response.Body.String())
+		}
+		saved, _, err := egress.Read(context.Background(), k, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.EffectiveMode() != mode || len(saved.Domains) != 1 || saved.Domains[0] != cfg.Domains[0] {
+			t.Fatal("mode switch lost rules")
+		}
 	}
 }

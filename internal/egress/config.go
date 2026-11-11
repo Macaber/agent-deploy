@@ -33,16 +33,49 @@ type Service struct {
 	Protocol    string            `json:"protocol"`
 	Port        int32             `json:"port"`
 }
+
+// Mode is the global desired outbound behavior. An omitted mode is the
+// historical allowlist, never an implicit permission to bypass enforcement.
+type Mode string
+
+const (
+	ModeLegacy       Mode = "legacy"
+	ModeAllowlist    Mode = "allowlist"
+	ModeUnrestricted Mode = "unrestricted"
+)
+
 type Config struct {
+	Mode     Mode      `json:"mode,omitempty"`
 	IPs      []IP      `json:"ips"`
 	Domains  []Domain  `json:"domains"`
 	Services []Service `json:"services"`
+}
+
+// EffectiveMode preserves compatibility with configurations saved before modes.
+func (c Config) EffectiveMode() Mode {
+	if c.Mode == "" {
+		return ModeAllowlist
+	}
+	return c.Mode
+}
+
+// RequireAllowlist prevents using the strict policy builder for a non-allowlist mode.
+func (c Config) RequireAllowlist() error {
+	if c.EffectiveMode() != ModeAllowlist {
+		return fmt.Errorf("mode %q cannot use the allowlist policy builder", c.EffectiveMode())
+	}
+	return nil
 }
 
 var dnsLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // Validate does not resolve domains. DNS changes are handled by Envoy.
 func (c Config) Validate() error {
+	switch c.EffectiveMode() {
+	case ModeLegacy, ModeAllowlist, ModeUnrestricted:
+	default:
+		return fmt.Errorf("invalid egress mode %q", c.Mode)
+	}
 	if len(c.IPs)+len(c.Domains)+len(c.Services) > 1000 {
 		return fmt.Errorf("at most 1000 rules are allowed")
 	}
@@ -98,6 +131,10 @@ func (c Config) Validate() error {
 }
 
 func (c Config) Revision() string {
+	// Preserve the exact historical revision for omitted/explicit allowlist.
+	if c.EffectiveMode() == ModeAllowlist {
+		c.Mode = ""
+	}
 	b, _ := json.Marshal(c)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])

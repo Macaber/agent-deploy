@@ -14,6 +14,9 @@ import (
 // protected is an inventory of forbidden infrastructure/Pod networks, not an
 // authorization list. A deployment must provide and maintain that inventory.
 func (c Config) WorkspacePolicy(namespace, proxyNamespace string, protected []string) (*networkingv1.NetworkPolicy, error) {
+	if err := c.RequireAllowlist(); err != nil {
+		return nil, err
+	}
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}

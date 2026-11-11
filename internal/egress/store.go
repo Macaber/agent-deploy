@@ -9,6 +9,7 @@ import (
 	"os"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,6 +40,16 @@ func Decode(data []byte) (Config, error) {
 func Read(ctx context.Context, k client.Client, namespace string) (Config, string, error) {
 	cm := &corev1.ConfigMap{}
 	if err := k.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ConfigMapName}, cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			marker := &corev1.ConfigMap{}
+			markerErr := k.Get(ctx, types.NamespacedName{Namespace: namespace, Name: HistoryConfigMapName}, marker)
+			if markerErr == nil {
+				return Config{}, "", fmt.Errorf("egress configuration missing after initialization; restore the saved configuration")
+			}
+			if !apierrors.IsNotFound(markerErr) {
+				return Config{}, "", markerErr
+			}
+		}
 		return Config{}, "", err
 	}
 	c, err := Decode([]byte(cm.Data[ConfigKey]))
@@ -49,6 +60,9 @@ func Read(ctx context.Context, k client.Client, namespace string) (Config, strin
 // overwriting another administrator's changes. Empty version means create only.
 func Save(ctx context.Context, k client.Client, namespace, version string, c Config) error {
 	if err := c.Validate(); err != nil {
+		return err
+	}
+	if err := RememberConfiguration(ctx, k, namespace); err != nil {
 		return err
 	}
 	b, err := json.Marshal(c)
@@ -70,4 +84,17 @@ func Save(ctx context.Context, k client.Client, namespace, version string, c Con
 	}
 	existing.Data[ConfigKey] = string(b)
 	return k.Update(ctx, existing)
+}
+
+// History is separate from the editable policy so policy deletion cannot be
+// mistaken for first installation. An interrupted first save fails closed.
+const HistoryConfigMapName = "workspace-egress-history"
+
+func RememberConfiguration(ctx context.Context, k client.Client, namespace string) error {
+	marker := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: HistoryConfigMapName, Namespace: namespace}, Data: map[string]string{"initialized": "true"}}
+	err := k.Create(ctx, marker)
+	if apierrors.IsAlreadyExists(err) {
+		return nil
+	}
+	return err
 }

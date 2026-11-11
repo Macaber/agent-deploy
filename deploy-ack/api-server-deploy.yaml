@@ -14,6 +14,12 @@ kind: ClusterRole
 metadata:
   name: api-server-clusterrole
 rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list"]
 - apiGroups: ["ai.example.com"]
   resources: ["workspaces", "workspaces/status"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -174,7 +180,7 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: ["configmaps"]
-  resourceNames: ["workspace-egress-config"]
+  resourceNames: ["workspace-egress-config", "workspace-egress-history"]
   verbs: ["get", "update"]
 # Kubernetes RBAC cannot restrict create by resourceName.
 - apiGroups: [""]

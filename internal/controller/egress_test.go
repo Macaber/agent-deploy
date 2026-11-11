@@ -16,23 +16,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func TestEgressMigrationWaitsForAllLegacyPods(t *testing.T) {
-	d := &apps.Deployment{}
-	if eligibleForEgressMigration(d, []core.Pod{{}}) {
-		t.Fatal("live legacy Pod eligible")
-	}
-	now := meta.Now()
-	if eligibleForEgressMigration(d, []core.Pod{{ObjectMeta: meta.ObjectMeta{DeletionTimestamp: &now}}}) {
-		t.Fatal("terminating legacy Pod eligible")
-	}
-	if !eligibleForEgressMigration(d, nil) {
-		t.Fatal("sleeping Workspace cannot migrate")
-	}
-	d.Spec.Template.Labels = map[string]string{egress.MigrationLabel: egress.MigrationVersion}
-	if !eligibleForEgressMigration(d, []core.Pod{{}}) {
-		t.Fatal("daily config sync requires restart")
-	}
-}
 func TestEgressProxyEnvStableAndNoUserOverride(t *testing.T) {
 	env := proxyEnvironment([]core.EnvVar{{Name: "HTTPS_PROXY", Value: "http://bypass"}, {Name: "ALL_PROXY", Value: "socks://bypass"}, {Name: "TOKEN", Value: "preserved"}})
 	count := 0
@@ -56,6 +39,7 @@ func TestEgressMigrationBlocksAdditivePolicyWithoutDeletingIt(t *testing.T) {
 	t.Setenv("EGRESS_CONFIG_NAMESPACE", "system")
 	t.Setenv("EGRESS_PROTECTED_CIDRS", "10.0.0.0/8")
 	scheme := runtime.NewScheme()
+	_ = apps.AddToScheme(scheme)
 	_ = core.AddToScheme(scheme)
 	_ = net.AddToScheme(scheme)
 	_ = ai.AddToScheme(scheme)
@@ -81,6 +65,7 @@ func TestEgressConfigFailureDoesNotBlockStop(t *testing.T) {
 	t.Setenv("EGRESS_CONFIG_NAMESPACE", "missing")
 	t.Setenv("EGRESS_PROTECTED_CIDRS", "")
 	scheme := runtime.NewScheme()
+	_ = apps.AddToScheme(scheme)
 	_ = apps.AddToScheme(scheme)
 	_ = core.AddToScheme(scheme)
 	one := int32(1)
@@ -110,6 +95,7 @@ func TestEgressPreflightReportsMissingDNS(t *testing.T) {
 func TestEgressMigrationRequiresProxyDeployment(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = apps.AddToScheme(scheme)
+	_ = apps.AddToScheme(scheme)
 	_ = core.AddToScheme(scheme)
 	k := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &WorkspaceReconciler{Client: k}
@@ -123,5 +109,81 @@ func TestEgressMigrationRequiresProxyDeployment(t *testing.T) {
 	}
 	if err := r.requireLoadedProxy(context.Background(), "revision"); err == nil {
 		t.Fatal("zero proxy replicas accepted")
+	}
+}
+
+func TestNonProxyModesDoNotRequireProxyAndScopeAllowAll(t *testing.T) {
+	for _, mode := range []egress.Mode{egress.ModeLegacy, egress.ModeUnrestricted} {
+		t.Run(string(mode), func(t *testing.T) {
+			t.Setenv("EGRESS_ENABLED", "true")
+			t.Setenv("EGRESS_CONFIG_NAMESPACE", "system")
+			scheme := runtime.NewScheme()
+			_ = apps.AddToScheme(scheme)
+			_ = core.AddToScheme(scheme)
+			_ = net.AddToScheme(scheme)
+			_ = ai.AddToScheme(scheme)
+			k := fake.NewClientBuilder().WithScheme(scheme).Build()
+			if err := egress.Save(context.Background(), k, "system", "", egress.Config{Mode: mode}); err != nil {
+				t.Fatal(err)
+			}
+			r := &WorkspaceReconciler{Client: k}
+			ws := &ai.Workspace{ObjectMeta: meta.ObjectMeta{Name: "example", Namespace: "work"}}
+			proxy, err := r.prepareUnifiedEgress(context.Background(), ws, &apps.Deployment{})
+			if err != nil || proxy {
+				t.Fatalf("non-proxy mode requires proxy: %v %v", proxy, err)
+			}
+			policies := &net.NetworkPolicyList{}
+			if err := k.List(context.Background(), policies, client.InNamespace("work")); err != nil {
+				t.Fatal(err)
+			}
+			foundOpen := false
+			for _, p := range policies.Items {
+				if p.Name != "workspace-egress-unrestricted" {
+					continue
+				}
+				foundOpen = true
+				if p.Spec.PodSelector.MatchLabels[egress.MigrationLabel] != "unrestricted-v1" || p.Spec.PodSelector.MatchLabels["app"] != "workspace" {
+					t.Fatal("allow-all can select old strict Pods")
+				}
+				if len(p.Spec.PolicyTypes) != 1 || p.Spec.PolicyTypes[0] != net.PolicyTypeEgress || len(p.Spec.Egress) != 1 {
+					t.Fatal("unexpected allow-all or ingress mutation")
+				}
+			}
+			if foundOpen != (mode == egress.ModeUnrestricted) {
+				t.Fatal("wrong mode received allow-all")
+			}
+		})
+	}
+}
+
+func TestModePolicyCleanupWaitsForTerminatingPods(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = core.AddToScheme(scheme)
+	_ = apps.AddToScheme(scheme)
+	_ = net.AddToScheme(scheme)
+	policy := &net.NetworkPolicy{ObjectMeta: meta.ObjectMeta{Name: "workspace-egress-unrestricted", Namespace: "work"}, Spec: net.NetworkPolicySpec{PodSelector: meta.LabelSelector{MatchLabels: map[string]string{egress.MigrationLabel: "unrestricted-v1"}}}}
+	now := meta.Now()
+	pod := &core.Pod{ObjectMeta: meta.ObjectMeta{Name: "old", Namespace: "work", Labels: map[string]string{egress.MigrationLabel: "unrestricted-v1"}, DeletionTimestamp: &now, Finalizers: []string{"test/hold"}}}
+	k := fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy, pod).Build()
+	r := &WorkspaceReconciler{Client: k}
+	if err := r.cleanupUnusedEgressPolicies(context.Background(), "work", egress.ModeAllowlist); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Get(context.Background(), client.ObjectKeyFromObject(policy), &net.NetworkPolicy{}); err != nil {
+		t.Fatal("removed policy before terminating Pod disappeared", err)
+	}
+	pod.Finalizers = nil
+	if err := k.Update(context.Background(), pod); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.cleanupUnusedEgressPolicies(context.Background(), "work", egress.ModeAllowlist); err != nil {
+		t.Fatal(err)
+	}
+	list := &net.NetworkPolicyList{}
+	if err := k.List(context.Background(), list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 0 {
+		t.Fatal("unused allow-all policy remained")
 	}
 }

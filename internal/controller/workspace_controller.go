@@ -896,9 +896,13 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		return deployName, 0, nil
 	}
 	migrateEgress := false
-	if err == nil || apierrors.IsNotFound(err) {
+	var modeConfig egress.Config
+	if unifiedEgressEnabled() && (err == nil || apierrors.IsNotFound(err)) {
 		var migrationErr error
-		migrateEgress, migrationErr = r.prepareUnifiedEgress(ctx, ws, deploy)
+		modeConfig, _, migrationErr = egress.Read(ctx, r.Client, egress.Namespace())
+		if migrationErr == nil {
+			migrateEgress, migrationErr = r.prepareEgressConfig(ctx, ws, modeConfig)
+		}
 		if migrationErr != nil {
 			return "", 0, migrationErr
 		}
@@ -1171,6 +1175,10 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	delete(podLabels, egress.MigrationLabel)
 	if migrateEgress {
 		podLabels[egress.MigrationLabel] = egress.MigrationVersion
+	} else if unifiedEgressEnabled() {
+		if modeConfig.EffectiveMode() == egress.ModeUnrestricted {
+			podLabels[egress.MigrationLabel] = "unrestricted-v1"
+		}
 	}
 
 	var command []string
@@ -1594,6 +1602,15 @@ func getWorkspaceContainerPort(ws *aiv1alpha1.Workspace) int32 {
 }
 
 func (r *WorkspaceReconciler) reconcileNetworkPolicy(ctx context.Context, ws *aiv1alpha1.Workspace) error {
+	// Sleeping Workspaces also drive cleanup once their last old Pod disappears.
+	if unifiedEgressEnabled() {
+		if c, _, readErr := egress.Read(ctx, r.Client, egress.Namespace()); readErr == nil {
+			if cleanupErr := r.cleanupUnusedEgressPolicies(ctx, ws.Namespace, c.EffectiveMode()); cleanupErr != nil {
+				return cleanupErr
+			}
+		}
+	}
+
 	log := logf.FromContext(ctx)
 
 	// Remove the legacy per-workspace NetworkPolicy from older operator versions.

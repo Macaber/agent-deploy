@@ -17,7 +17,7 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: ["configmaps"]
-  resourceNames: ["workspace-egress-config"]
+  resourceNames: ["workspace-egress-config", "workspace-egress-history"]
   verbs: ["get", "list", "watch"]
 - apiGroups: [""]
   resources: ["pods"]

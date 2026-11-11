@@ -11,11 +11,12 @@ import (
 )
 
 type egressDocument struct {
-	Config          egress.Config `json:"config"`
-	ResourceVersion string        `json:"resourceVersion"`
-	Revision        string        `json:"revision"`
-	State           string        `json:"state"`
-	Warnings        []string      `json:"warnings,omitempty"`
+	ConfirmModeChange bool          `json:"confirmModeChange,omitempty"`
+	Config            egress.Config `json:"config"`
+	ResourceVersion   string        `json:"resourceVersion"`
+	Revision          string        `json:"revision"`
+	State             string        `json:"state"`
+	Warnings          []string      `json:"warnings,omitempty"`
 }
 
 // Authentication is deliberately the same optional portal authentication used
@@ -29,7 +30,7 @@ func egressConfigHandler(k client.Client) http.HandlerFunc {
 			c, version, err := egress.Read(r.Context(), k, namespace)
 			state := "saved"
 			if apierrors.IsNotFound(err) {
-				c = egress.Config{}
+				c = egress.Config{Mode: egress.ModeLegacy}
 				err = nil
 				state = "unconfigured"
 			}
@@ -39,7 +40,7 @@ func egressConfigHandler(k client.Client) http.HandlerFunc {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			var warnings []string
-			if err := c.MigrationCheck(); err != nil {
+			if err := c.MigrationCheck(); c.EffectiveMode() == egress.ModeAllowlist && err != nil {
 				warnings = append(warnings, err.Error())
 			}
 			_ = json.NewEncoder(w).Encode(egressDocument{Config: c, ResourceVersion: version, Revision: c.Revision(), State: state, Warnings: warnings})
@@ -59,6 +60,17 @@ func egressConfigHandler(k client.Client) http.HandlerFunc {
 			}
 			if err := doc.Config.Validate(); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			previous, _, readErr := egress.Read(r.Context(), k, namespace)
+			if apierrors.IsNotFound(readErr) {
+				previous.Mode = egress.ModeLegacy
+			} else if readErr != nil {
+				http.Error(w, readErr.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			if previous.EffectiveMode() != doc.Config.EffectiveMode() && !doc.ConfirmModeChange {
+				http.Error(w, "Mode change rebuilds Workspace Pods and interrupts connections; confirmModeChange is required", http.StatusUnprocessableEntity)
 				return
 			}
 			if err := egress.Save(r.Context(), k, namespace, doc.ResourceVersion, doc.Config); err != nil {
