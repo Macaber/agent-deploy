@@ -76,7 +76,8 @@ spec:
             drop: [ALL]
             add: [NET_ADMIN]
       - name: initialize-config
-        image: workspace-egress-sync:egress-test-20261106-r2
+        image: api-server:egress-unified-20261110-ip
+        command: ["/egress-sync"]
         imagePullPolicy: IfNotPresent
         args: ["--init"]
         env:
@@ -119,7 +120,8 @@ spec:
           mountPath: /var/lib/envoy
           readOnly: true
       - name: sync
-        image: workspace-egress-sync:egress-test-20261106-r2
+        image: api-server:egress-unified-20261110-ip
+        command: ["/egress-sync"]
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 102

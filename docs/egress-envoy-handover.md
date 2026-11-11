@@ -2,6 +2,27 @@
 
 更新日期：2026-11-09（Asia/Shanghai）
 
+## 2026-11-10：IP/CIDR 同时授权代理访问（尚未现场部署）
+
+- IPv4 TCP 规则同时生成 NetworkPolicy 直连规则和 Envoy HTTP/CONNECT 路由。只匹配规范点分十进制 IP 与指定端口；HTTP 仅在端口 80 时允许省略端口。CONNECT 必须显式指定获准端口。
+- IPv6 和 UDP 规则仍仅适用于直连。域名授权保持独立，未列出的域名不会因解析到获准 IP 获得代理权限。CONNECT 仍是 TCP 隧道，不校验隧道内协议或 TLS 身份。
+- 不修改 NO_PROXY，不重启 Workspace；后续规则保存仍通过文件 RDS 热更新。既有隧道不保证在删除规则时立即断开。
+- guard 的基础设施保护范围保持不变，IP 白名单不覆盖代理的保护范围。目标业务返回的 403 不代表网络未放行。
+- 新镜像标签 `api-server:egress-unified-20261110-ip`。本次需要同时更新代理的 initialize-config 和 sync 镜像并滚动更新代理 Pod，因为 bootstrap 增加了有界 RE2 程序复杂度设置。只替换运行中 sync 而不重新初始化 bootstrap 不构成完整升级。API 使用同一镜像更新页面说明。
+- 下文此前仅域名代理、IP 仅直连的描述为历史版本行为，以本节为准。
+- 本次验证：`go test ./internal/egress ./cmd/egress-sync ./cmd/api-server`、相关包 `go vet`、前端构建和批量解析测试通过。Docker 服务查询无响应，尚未进行新版真实 Envoy HTTP/CONNECT、热更新和 guard 联合实验；上线前需隔离环境验证。完整 lint 工具在本机缓存中缺失。
+
+## 最新代码变更：共用镜像与批量录入（尚未现场部署）
+
+- 当前代码以 `Dockerfile.api-server` 同时构建 `/api-server` 和 `/egress-sync`。API 默认启动前者，代理的 initialize-config 与 sync 使用 `command: ["/egress-sync"]`；就绪探针仍使用 `/egress-sync --ready`。
+- 新清单标签为 `api-server:egress-unified-20261109`；此标签需要重新构建，不能使用不含 sync 程序的旧 API 镜像。API 和代理引用同一镜像，仍是独立 Deployment；原有 UID、权限、共享卷和状态确认机制保持不变。
+- 标准构建：先在 `web/portal` 执行 `npm ci`、`npm run build`，然后在仓库根目录执行 `docker build --platform linux/amd64 -f Dockerfile.api-server -t api-server:egress-unified-20261109 .`。导出该镜像并导入实际调度节点，或推送内网仓库并统一替换清单镜像地址。
+- 常规发布镜像由五种减少为四种：Operator、API（含 sync）、guard、Envoy。`Dockerfile.egress-sync` 仅保留为历史独立构建入口，不再是常规构建步骤。
+- 更新代理前确认新镜像已到位；API 与代理按需分别滚动更新。本文后续 r2 标签与五镜像包描述为旧现场快照。
+- 网络配置页每类规则提供批量输入：每行一条，Tab 或空格分隔；IP 为 `CIDR 协议 端口`，域名为 `域名 端口`，基础服务为 `用途 命名空间 标签 协议 端口`。用途含空格时用 Tab 分隔；多个标签用逗号分隔。
+- “追加到表单”保留已有规则，不会提交线上；检查后点击“保存配置”，沿用后端校验及 resourceVersion 并发保护。“复制当前规则”包含未保存表单内容。浏览器限制剪贴板 API 时使用输入框 Ctrl+C / Ctrl+V。
+- 批量解析回归检查：`node web/portal/scripts/test-egress-bulk.mjs`。本次前端构建与解析测试通过；镜像构建及集群运行尚待验证。
+
 ## 1. 新会话先读
 
 - 实际开发仓库：`D:\E\Code\TS\agent-deploy`；分支：`feature-xjw-networkpolicy-envoy`。

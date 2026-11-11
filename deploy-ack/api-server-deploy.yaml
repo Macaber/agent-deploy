@@ -66,7 +66,7 @@ spec:
             app: api-server
       containers:
       - name: api-server
-        image: registry.cn-hangzhou.aliyuncs.com/<your-namespace>/api-server:v1.0.0 # 替换为实际 ACR 地址
+        image: registry.cn-hangzhou.aliyuncs.com/<your-namespace>/api-server:egress-unified-20261110-ip # 替换为实际 ACR 地址
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 3000

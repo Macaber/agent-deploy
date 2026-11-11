@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { apiUrl } from '@/lib/api';
 import { useApp } from '@/store';
+import { parseBulk, formatBulk, type BulkGroup } from '@/lib/egress-bulk';
 import { Button } from '@/components/ui/button';
 type Replica = { pod: string; state: string; loadedRevision: string; observedAt: string; error: string };
 type SyncStatus = { revision: string; proxyState: string; desiredReplicas: number; replicas: Replica[]; policyState: string; migrationState: string };
@@ -8,7 +9,7 @@ const stateLabel: Record<string, string> = { loaded: '已加载', syncing: '同�
 type Row = Record<string, string | number | Record<string, string>>;
 type Config = Record<'ips' | 'domains' | 'services', Row[]>;
 const groups: Array<{key: keyof Config; title: string; fields: string[]; initial: Row}> = [
- { key: 'ips' as const, title: 'IP/CIDR 直连规则', fields: ['cidr', 'protocol', 'port'], initial: { cidr: '', protocol: 'TCP', port: 443 } },
+ { key: 'ips' as const, title: 'IP/CIDR 规则', fields: ['cidr', 'protocol', 'port'], initial: { cidr: '', protocol: 'TCP', port: 443 } },
  { key: 'domains' as const, title: '域名代理规则', fields: ['host', 'port'], initial: { host: '', port: 443 } },
  { key: 'services' as const, title: '必要基础服务规则', fields: ['name', 'namespace', 'podSelector', 'protocol', 'port'], initial: { name: '', namespace: '', podSelector: '', protocol: 'UDP', port: 53 } },
 ];
@@ -20,6 +21,8 @@ async function request(init?: RequestInit) {
  return r.json();
 }
 export function EgressView() {
+ const [bulk, setBulk] = useState<Record<BulkGroup, string>>({ips:'', domains:'', services:''});
+ const [bulkMessage, setBulkMessage] = useState('');
  const authenticated = useApp(s=>s.auth.authenticated);
  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
  const [statusError, setStatusError] = useState('');
@@ -57,9 +60,28 @@ export function EgressView() {
   const services=config.services.map(r=>{const selector:Record<string,string>={};for(const pair of String(r.podSelector).split(',')){const at=pair.indexOf('=');if(at<1||at===pair.length-1)throw new Error('Pod 标签须为 key=value');const key=pair.slice(0,at).trim();if(Object.hasOwn(selector,key))throw new Error('Pod 标签键重复');selector[key]=pair.slice(at+1).trim();}return {...r,podSelector:selector};});
   await request({method:'PUT',body:JSON.stringify({config:{...config,services},resourceVersion:version})});await load();
  }catch(e){setError(String(e));}finally{setBusy(false);}}
+ function appendBulk(group: BulkGroup) {
+  try {
+   const rows = parseBulk(group, bulk[group]);
+   if (config.ips.length + config.domains.length + config.services.length + rows.length > 1000) throw new Error('三类规则合计最多 1000 条');
+   const seen = new Set(config[group].map(r => formatBulk(group, [r])));
+   for (const row of rows) { const key = formatBulk(group, [row]); if (seen.has(key)) throw new Error('存在重复规则，请检查输入和当前表单'); seen.add(key); }
+   setConfig(c => ({...c, [group]: [...c[group], ...rows]})); setDirty(true); setError('');
+   setBulk(b => ({...b, [group]: ''})); setBulkMessage(`已追加 ${rows.length} 条，请检查表单后保存；保存时将校验完整规则。`);
+  } catch(e) { setError(String(e)); }
+ }
+ async function pasteBulk(group: BulkGroup) {
+  try { const text = await navigator.clipboard.readText(); setBulk(b => ({...b, [group]: text})); setBulkMessage('已粘贴，请追加到表单。'); }
+  catch { setBulkMessage('浏览器未允许读取剪贴板，请在输入框内按 Ctrl+V 粘贴。'); }
+ }
+ async function copyBulk(group: BulkGroup) {
+  const text = formatBulk(group, config[group]); setBulk(b => ({...b, [group]: text}));
+  try { await navigator.clipboard.writeText(text); setBulkMessage('已复制当前表单规则（包含未保存修改）。'); }
+  catch { setBulkMessage('规则已放入输入框，请选中后按 Ctrl+C 复制。'); }
+ }
  return <div className="h-full overflow-auto p-6"><div className="mx-auto max-w-5xl space-y-5">
  <h1 className="text-xl font-semibold">统一出站白名单</h1>
- <p className="text-sm">IP 规则控制直连；域名规则控制 HTTP/HTTPS 代理访问。IP 直连放行可能绕过域名检查。未命中规则的访问应被拒绝。</p>
+ <p className="text-sm">IP/CIDR 规则允许直连，并允许通过代理访问对应 IPv4 地址的 TCP 端口；域名规则允许 HTTP/HTTPS 代理访问。UDP 及 IPv6 规则仅用于直连。代理仍禁止访问受保护地址。目标服务的登录和接口权限仍需满足。</p>
  <p role="status">{dirty?'有未保存修改。':''}{message}。保存成功不代表实际生效。</p>
  <section aria-label="已保存配置的同步状态" className="space-y-2 rounded border p-4">
  <h2 className="font-semibold">已保存配置的同步状态</h2>
@@ -75,7 +97,13 @@ export function EgressView() {
  </> : !statusError && <p>正在读取副本状态</p>}
  </section>
  {error&&<p role="alert" className="text-red-600">{error}</p>}
+ {bulkMessage && <p role="status">{bulkMessage}</p>}
  {groups.map(g=><section key={g.key} className="space-y-3 rounded border p-4"><h2 className="font-semibold">{g.title}</h2>
+ <details className="rounded border p-3"><summary className="cursor-pointer text-sm">批量粘贴 / 复制规则</summary>
+ <p className="my-2 text-xs">每行一条，按以下顺序用 Tab 或空格分隔：{g.fields.map(f=>labels[f]).join(' → ')}。支持从 Excel 复制。用途含空格时请使用 Tab 分隔；标签内部不加空格。追加仅修改表单，保存后才提交。</p>
+ <textarea aria-label={`${g.title}批量输入`} className="min-h-32 w-full rounded border bg-background p-2 font-mono text-sm" disabled={busy||!loaded} value={bulk[g.key]} onChange={e=>setBulk(b=>({...b,[g.key]:e.target.value}))} placeholder={g.key==='ips'?'192.0.2.1/32 TCP 443':g.key==='domains'?'api.example.com 443':'DNS kube-system k8s-app=kube-dns UDP 53'}/>
+ <div className="mt-2 flex flex-wrap gap-2"><Button variant="outline" disabled={busy||!loaded} onClick={()=>void pasteBulk(g.key)}>粘贴</Button><Button variant="outline" disabled={busy||!loaded||!bulk[g.key].trim()} onClick={()=>appendBulk(g.key)}>追加到表单</Button><Button variant="outline" disabled={busy||!loaded||!config[g.key].length} onClick={()=>void copyBulk(g.key)}>复制当前规则</Button></div>
+ </details>
  {config[g.key].map((r,i)=><div key={i} className="flex flex-wrap items-end gap-2">{g.fields.map(f=><label key={f} className="flex min-w-32 flex-1 flex-col text-xs">{labels[f]}<input className="rounded border bg-background p-2 text-sm" disabled={busy} type={f==='port'?'number':'text'} value={String(r[f]??'')} onChange={e=>{setDirty(true);setConfig(c=>({...c,[g.key]:c[g.key].map((v,n)=>n===i?{...v,[f]:f==='port'?Number(e.target.value):e.target.value}:v)}));}}/></label>)}<Button variant="outline" disabled={busy} onClick={()=>{setDirty(true);setConfig(c=>({...c,[g.key]:c[g.key].filter((_,n)=>n!==i)}));}}>删除</Button></div>)}
  <Button variant="outline" disabled={busy||!loaded} onClick={()=>{setDirty(true);setConfig(c=>({...c,[g.key]:[...c[g.key],{...g.initial}]}));}}>添加规则</Button></section>)}
  <div className="flex gap-3"><Button disabled={busy||!loaded||!dirty} onClick={()=>void save()}>保存配置</Button><Button variant="outline" disabled={busy} onClick={()=>{if(!dirty||window.confirm('放弃未保存修改并重新加载？'))void load();}}>重新加载</Button></div>

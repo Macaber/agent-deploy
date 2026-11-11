@@ -1,0 +1,13 @@
+spec:
+  template:
+    spec:
+      initContainers:
+      - name: initialize-config
+        image: api-server:egress-unified-20261110-ip
+        command: ["/egress-sync"]
+        args: ["--init"]
+      containers:
+      - name: sync
+        image: api-server:egress-unified-20261110-ip
+        command: ["/egress-sync"]
+        args: []

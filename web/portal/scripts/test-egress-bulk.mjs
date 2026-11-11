@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import ts from 'typescript';
+const source=readFileSync(new URL('../src/lib/egress-bulk.ts', import.meta.url),'utf8');
+const js=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const {parseBulk,formatBulk}=await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
+assert.deepEqual(parseBulk('ips','192.0.2.1/32 tcp 443\r\n\n192.0.2.2/32\tUDP\t53'),[{cidr:'192.0.2.1/32',protocol:'TCP',port:443},{cidr:'192.0.2.2/32',protocol:'UDP',port:53}]);
+assert.deepEqual(parseBulk('domains','API.EXAMPLE.COM 443'),[{host:'api.example.com',port:443}]);
+const service=parseBulk('services','Cluster DNS\tkube-system\tk8s-app=kube-dns,role=dns\tudp\t53');
+assert.deepEqual(parseBulk('services',formatBulk('services',service)),service);
+for(const input of ['', 'a.example 0', 'a.example 65536', 'a.example 1.5', 'a.example 443 extra']) assert.throws(()=>parseBulk('domains',input));
+assert.throws(()=>parseBulk('ips','192.0.2.1/32 SCTP 80'));
+assert.throws(()=>parseBulk('services','DNS ns app=a,app=b UDP 53'));
+assert.throws(()=>parseBulk('domains','a.example 443\nb.example nope'),/第 2 行/);
+console.log('Bulk parsing tests passed');

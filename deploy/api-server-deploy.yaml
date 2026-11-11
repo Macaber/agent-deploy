@@ -63,7 +63,7 @@ spec:
             app: api-server
       containers:
       - name: api-server
-        image: api-server:v1.0.0 # 建议根据实际私有镜像仓库重命名，如 myharbor.local/library/api-server:v1.0.0
+        image: api-server:egress-unified-20261110-ip # 建议根据实际私有镜像仓库重命名，如 myharbor.local/library/api-server:egress-unified-20261110-ip
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 3000
