@@ -62,3 +62,4 @@ web/portal/dist/
 
 # Migration scripts runtime logs
 hack/logs/
+.openidea
