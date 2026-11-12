@@ -26,7 +26,7 @@ func (r *WorkspaceReconciler) prepareUnifiedEgress(ctx context.Context, ws *ai.W
 	if !unifiedEgressEnabled() {
 		return false, nil
 	}
-	c, _, err := egress.Read(ctx, r.Client, egress.Namespace())
+	c, err := r.readOrInitializeEgress(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -255,4 +255,47 @@ func (r *WorkspaceReconciler) cleanupUnusedEgressPolicies(ctx context.Context, n
 		}
 	}
 	return nil
+}
+
+// Only a genuinely unconfigured installation may initialize legacy mode.
+// Read distinguishes a missing policy with history from a first installation.
+func (r *WorkspaceReconciler) readOrInitializeEgress(ctx context.Context) (egress.Config, error) {
+	c, _, err := egress.Read(ctx, r.Client, egress.Namespace())
+	if !apierrors.IsNotFound(err) {
+		return c, err
+	}
+	pods := &core.PodList{}
+	if err := r.List(ctx, pods); err != nil {
+		return c, err
+	}
+	for _, p := range pods.Items {
+		if p.Labels[egress.MigrationLabel] != "" {
+			return c, fmt.Errorf("egress configuration missing but migrated Pod %s/%s exists", p.Namespace, p.Name)
+		}
+	}
+	deployments := &apps.DeploymentList{}
+	if err := r.List(ctx, deployments); err != nil {
+		return c, err
+	}
+	for _, d := range deployments.Items {
+		if d.Spec.Template.Labels[egress.MigrationLabel] != "" {
+			return c, fmt.Errorf("egress configuration missing but migrated Deployment %s/%s exists", d.Namespace, d.Name)
+		}
+	}
+	policies := &net.NetworkPolicyList{}
+	if err := r.List(ctx, policies); err != nil {
+		return c, err
+	}
+	for _, p := range policies.Items {
+		if p.Name == "workspace-egress-v1" || p.Name == "workspace-egress-unrestricted" {
+			return c, fmt.Errorf("egress configuration missing but managed policy %s/%s exists", p.Namespace, p.Name)
+		}
+	}
+	c = egress.Config{Mode: egress.ModeLegacy}
+	// Create-only: another administrator's saved policy always wins.
+	if err := egress.Save(ctx, r.Client, egress.Namespace(), "", c); err != nil && !apierrors.IsAlreadyExists(err) {
+		return c, err
+	}
+	c, _, err = egress.Read(ctx, r.Client, egress.Namespace())
+	return c, err
 }

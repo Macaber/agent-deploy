@@ -3,11 +3,11 @@ spec:
     spec:
       initContainers:
       - name: initialize-config
-        image: api-server:egress-modes-20261111
+        image: api-server:egress-modes-20261112-default
         command: ["/egress-sync"]
         args: ["--init"]
       containers:
       - name: sync
-        image: api-server:egress-modes-20261111
+        image: api-server:egress-modes-20261112-default
         command: ["/egress-sync"]
         args: []

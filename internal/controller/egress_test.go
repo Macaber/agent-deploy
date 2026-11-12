@@ -187,3 +187,63 @@ func TestModePolicyCleanupWaitsForTerminatingPods(t *testing.T) {
 		t.Fatal("unused allow-all policy remained")
 	}
 }
+
+func TestFirstInstallationDefaultsToLegacy(t *testing.T) {
+	t.Setenv("EGRESS_CONFIG_NAMESPACE", "system")
+	scheme := runtime.NewScheme()
+	_ = core.AddToScheme(scheme)
+	_ = apps.AddToScheme(scheme)
+	_ = net.AddToScheme(scheme)
+	k := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &WorkspaceReconciler{Client: k}
+	c, err := r.readOrInitializeEgress(context.Background())
+	if err != nil || c.EffectiveMode() != egress.ModeLegacy {
+		t.Fatalf("%v %v", c, err)
+	}
+	saved, version, err := egress.Read(context.Background(), k, "system")
+	if err != nil || version == "" || saved.Mode != egress.ModeLegacy {
+		t.Fatal("default not persisted", err)
+	}
+	if err := k.Delete(context.Background(), &core.ConfigMap{ObjectMeta: meta.ObjectMeta{Name: egress.ConfigMapName, Namespace: "system"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.readOrInitializeEgress(context.Background()); err == nil {
+		t.Fatal("deleted policy initialized again")
+	}
+}
+
+func TestInitializationPreservesExistingAllowlistAndRejectsMigrationEvidence(t *testing.T) {
+	t.Setenv("EGRESS_CONFIG_NAMESPACE", "system")
+	for _, evidence := range []string{"existing", "pod", "deployment", "policy"} {
+		t.Run(evidence, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			_ = core.AddToScheme(scheme)
+			_ = apps.AddToScheme(scheme)
+			_ = net.AddToScheme(scheme)
+			k := fake.NewClientBuilder().WithScheme(scheme).Build()
+			var obj client.Object
+			switch evidence {
+			case "existing":
+				obj = &core.ConfigMap{ObjectMeta: meta.ObjectMeta{Name: egress.ConfigMapName, Namespace: "system"}, Data: map[string]string{egress.ConfigKey: `{"domains":[{"host":"model.example.com","port":443}]}`}}
+			case "pod":
+				obj = &core.Pod{ObjectMeta: meta.ObjectMeta{Name: "old", Namespace: "work", Labels: map[string]string{egress.MigrationLabel: egress.MigrationVersion}}}
+			case "deployment":
+				obj = &apps.Deployment{ObjectMeta: meta.ObjectMeta{Name: "old", Namespace: "work"}, Spec: apps.DeploymentSpec{Template: core.PodTemplateSpec{ObjectMeta: meta.ObjectMeta{Labels: map[string]string{egress.MigrationLabel: egress.MigrationVersion}}}}}
+			case "policy":
+				obj = &net.NetworkPolicy{ObjectMeta: meta.ObjectMeta{Name: "workspace-egress-v1", Namespace: "work"}}
+			}
+			if err := k.Create(context.Background(), obj); err != nil {
+				t.Fatal(err)
+			}
+			r := &WorkspaceReconciler{Client: k}
+			c, err := r.readOrInitializeEgress(context.Background())
+			if evidence == "existing" {
+				if err != nil || c.EffectiveMode() != egress.ModeAllowlist || len(c.Domains) != 1 {
+					t.Fatal("existing allowlist changed", err)
+				}
+			} else if err == nil {
+				t.Fatal("migration evidence ignored")
+			}
+		})
+	}
+}

@@ -1,6 +1,6 @@
 # 全局出站模式：升级、验收与回退
 
-更新：2026-11-11。模式切换允许重建 Workspace Pod；同模式下 IP/域名规则修改热更新。本文替代此前逐次追加的开发进度。服务器集群验收由用户执行，本文不宣称已经投产。
+更新：2026-11-12。模式切换允许重建 Workspace Pod；同模式下 IP/域名规则修改热更新。本文替代此前逐次追加的开发进度。服务器集群验收由用户执行，本文不宣称已经投产。
 
 ## 行为与边界
 
@@ -21,7 +21,7 @@
 1. 核对 kubectl 当前 API 地址和节点，备份 Operator/API/代理三个 Deployment、CRD、Workspace、NetworkPolicy、workspace-egress-config、workspace-egress-boundary、workspace-egress-history（后者可能尚不存在）。保留镜像引用和 rollout revision。
 2. 核对实际 ServiceAccount、命名空间；下文默认 Operator/代理在 agent-deploy-system，API 在 default，Workspace 在 bocomwork。不同环境先修改补丁和 RBAC subjects。
 3. 保留 Operator 的 EGRESS_ENABLED、EGRESS_CONFIG_NAMESPACE、EGRESS_PROTECTED_CIDRS、全局基础服务例外、nodeSelector（现有测试环境 bocomworkuat2）。保留 PVC、入口和其他环境配置。
-4. 首次安装还需要部署原有 CRD、API、Operator、代理及存储/RBAC。先启用 API，在网络页面保存 legacy，再启用 Operator EGRESS_ENABLED=true。不要把本节已有环境升级命令当成完整首次安装。
+4. 首次安装还需要部署原有 CRD、API、Operator、代理及存储/RBAC。Operator 设置 EGRESS_ENABLED=true 后，在首次协调活动 Workspace 时自动创建 legacy 配置；无需先到页面保存。自动初始化仅适用于没有配置、历史标记和迁移 Pod/Deployment/策略证据的首次安装。不要把本节已有环境升级命令当成完整首次安装。
 5. 白名单模式需要明确 TCP/UDP 53 DNS 规则、完整保护范围、代理就绪及实际加载版本一致。guard 的 DNS/保护范围变更需要代理重建；日常业务规则不需要。
 
 ## 本机构建
@@ -33,14 +33,14 @@ Push-Location web\portal
 npm ci
 npm run build
 Pop-Location
-docker build --platform linux/amd64 -f Dockerfile -t workspace-operator:egress-modes-20261111 .
-docker build --platform linux/amd64 -f Dockerfile.api-server -t api-server:egress-modes-20261111 .
-docker save -o deploy\egress-modes-20261111.tar workspace-operator:egress-modes-20261111 api-server:egress-modes-20261111
+docker build --platform linux/amd64 -f Dockerfile -t workspace-operator:egress-modes-20261112-default .
+docker build --platform linux/amd64 -f Dockerfile.api-server -t api-server:egress-modes-20261112-default .
+docker save -o deploy\egress-modes-20261112-default.tar workspace-operator:egress-modes-20261112-default api-server:egress-modes-20261112-default
 ```
 
 本次未执行上述 Docker 构建，需现场执行。后续重新构建修订版使用新标签，避免缓存混用；勿覆盖 egress-unified-20261110-ip。
 
-传输 tar、deploy/egress-mode-upgrade.patch.yaml、deploy/egress-mode-rbac.yaml。每个可能调度节点执行 `ctr -n k8s.io images import egress-modes-20261111.tar`，或统一推送内网仓库并替换全部镜像引用。原 Envoy、guard 镜像仍需可用。
+传输 tar、deploy/egress-mode-upgrade.patch.yaml、deploy/egress-mode-rbac.yaml。每个可能调度节点执行 `ctr -n k8s.io images import egress-modes-20261112-default.tar`，或统一推送内网仓库并替换全部镜像引用。原 Envoy、guard 镜像仍需可用。
 
 ## 已有环境升级顺序
 
@@ -50,9 +50,9 @@ docker save -o deploy\egress-modes-20261111.tar workspace-operator:egress-modes-
 kubectl apply -f egress-mode-rbac.yaml
 kubectl -n agent-deploy-system patch deployment workspace-egress --type=strategic --patch-file egress-mode-upgrade.patch.yaml
 kubectl -n agent-deploy-system rollout status deployment/workspace-egress --timeout=180s
-kubectl -n agent-deploy-system set image deployment/agent-deploy-controller-manager manager=workspace-operator:egress-modes-20261111
+kubectl -n agent-deploy-system set image deployment/agent-deploy-controller-manager manager=workspace-operator:egress-modes-20261112-default
 kubectl -n agent-deploy-system rollout status deployment/agent-deploy-controller-manager --timeout=180s
-kubectl -n default set image deployment/api-server api-server=api-server:egress-modes-20261111
+kubectl -n default set image deployment/api-server api-server=api-server:egress-modes-20261112-default
 kubectl -n default rollout status deployment/api-server --timeout=180s
 ```
 
@@ -62,7 +62,7 @@ kubectl -n default rollout status deployment/api-server --timeout=180s
 
 ## 页面操作与生效判断
 
-- 首次未配置：保存默认 legacy。已有配置没有 mode 的，按 allowlist 兼容，不能视为默认开放。
+- 首次未配置：页面预选默认 legacy，Operator 首次协调活动 Workspace 时自动持久化为 legacy，所有 Workspace 使用原默认网络行为。尚无活动 Workspace 时，页面可以手动保存 legacy。已有配置没有 mode 的，按 allowlist 兼容，不能视为默认开放。
 - 修改规则：保存或放弃后再切换模式。点击三个模式按钮时确认 Pod 重建提示；API 模式变化要求 confirmModeChange=true 和当前 resourceVersion。
 - 页面 pending 表示模板、Pod 或 rollout 尚未一致，会列出待完成资源。observed 表示已观测模式一致，不代表 CNI/网络实际验证通过。
 - policyState 保持 unverified，实际流量效果由下节验证；legacy/unrestricted 不要求代理 loaded。allowlist 需所有代理副本的 desired/loaded revision 一致。
@@ -91,7 +91,7 @@ curl 必须在 Workspace 容器内执行。分别使用 `curl --noproxy '*' ...`
 
 ## 配置故障与回退
 
-workspace-egress-history 为独立初始化标记。配置被删且标记存在时明确报错，不回到首次安装；初始化保存中断也报错。恢复备份的 workspace-egress-config，不要删除标记规避保护。两份 ConfigMap 都被人为删除不在该标记能识别的范围内；首次未配置也不会自动创建开放策略。
+workspace-egress-history 为独立初始化标记。配置被删且标记存在时明确报错，不回到首次安装；初始化保存中断也报错。恢复备份的 workspace-egress-config，不要删除标记规避保护。配置与历史标记都不存在时，控制器还会检查已有迁移标签的 Pod/Deployment 和本功能模式策略；存在这些证据则拒绝自动初始化。所有历史证据都被删除后无法再区分历史环境，不应通过删除资源来重置模式。真正首次安装只初始化 legacy，不创建 unrestricted 全开策略。
 
 应急网络回退优先在新版页面选择 legacy 或 unrestricted，等待 Pod 替换并验证实际访问。直接 EGRESS_ENABLED=false 不会清除运行中代理环境，不能当成回退。
 
@@ -102,3 +102,5 @@ workspace-egress-history 为独立初始化标记。配置被删且标记存在�
 已运行相关 Go 单测、控制器定向回归、go vet、前端 TypeScript/Vite 构建和批量录入测试。覆盖 API 六方向切换保留规则、确认保护、配置丢失、初始化中断、终止中 Pod 及策略清理。
 
 完整 make lint-fix 曾因 proxy.golang.org 下载超时失败；不将其列为通过。真实 CNI/服务器流量、镜像构建导入和业务客户端验收由用户按上文执行。本地测试不等于现场投产成功。
+
+首次安装默认模式回归：无配置自动初始化 legacy、持久化、配置删除后拒绝重新初始化、保留已有旧格式白名单、发现迁移 Pod/Deployment/策略拒绝初始化，均已通过本地定向测试。

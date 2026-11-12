@@ -899,7 +899,7 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	var modeConfig egress.Config
 	if unifiedEgressEnabled() && (err == nil || apierrors.IsNotFound(err)) {
 		var migrationErr error
-		modeConfig, _, migrationErr = egress.Read(ctx, r.Client, egress.Namespace())
+		modeConfig, migrationErr = r.readOrInitializeEgress(ctx)
 		if migrationErr == nil {
 			migrateEgress, migrationErr = r.prepareEgressConfig(ctx, ws, modeConfig)
 		}
