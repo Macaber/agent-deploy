@@ -323,7 +323,7 @@ kubectl create -f egress-legacy-initial.yaml                    # 正式
 
 ### 步骤 6：安装代理（唯一 apply 的安装文件）
 
-**干什么**：一次 apply 建立全部基础设施：8 个 RBAC（给 API/Operator/代理发权限）+ boundary ConfigMap + 代理的 SA/Deployment/Service。
+**干什么**：一次 apply 建立全部基础设施：10 个 RBAC（给 API/Operator/代理发权限）+ boundary ConfigMap + 代理的 SA/Deployment/Service，共 14 个资源。
 
 先演练再正式：
 
@@ -413,7 +413,7 @@ kubectl -n agent-deploy-system get cm workspace-egress-config -o jsonpath='{.dat
 **失败怎么查**：
 
 - Operator 日志报 egress 配置错误 → 检查 workspace-egress-config 是否被动过。
-- 已有 Workspace Pod 开始重建 → **异常**（legacy 不应触发）：`rollout undo` 回退，保留日志找开发。
+- 已有 Workspace Pod 开始重建 → **异常**（legacy 不应触发）：`kubectl -n agent-deploy-system rollout undo deployment/agent-deploy-controller-manager` 回退（此刻 undo 撤销的正是刚才的 set env；要连镜像一起回按 7.1），保留日志找开发。
 - set env 只增改指定变量，原有 NETPOL_ALLOWED_NAMESPACES 等环境变量不受影响，不必担心。
 
 ### 步骤 11：legacy 验收
@@ -446,7 +446,7 @@ diff backup-*/networkpolicies.yaml networkpolicies-after.txt
 
 **怎么算成功**：以上全部符合预期。两个集群都完成 → 投产结束。白名单启用见第 8 节，**不在今天做**。
 
-**失败怎么查**：Workspace 创建失败 → `kubectl -n bocomwork get events --sort-by=.metadata.creationTimestamp` + Operator 日志；网络策略意外变化 → diff 输出逐条核对，确属本次组件所为则 `rollout undo` Operator 回退。
+**失败怎么查**：Workspace 创建失败 → `kubectl -n bocomwork get events --sort-by=.metadata.creationTimestamp` + Operator 日志；网络策略意外变化 → diff 输出逐条核对，确属本次组件所为则按 7.1 回退（先 set env EGRESS_ENABLED=false 关接管，必要时再 set image 回旧 tag）。
 
 ## 6. 排障速查表（按现象查）
 
@@ -472,14 +472,98 @@ kubectl -n agent-deploy-system get pods -l app.kubernetes.io/name=workspace-egre
 
 ## 7. 回退（分级，按走到了哪一步）
 
+### 7.0 回退原则（先读这五条再动手）
+
+1. **按记录回退，不盲猜**：镜像用步骤 1/2 记录的旧 tag 显式 `set image`；要用 `rollout undo` 就必须带 `--to-revision=<记录的 revision>`。
+2. **裸 `rollout undo` 是陷阱**：它只撤销**最后一次** spec 变更。步骤 8（set image）和步骤 10（set env）各产生一个新 revision——做完步骤 10 后裸 undo 只会回到"新镜像＋旧环境变量"，**镜像根本没回退**。
+3. **逆向逐步撤**：先关接管 → 再回镜像 → 再撤代理 → 最后删配置；每步撤完验证再继续，不要一步跳到底。
+4. **配置与 history 同生共死**：只删 `workspace-egress-config` 留着 `workspace-egress-history`，下次启用时会触发"配置初始化后丢失"保护性报错（防误删设计，不是故障）。要删就一起删。
+5. **将来切了 allowlist 之后，`EGRESS_ENABLED=false` 不构成网络回退**（已注入的环境变量不会自动清除），必须先走 7.3。
+
+### 7.1 本次投产（全程 legacy）的分级回退
+
 | 走到哪步 | 想撤什么 | 怎么撤 |
 | --- | --- | --- |
-| 步骤 5 之前 | 什么都没改 | 直接停，无残留 |
-| 步骤 6 后 | 撤代理 | `kubectl delete -f egress-install.<集群名>.yaml`。两个配置 CM 可保留（无害）；要删就 config 和 history **一起删**（只删 config 留 history 会触发"配置丢失"保护性报错） |
-| 步骤 8/9 后 | 回旧版应用 | 按步骤 1/2 记录的镜像和 revision：`kubectl set image ... <旧tag>` 或 `rollout undo` |
-| 步骤 10 后 | 关接管 | `kubectl set env deployment/agent-deploy-controller-manager EGRESS_ENABLED=false` + rollout。legacy 本无注入，关掉即恢复"不接管"。⚠️ 将来切了 allowlist 后此法**不构成回退**（已注入的环境变量不会自动清），须先在页面切回 legacy 等全部完成 |
+| 步骤 5 前 | 什么都没改 | 直接停，无残留 |
+| 步骤 5 后 | 撤初始配置 | `kubectl -n agent-deploy-system delete cm workspace-egress-config`。history 此时通常尚不存在（它由 Operator 启用接管后首次协调、或有人在页面首次保存白名单时才创建）；若已存在，与 config 一起删 |
+| 步骤 6 后 | 撤代理及配套 | 按 7.2 的清单核对后删除，**不建议无脑 `delete -f`** |
+| 步骤 8/9 后 | 回旧版镜像 | `kubectl -n agent-deploy-system set image deployment/agent-deploy-controller-manager manager=<步骤1记录的旧tag>`；API 同理（`-n default ... api-server=<旧tag>`）。之后 rollout status + 日志确认。**不用裸 rollout undo**（见 7.0 第 2 条） |
+| 步骤 10 后 | 关接管 | `kubectl -n agent-deploy-system set env deployment/agent-deploy-controller-manager EGRESS_ENABLED=false`，然后 `kubectl -n agent-deploy-system rollout status deployment/agent-deploy-controller-manager --timeout=180s`。它只是停止协调，不删除已存在对象——legacy 下本无注入，无残留影响。要连镜像一起回，接着做上一行 |
 
-本次全程 legacy、无 Workspace 注入，回退窗口宽松；**将来启用 allowlist 后再回退旧版程序，必须先切回 legacy 并等全部 Workspace 完成**（旧程序读不懂含 mode 字段的配置）。
+### 7.2 撤销代理：删除清单与前提
+
+`egress-install.<集群名>.yaml` 共 **14 个资源**：10 个 RBAC（4 Role + 1 ClusterRole + 4 RoleBinding + 1 ClusterRoleBinding）＋ boundary ConfigMap ＋ 代理 ServiceAccount ＋ Deployment ＋ Service。`delete -f` 会**全部**删掉。
+
+本次投产前提是这 14 个资源全部为新建（步骤 1 已验证无代理无配置），整包删除本应安全——但投产过程中间状态（比如只 apply 了一部分、或现场曾手工 apply 过测试 RBAC）可能让某些资源并非本次新建。**删除前先核对 AGE**：
+
+```bash
+# 两集群各查一次。下列资源的 AGE 都应是投产当天；出现"几天/几周前"的必须停下查明来源再决定
+kubectl -n agent-deploy-system get role,rolebinding,serviceaccount,configmap,deployment,service | grep -E "api-server-egress|workspace-egress"
+kubectl get clusterrole,clusterrolebinding | grep workspace-egress
+```
+
+确认全部是本次新建后，整包删除并验证：
+
+```bash
+kubectl delete -f egress-install.<集群名>.yaml
+# 验证：两条 grep 均无输出 = 删干净
+kubectl -n agent-deploy-system get deploy,svc,sa,cm | grep workspace-egress
+kubectl get clusterrole,clusterrolebinding | grep workspace-egress
+```
+
+若核对发现**确有升级前已存在的同名资源**：不要整包删。改为逐个删除确认属于本次新建的资源（`kubectl -n agent-deploy-system delete role api-server-egress ...` 逐条），升级前已存在的资源保留并记录，找开发确认归属。
+
+只想撤代理、保留配置的（比如排查代理自身问题）：只删 Deployment 和 Service，boundary/RBAC/配置都留着：
+
+```bash
+kubectl -n agent-deploy-system delete deployment/workspace-egress service/workspace-egress
+```
+
+### 7.3 将来启用 allowlist 后的回退（完整流程）
+
+先分清两种诉求，路径完全不同：
+
+**诉求 A：应急恢复网络（不换程序版本，最快）**
+
+新版页面直接把模式切到 legacy 或 unrestricted，等 Pod 替换完成即恢复。此路径不动镜像、不动代理，是首选应急手段。
+
+**诉求 B：整体回退到不含 mode 概念的旧版程序（如 11-13 版镜像）**
+
+旧程序读不懂 policy.json 里的 `mode` 字段。完整步骤（顺序不能乱）：
+
+1. **先切模式并等全部完成**（用新版页面）：
+   - 回退后想保留白名单管控（仅当目标旧版本本身支持 egress 白名单时才有意义）→ 切 **allowlist**（与旧程序的白名单语义对齐）；
+   - 回退后想完全不受出站管控 → 切 **legacy**。
+   - 等页面待完成列表清空、旧模式 Pod 全部退出。**迁移未完成时严禁回退镜像。**
+2. **备份配置**：
+
+   ```bash
+   kubectl -n agent-deploy-system get cm workspace-egress-config -o yaml > egress-config-rollback-backup.yaml
+   ```
+
+3. **移除 policy.json 的 mode 字段（保留 ips/domains/services 全部规则）**：
+
+   ```bash
+   kubectl -n agent-deploy-system edit cm workspace-egress-config
+   # 手工删除 policy.json 中 "mode":"xxx", 一段，保存前确认仍是合法 JSON
+   # 改坏了用第 2 步的备份恢复：kubectl apply -f egress-config-rollback-backup.yaml
+   ```
+
+   目标旧版本完全不含 egress 功能时此步也无害（它根本不读这个 ConfigMap）；目标旧版本"懂 egress 但不懂 mode"时此步是**必需的**（否则旧程序读配置直接报错）。
+4. **回退镜像**（显式旧 tag，不用裸 rollout undo；若要连代理一起撤，先按 7.2 删代理再回退这两个）：
+
+   ```bash
+   kubectl -n agent-deploy-system set image deployment/agent-deploy-controller-manager manager=<记录的旧tag>
+   kubectl -n agent-deploy-system rollout status deployment/agent-deploy-controller-manager --timeout=180s
+   kubectl -n default set image deployment/api-server api-server=<记录的旧tag>
+   kubectl -n default rollout status deployment/api-server --timeout=180s
+   ```
+
+5. **验证**：旧 Operator 日志无 egress 相关报错；Workspace 创建/唤醒/网络行为与预期一致；页面正常（旧版页面没有出站管理入口，属预期）。
+
+**新版已无法工作（页面切不了模式）时**：不要强行走上面的流程。按现场变更窗口处理：恢复投产前备份的整套 Deployment YAML 和镜像（步骤 2 的 backup 目录），`kubectl apply` 恢复；不能承诺无中断，恢复后逐项验收。
+
+> 本次投产（11-20）全程 legacy、无 Workspace 注入，只可能用到 7.1/7.2；7.3 是为将来启用 allowlist 后预写的。
 
 ## 8. 后续：启用白名单（另行变更窗口，不在 11-20 做）
 
