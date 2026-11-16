@@ -999,7 +999,7 @@ ACK 环境的差异点（托管 CSI / Ingress 无需自行部署）在该 README
 
 ### D.2 本次离线交付内容
 
-固定应用镜像版本：`egress-20261120`。基础镜像使用已固定的 Envoy/guard 版本（详见投产手册）。所有镜像均为 linux/amd64。
+固定应用镜像版本：Operator `v1.0.44`、API `v1.0.41`；基础镜像 Envoy `v1.40.2`、guard `v1.0.1`（详见投产手册）。所有镜像均为 linux/amd64。
 
 - `workspace-operator.tar`：新版 Operator，沿用原交付文件名。
 - `api-server.tar`：新版 API，内含 `/api-server` 和 `/egress-sync`，不额外发送旧独立 sync 镜像。

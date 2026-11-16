@@ -1,3 +1,5 @@
+import './egress-view.css';
+import { ShieldCheck, Globe2, Network, ArrowUpRight } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { apiUrl } from '@/lib/api';
 import { useApp } from '@/store';
@@ -9,6 +11,8 @@ const stateLabel: Record<string, string> = { loaded: '已加载', syncing: '同�
 type Row = Record<string, string | number | Record<string, string>>;
 type Mode = 'legacy' | 'allowlist' | 'unrestricted';
 const modeLabels: Record<Mode,string> = {legacy:'恢复原有默认策略',allowlist:'启用白名单',unrestricted:'全部出站开放'};
+const modeDescriptions: Record<Mode,string> = {legacy:'沿用原有网络策略',allowlist:'按配置的 IP、域名及服务规则放行',unrestricted:'开放 Workspace 出站访问'};
+const modeIcons = {legacy:ShieldCheck,allowlist:Network,unrestricted:Globe2};
 type Config = Record<'ips' | 'domains' | 'services', Row[]> & {mode?: Mode};
 const groups: Array<{key: BulkGroup; title: string; fields: string[]; initial: Row}> = [
  { key: 'ips' as const, title: 'IP/CIDR 规则', fields: ['cidr', 'protocol', 'port'], initial: { cidr: '', protocol: 'TCP', port: 443 } },
@@ -84,9 +88,9 @@ export function EgressView() {
   try { await navigator.clipboard.writeText(text); setBulkMessage('已复制当前表单规则（包含未保存修改）。'); }
   catch { setBulkMessage('规则已放入输入框，请选中后按 Ctrl+C 复制。'); }
  }
- return <div className="h-full overflow-auto p-6"><div className="mx-auto max-w-5xl space-y-5">
- <h1 className="text-xl font-semibold">全局出站控制</h1>
- <section className="space-y-2 rounded border p-4"><p>已读取的目标模式：{modeLabels[config.mode || 'allowlist']}。模式切换会重建 Pod；同模式修改规则不会重建 Pod。</p><div className="flex flex-wrap gap-2">{(Object.keys(modeLabels) as Mode[]).map(mode=><Button key={mode} disabled={busy||!loaded||dirty||mode===(config.mode||'allowlist')} onClick={()=>void save(mode)}>{modeLabels[mode]}</Button>)}</div><p className="text-xs">请先保存或放弃规则修改再切换模式。保存成功不代表所有 Workspace 已完成切换。</p></section>
+ return <div className="egress-page h-full overflow-auto p-6"><div className="mx-auto max-w-5xl space-y-5">
+ <header className="egress-heading"><div><p className="egress-eyebrow">网络配置</p><h1 className="text-xl font-semibold">全局出站控制</h1><p className="egress-subtitle">统一管理所有 Workspace 的出站模式与访问规则</p></div><span className="egress-scope"><Globe2 size={14} aria-hidden="true" /> 所有 Workspace</span></header>
+ <section className="egress-mode space-y-2 rounded border p-4"><h2 className="font-semibold">出站模式</h2><p>已读取的目标模式：{modeLabels[config.mode || 'allowlist']}。模式切换会重建 Pod；同模式修改规则不会重建 Pod。</p><div className="egress-mode-options">{(Object.keys(modeLabels) as Mode[]).map(mode=><Button className={`egress-mode-option ${mode===(config.mode||'allowlist')?'is-selected':''}`} key={mode} variant={mode===(config.mode||'allowlist')?'default':'outline'} disabled={busy||!loaded||dirty||mode===(config.mode||'allowlist')} onClick={()=>void save(mode)}><span className="egress-mode-icon">{(() => {const Icon=modeIcons[mode];return <Icon size={22} aria-hidden="true" />;})()}</span><span className="egress-mode-copy"><strong>{modeLabels[mode]}</strong><span>{modeDescriptions[mode]}</span></span><ArrowUpRight size={16} aria-hidden="true" /></Button>)}</div><p className="text-xs">请先保存或放弃规则修改再切换模式。保存成功不代表所有 Workspace 已完成切换。</p></section>
  <p className="text-sm">IP/CIDR 规则允许直连，并允许通过代理访问对应 IPv4 地址的 TCP 端口；域名规则允许 HTTP/HTTPS 代理访问。UDP 及 IPv6 规则仅用于直连。代理仍禁止访问受保护地址。目标服务的登录和接口权限仍需满足。</p>
  <p role="status">{dirty?'有未保存修改。':''}{message}。保存成功不代表实际生效。</p>
  <section aria-label="已保存配置的同步状态" className="space-y-2 rounded border p-4">
@@ -105,14 +109,15 @@ export function EgressView() {
  </section>
  {error&&<p role="alert" className="text-red-600">{error}</p>}
  {bulkMessage && <p role="status">{bulkMessage}</p>}
- {groups.map(g=><section key={g.key} className="space-y-3 rounded border p-4"><h2 className="font-semibold">{g.title}</h2>
+ {groups.map(g=><section key={g.key} className="egress-rules space-y-3 rounded border p-4"><div className="egress-section-heading"><h2 className="font-semibold">{g.title}</h2><span className="egress-count">{loaded ? `${config[g.key].length} 条规则` : '待读取'}</span></div>
  <details className="rounded border p-3"><summary className="cursor-pointer text-sm">批量粘贴 / 复制规则</summary>
  <p className="my-2 text-xs">每行一条，按以下顺序用 Tab 或空格分隔：{g.fields.map(f=>labels[f]).join(' → ')}。支持从 Excel 复制。用途含空格时请使用 Tab 分隔；标签内部不加空格。追加仅修改表单，保存后才提交。</p>
  <textarea aria-label={`${g.title}批量输入`} className="min-h-32 w-full rounded border bg-background p-2 font-mono text-sm" disabled={busy||!loaded} value={bulk[g.key]} onChange={e=>setBulk(b=>({...b,[g.key]:e.target.value}))} placeholder={g.key==='ips'?'192.0.2.1/32 TCP 443':g.key==='domains'?'api.example.com 443':'DNS kube-system k8s-app=kube-dns UDP 53'}/>
  <div className="mt-2 flex flex-wrap gap-2"><Button variant="outline" disabled={busy||!loaded} onClick={()=>void pasteBulk(g.key)}>粘贴</Button><Button variant="outline" disabled={busy||!loaded||!bulk[g.key].trim()} onClick={()=>appendBulk(g.key)}>追加到表单</Button><Button variant="outline" disabled={busy||!loaded||!config[g.key].length} onClick={()=>void copyBulk(g.key)}>复制当前规则</Button></div>
  </details>
- {config[g.key].map((r,i)=><div key={i} className="flex flex-wrap items-end gap-2">{g.fields.map(f=><label key={f} className="flex min-w-32 flex-1 flex-col text-xs">{labels[f]}<input className="rounded border bg-background p-2 text-sm" disabled={busy} type={f==='port'?'number':'text'} value={String(r[f]??'')} onChange={e=>{setDirty(true);setConfig(c=>({...c,[g.key]:c[g.key].map((v,n)=>n===i?{...v,[f]:f==='port'?Number(e.target.value):e.target.value}:v)}));}}/></label>)}<Button variant="outline" disabled={busy} onClick={()=>{setDirty(true);setConfig(c=>({...c,[g.key]:c[g.key].filter((_,n)=>n!==i)}));}}>删除</Button></div>)}
+ {loaded && !config[g.key].length && <p className="egress-empty">暂无规则，可添加规则或通过上方批量输入。</p>}
+ {config[g.key].map((r,i)=><div key={i} className="egress-rule-row flex flex-wrap items-end gap-2">{g.fields.map(f=><label key={f} className="flex min-w-32 flex-1 flex-col text-xs">{labels[f]}<input className="rounded border bg-background p-2 text-sm" disabled={busy} type={f==='port'?'number':'text'} value={String(r[f]??'')} onChange={e=>{setDirty(true);setConfig(c=>({...c,[g.key]:c[g.key].map((v,n)=>n===i?{...v,[f]:f==='port'?Number(e.target.value):e.target.value}:v)}));}}/></label>)}<Button variant="outline" disabled={busy} onClick={()=>{setDirty(true);setConfig(c=>({...c,[g.key]:c[g.key].filter((_,n)=>n!==i)}));}}>删除</Button></div>)}
  <Button variant="outline" disabled={busy||!loaded} onClick={()=>{setDirty(true);setConfig(c=>({...c,[g.key]:[...c[g.key],{...g.initial}]}));}}>添加规则</Button></section>)}
- <div className="flex gap-3"><Button disabled={busy||!loaded||!dirty} onClick={()=>void save()}>保存配置</Button><Button variant="outline" disabled={busy} onClick={()=>{if(!dirty||window.confirm('放弃未保存修改并重新加载？'))void load();}}>重新加载</Button></div>
+ <div className="egress-actions flex gap-3"><Button disabled={busy||!loaded||!dirty} onClick={()=>void save()}>保存配置</Button><Button variant="outline" disabled={busy} onClick={()=>{if(!dirty||window.confirm('放弃未保存修改并重新加载？'))void load();}}>重新加载</Button></div>
  </div></div>;
 }

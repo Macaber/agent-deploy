@@ -131,9 +131,9 @@ interface AppState {
 
 function readTheme(): 'dark' | 'light' {
   try {
-    return localStorage.getItem('bw-theme') === 'light' ? 'light' : 'dark';
+    return localStorage.getItem('bw-theme-v2') === 'dark' ? 'dark' : 'light';
   } catch {
-    return 'dark';
+    return 'light';
   }
 }
 
@@ -145,7 +145,7 @@ function applyTheme(theme: 'dark' | 'light') {
     .querySelector('meta[name="theme-color"]')
     ?.setAttribute('content', dark ? '#09090b' : '#fafafa');
   try {
-    localStorage.setItem('bw-theme', theme);
+    localStorage.setItem('bw-theme-v2', theme);
   } catch {
     /* ignore */
   }

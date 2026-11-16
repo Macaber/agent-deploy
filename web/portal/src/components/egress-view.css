@@ -1,0 +1,62 @@
+/* Scoped to the network configuration screen; uses the existing theme tokens. */
+.egress-page { background: var(--background); padding: clamp(1rem, 3vw, 2.5rem); }
+.egress-page > div { max-inline-size: 72rem; }
+.egress-heading, .egress-section-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; }
+.egress-heading { padding-block: .5rem 1rem; }
+.egress-heading h1 { font-size: 1.65rem; letter-spacing: -.035em; }
+.egress-eyebrow { color: var(--info); font-size: .75rem; font-weight: 600; margin-block-end: .5rem; }
+.egress-subtitle { color: var(--muted-foreground); font-size: .875rem; margin-block-start: .5rem; }
+.egress-scope, .egress-count { padding: .3rem .75rem; border: 1px solid var(--border); border-radius: 999px; background: var(--muted); font-size: .75rem; color: var(--muted-foreground); }
+.egress-page section { padding: clamp(1rem, 2vw, 1.5rem); border-radius: 1rem; background: var(--card); box-shadow: 0 2px 6px rgb(0 0 0 / .025); }
+.egress-page section h2 { font-size: .95rem; }
+.egress-page p { line-height: 1.75; overflow-wrap: anywhere; }
+.egress-page section > p:not([role="alert"]) { font-size: .8125rem; color: var(--muted-foreground); }
+.egress-mode { border-block-start: 3px solid var(--info); }
+.egress-mode > div { padding-block: .5rem; }
+.egress-page [role="status"] { padding: .75rem 1rem; border: 1px solid var(--border); border-radius: .75rem; background: var(--muted); font-size: .8125rem; }
+.egress-page [role="alert"] { padding: .75rem 1rem; border-inline-start: 3px solid var(--destructive); color: var(--destructive); background: var(--muted); border-radius: .25rem; }
+.egress-page table { min-inline-size: 38rem; }
+.egress-page th { color: var(--muted-foreground); background: var(--muted); font-weight: 500; }
+.egress-page th, .egress-page td { padding: .75rem; border-block-end: 1px solid var(--border); vertical-align: top; }
+.egress-page td:first-child { overflow-wrap: anywhere; max-inline-size: 24rem; }
+.egress-page details { background: var(--background); border-radius: .625rem; }
+.egress-page summary { font-weight: 500; padding-block: .25rem; }
+.egress-rule-row { padding: 1rem; border: 1px solid var(--border); border-radius: .75rem; background: var(--background); gap: .75rem; }
+.egress-rule-row label { gap: .5rem; color: var(--muted-foreground); min-inline-size: min(100%, 8rem); }
+.egress-page input, .egress-page textarea { min-inline-size: 0; max-inline-size: 100%; border-radius: .5rem; color: var(--foreground); background: var(--card); }
+.egress-page input { inline-size: 100%; min-block-size: 2.5rem; }
+.egress-page input:focus-visible, .egress-page textarea:focus-visible, .egress-page summary:focus-visible { outline: 2px solid var(--info); outline-offset: 3px; }
+.egress-empty { border: 1px dashed var(--border); border-radius: .75rem; padding: 1.5rem; text-align: center; color: var(--muted-foreground); }
+.egress-actions { flex-wrap: wrap; padding: 1rem; border: 1px solid var(--border); border-radius: .75rem; background: var(--card); }
+
+/* Light configuration surface, independent of the console theme preference. */
+.egress-page {
+ --background: #f3f6fb; --foreground: #172b4d; --card: #ffffff; --card-foreground: #172b4d;
+ --muted: #eef3fa; --muted-foreground: #586b85; --border: #dce5f0;
+ --primary: #245ad6; --primary-foreground: #ffffff; --secondary: #eaf1ff;
+ --secondary-foreground: #245ad6; --accent: #edf3ff; --accent-foreground: #1749b5;
+ --input: #dce5f0; --ring: #245ad6; --info: #245ad6; --destructive: #b42318;
+ color-scheme: only light; color: var(--foreground); background: var(--background);
+}
+.egress-page > div { max-inline-size: 76rem; }
+.egress-heading { border-block-end: 1px solid var(--border); padding-block-end: 1.75rem; margin-block-end: 1.75rem; }
+.egress-heading h1 { font-size: clamp(1.65rem, 3vw, 2.15rem); font-weight: 700; }
+.egress-eyebrow { letter-spacing: .12em; }
+.egress-scope { display: inline-flex; align-items: center; gap: .5rem; color: #245ad6; background: #eaf1ff; border-color: #d4e2ff; padding: .5rem .9rem; }
+.egress-page section { border-color: #dce5f0; box-shadow: 0 4px 20px rgb(28 58 100 / .035); }
+.egress-mode { border-block-start: 1px solid var(--border); }
+.egress-mode-options { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%, 18rem),1fr)); gap: .75rem; }
+.egress-mode-option { height: auto; min-block-size: 6.5rem; padding: 1rem; display: flex; justify-content: flex-start; gap: .8rem; white-space: normal; text-align: start; border: 1px solid #dce5f0; border-radius: .75rem; background: white; color: #172b4d; }
+.egress-mode-option.is-selected, .egress-mode-option.is-selected:disabled { opacity: 1; background: #edf3ff; border: 2px solid #245ad6; color: #1749b5; }
+.egress-mode-option:disabled:not(.is-selected) { opacity: .6; }
+.egress-mode-icon { display: grid; place-items: center; flex-shrink: 0; padding: .65rem; border-radius: .75rem; background: #eef3fa; color: #245ad6; }
+.egress-mode-copy { display: flex; flex: 1; min-inline-size: 0; flex-direction: column; gap: .45rem; }
+.egress-mode-copy strong { font-size: .875rem; font-weight: 600; }
+.egress-mode-copy > span { font-size: .75rem; font-weight: 400; color: #586b85; line-height: 1.6; }
+.egress-section-heading { padding-block-end: .75rem; border-block-end: 1px solid #edf1f7; }
+.egress-section-heading h2 { border-inline-start: 3px solid #245ad6; padding-inline-start: .75rem; }
+.egress-count { background: #edf3ff; color: #245ad6; border: none; font-variant-numeric: tabular-nums; }
+.egress-rule-row { background: #f8faff; }
+.egress-page details { background: #f8faff; border-style: dashed; }
+.egress-page summary { color: #245ad6; }
+.egress-page .egress-actions { padding: 1.25rem; justify-content: flex-end; border-radius: 1rem; }

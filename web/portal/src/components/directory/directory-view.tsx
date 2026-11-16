@@ -173,9 +173,10 @@ export function DirectoryView() {
     directory.initialized && !directory.loading && !directory.error && filtered.length === 0;
 
   return (
-    <div className="h-full overflow-y-auto overscroll-contain">
+    <div className="directory-page h-full overflow-y-auto overscroll-contain">
       <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-4 px-3 py-4 sm:px-5 sm:py-6">
-        <div className="grid grid-cols-3 gap-2 sm:gap-3">
+        <header className="console-page-heading"><div><p className="console-eyebrow">工作空间管理</p><h1>工作空间</h1><p>查看实例运行状态，管理工作空间与资源配置。</p></div><span className="console-heading-badge">实例总览</span></header>
+        <div className="directory-stats grid grid-cols-3 gap-2 sm:gap-3">
           <StatCard
             label="运行中"
             value={stats.running}
@@ -205,7 +206,7 @@ export function DirectoryView() {
           />
         </div>
 
-        <Card className="p-3">
+        <Card className="directory-toolbar p-3">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
             <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
               <div className="relative w-full sm:w-[190px]">
@@ -296,7 +297,7 @@ export function DirectoryView() {
           </div>
         )}
 
-        <Card className="overflow-hidden">
+        <Card className="directory-list overflow-hidden">
           <div className="flex h-10 items-center justify-between gap-3 border-b border-border px-4 text-[11px] text-muted-foreground">
             <span>
               共 <span className="font-medium tabular-nums text-foreground">{filtered.length}</span>{' '}

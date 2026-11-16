@@ -1,60 +1,7 @@
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
-import { Boxes, LayoutGrid, LogOut, Moon, SlidersHorizontal, Sun } from 'lucide-react';
+import { Boxes, LogOut, Moon, Sun } from 'lucide-react';
 import { useApp } from '@/store';
 import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
-import type { MainTab } from '@/types';
-
-function MainTabs({ className, layoutId }: { className?: string; layoutId: string }) {
-  const tab = useApp((state) => state.tab);
-  const setTab = useApp((state) => state.setTab);
-  const reduce = useReducedMotion();
-
-  const items: Array<{ value: MainTab; label: string; icon: typeof LayoutGrid }> = [
-    { value: 'directory', label: '工作空间', icon: LayoutGrid },
-    { value: 'studio', label: '编排设计器', icon: SlidersHorizontal },
-    { value: 'egress', label: '出站白名单', icon: SlidersHorizontal },
-  ];
-
-  return (
-    <nav
-      aria-label="主导航"
-      className={cn(
-        'inline-flex h-9 items-center gap-0.5 rounded-lg border border-border bg-muted/50 p-1',
-        className,
-      )}
-    >
-      {items.map((item) => {
-        const active = tab === item.value;
-        const Icon = item.icon;
-        return (
-          <button
-            key={item.value}
-            type="button"
-            aria-current={active ? 'page' : undefined}
-            onClick={() => setTab(item.value)}
-            className={cn(
-              'relative inline-flex h-7 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-md px-3 text-[13px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/40 sm:flex-none',
-              active ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            {active && (
-              <motion.span
-                layoutId={layoutId}
-                className="absolute inset-0 rounded-md border border-border/60 bg-card shadow-xs"
-                transition={reduce ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 38 }}
-              />
-            )}
-            <span className="relative z-10 inline-flex items-center gap-2">
-              <Icon className="size-3.5" strokeWidth={1.9} />
-              {item.label}
-            </span>
-          </button>
-        );
-      })}
-    </nav>
-  );
-}
 
 export function Header() {
   const theme = useApp((state) => state.theme);
@@ -73,7 +20,7 @@ export function Header() {
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-border bg-background/85 backdrop-blur-md">
-      <div className="mx-auto flex h-14 w-full max-w-[1600px] items-center gap-2 px-3 sm:gap-4 sm:px-5">
+      <div className="flex h-14 w-full items-center gap-2 px-3 sm:gap-4 sm:px-5">
         <button
           type="button"
           onClick={() => setTab('directory')}
@@ -93,11 +40,7 @@ export function Header() {
           </span>
         </button>
 
-        <div className="hidden flex-1 justify-center md:flex">
-          <MainTabs layoutId="main-tab-desktop" />
-        </div>
-
-        <div className="flex flex-1 items-center justify-end gap-1 md:flex-none">
+        <div className="flex flex-1 items-center justify-end gap-1">
           <button
             type="button"
             onClick={() => {
@@ -152,10 +95,6 @@ export function Header() {
             </Button>
           )}
         </div>
-      </div>
-
-      <div className="border-t border-border/70 px-3 py-1.5 md:hidden">
-        <MainTabs className="w-full" layoutId="main-tab-mobile" />
       </div>
     </header>
   );

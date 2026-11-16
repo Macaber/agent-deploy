@@ -155,11 +155,11 @@ function FormPanel() {
   };
 
   return (
-    <div className="h-full overflow-y-auto overscroll-contain bg-background">
+    <div className="studio-form h-full overflow-y-auto overscroll-contain bg-background">
       <div className="flex flex-col gap-3 p-3 pb-24 sm:p-5 lg:pb-8">
-        <div className="flex items-start justify-between gap-3">
+        <div className="console-page-heading flex items-start justify-between gap-3">
           <div>
-            <h1 className="text-base font-semibold tracking-tight">编排与设计器</h1>
+            <p className="console-eyebrow">工作空间配置</p><h1 className="text-base font-semibold tracking-tight">编排设计器</h1>
             <p className="mt-0.5 text-xs text-muted-foreground">
               组合运行规格、存储与注入配置，右侧实时预览 API 负载。
             </p>
@@ -769,29 +769,29 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <Card className="overflow-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/25 px-3.5 py-2.5">
+    <Card className="studio-section overflow-hidden p-0" data-section={title}>
+      <div className="flex flex-wrap items-center justify-between gap-2 px-0 py-2.5">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span className="grid size-7 shrink-0 place-items-center rounded-md border border-border bg-background text-muted-foreground">
+          <span className="studio-section-icon grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground">
             {icon}
           </span>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h2 className="truncate text-[13px] font-semibold">{title}</h2>
+              <h2 className="truncate text-sm font-semibold tracking-tight">{title}</h2>
               {badge && (
-                <Badge variant="secondary" className="h-5 text-[10px] tabular-nums">
+                <Badge variant="secondary" className="h-5 text-[10px] font-medium tracking-wide tabular-nums">
                   {badge}
                 </Badge>
               )}
             </div>
             {description && (
-              <p className="truncate text-[11px] text-muted-foreground">{description}</p>
+              <p className="truncate text-xs leading-relaxed text-muted-foreground">{description}</p>
             )}
           </div>
         </div>
         {action && <div className="ml-auto">{action}</div>}
       </div>
-      <div className="p-3.5">{children}</div>
+      <div className="pb-2">{children}</div>
     </Card>
   );
 }
@@ -878,7 +878,7 @@ function InspectorPanel({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col border-l border-border bg-card">
+    <div className="studio-inspector flex h-full min-h-0 flex-col border-l border-border bg-card"><div className="studio-inspector-heading"><span>配置预览</span><small>检查配置后部署</small></div>
       <div className="p-2.5 pb-0">
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/25 p-2.5">
           <div className="flex min-w-0 items-center gap-2.5">

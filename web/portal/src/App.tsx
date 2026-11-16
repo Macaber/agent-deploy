@@ -3,6 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { useApp } from '@/store';
 import { EgressView } from '@/components/egress-view';
 import { Header } from '@/components/header';
+import { Sidebar } from '@/components/sidebar';
 import { DirectoryView } from '@/components/directory/directory-view';
 import { StudioView } from '@/components/studio/studio-view';
 import { LoginDialog } from '@/components/login-dialog';
@@ -38,7 +39,9 @@ export default function App() {
     <TooltipProvider delayDuration={250}>
       <div className="flex h-full min-h-0 flex-col">
         <Header />
-        <main className="min-h-0 flex-1 overflow-hidden">
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <Sidebar />
+          <main className="min-h-0 flex-1 overflow-hidden">
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
               key={tab}
@@ -51,7 +54,8 @@ export default function App() {
               {tab === 'egress' ? <EgressView /> : tab === 'directory' ? <DirectoryView /> : <StudioView />}
             </motion.div>
           </AnimatePresence>
-        </main>
+          </main>
+        </div>
         <LoginDialog />
         <ConfirmDialog />
         <OperationBanner />

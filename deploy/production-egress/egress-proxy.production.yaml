@@ -65,7 +65,7 @@ spec:
           type: RuntimeDefault
       initContainers:
       - name: egress-guard
-        image: workspace-egress-guard:egress-20261106
+        image: workspace-egress-guard:v1.0.1
         imagePullPolicy: IfNotPresent
         envFrom:
         - configMapRef:

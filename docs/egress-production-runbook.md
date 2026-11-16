@@ -60,10 +60,10 @@ guard（iptables init 容器）锁死**代理自身**的出站：只能用指定
 
 | 镜像 | 干什么 | 跑在哪 |
 | --- | --- | --- |
-| `workspace-operator:egress-20261120` | Operator：监听 Workspace，建 Pod/PVC/NetworkPolicy、注入代理变量、执行模式切换 | agent-deploy-system（升级） |
-| `api-server:egress-20261120` | API + 管理页面 + egress-sync 三合一（代理的 init/sidecar 也用它，靠参数区分身份） | default/api-server（升级）＋ 代理 Pod |
+| `workspace-operator:v1.0.44` | Operator：监听 Workspace，建 Pod/PVC/NetworkPolicy、注入代理变量、执行模式切换 | agent-deploy-system（升级） |
+| `api-server:v1.0.41` | API + 管理页面 + egress-sync 三合一（代理的 init/sidecar 也用它，靠参数区分身份） | default/api-server（升级）＋ 代理 Pod |
 | `envoyproxy/envoy:v1.40.2` | 代理本体，监听 3128 | 代理 Pod 主容器（新增） |
-| `workspace-egress-guard:egress-20261106` | iptables 保镖 | 代理 Pod init 容器（新增） |
+| `workspace-egress-guard:v1.0.1` | iptables 保镖 | 代理 Pod init 容器（新增） |
 
 ### 1.3 三种模式
 
@@ -100,9 +100,9 @@ Pod workspace-egress（2 副本，nodeSelector 指定节点，agent-deploy-syste
 
 | 文件 | 来源 | 用途 |
 | --- | --- | --- |
-| workspace-operator.tar | 4.1 本机构建 | Operator 镜像（内含 workspace-operator:egress-20261120） |
-| api-server.tar | 4.1 本机构建 | API/代理 init/sync 镜像（内含 api-server:egress-20261120） |
-| egress-proxy-base-20261120.tar | 4.2 本机导出 | Envoy v1.40.2 + guard egress-20261106 两镜像（沿用已验证版本，包名带新日期仅表示本次投产） |
+| workspace-operator.tar | 4.1 本机构建 | Operator 镜像（内含 workspace-operator:v1.0.44） |
+| api-server.tar | 4.1 本机构建 | API/代理 init/sync 镜像（内含 api-server:v1.0.41） |
+| egress-proxy-base-20261120.tar | 4.2 本机导出 | Envoy v1.40.2 + guard v1.0.1 两镜像（沿用已验证版本，包名带新日期仅表示本次投产） |
 | egress-legacy-initial.yaml | deploy/production-egress/ | 首次初始化（**kubectl create，绝不能 apply**）。无占位符，两集群通用一份 |
 | egress-install.\<集群名\>.yaml | deploy/production-egress/egress-install.production.yaml 填好本集群参数 | **唯一要 apply 的安装文件**（RBAC + boundary + 代理 SA/Deployment/Service） |
 | ai.example.com_workspaces.yaml | config/crd/bases/ | 与线上 CRD 比对，有合理差异才 apply |
@@ -148,21 +148,21 @@ Push-Location web\portal
 npm ci
 npm run build
 Pop-Location
-docker build --platform linux/amd64 -f Dockerfile -t workspace-operator:egress-20261120 .
-docker build --platform linux/amd64 -f Dockerfile.api-server -t api-server:egress-20261120 .
-docker save workspace-operator:egress-20261120 -o <发布目录>\workspace-operator.tar
-docker save api-server:egress-20261120 -o <发布目录>\api-server.tar
+docker build --platform linux/amd64 -f Dockerfile -t workspace-operator:v1.0.44 .
+docker build --platform linux/amd64 -f Dockerfile.api-server -t api-server:v1.0.41 .
+docker save workspace-operator:v1.0.44 -o <发布目录>\workspace-operator.tar
+docker save api-server:v1.0.41 -o <发布目录>\api-server.tar
 ```
 
-验证：`docker image inspect workspace-operator:egress-20261120 api-server:egress-20261120` 两个都能查到。
+验证：`docker image inspect workspace-operator:v1.0.44 api-server:v1.0.41` 两个都能查到。
 
 ### 4.2 准备基础镜像 tar
 
 本机已有已验证的两个标签就直接导出；inspect 失败说明本机没有，按命令块补齐后再导出：
 
 ```powershell
-docker image inspect envoyproxy/envoy:v1.40.2 workspace-egress-guard:egress-20261106
-docker save -o <发布目录>\egress-proxy-base-20261120.tar envoyproxy/envoy:v1.40.2 workspace-egress-guard:egress-20261106
+docker image inspect envoyproxy/envoy:v1.40.2 workspace-egress-guard:v1.0.1
+docker save -o <发布目录>\egress-proxy-base-20261120.tar envoyproxy/envoy:v1.40.2 workspace-egress-guard:v1.0.1
 ```
 
 缺镜像时的准备步骤（guard 需本机 Go 交叉编译，Dockerfile 安装固定 iptables 依赖软件源可达）：
@@ -171,7 +171,7 @@ docker save -o <发布目录>\egress-proxy-base-20261120.tar envoyproxy/envoy:v1
 docker pull --platform linux/amd64 envoyproxy/envoy@sha256:8de97e654644827d62afdbf7e1d3dc9fee01a8690d410dd1c63a30dc6b6cecbb
 docker tag envoyproxy/envoy@sha256:8de97e654644827d62afdbf7e1d3dc9fee01a8690d410dd1c63a30dc6b6cecbb envoyproxy/envoy:v1.40.2
 powershell -NoProfile -Command '$env:CGO_ENABLED="0"; $env:GOOS="linux"; $env:GOARCH="amd64"; & "C:\Program Files\Go\bin\go.exe" build -buildvcs=false -o bin/egress-guard-linux-amd64 ./cmd/egress-guard; exit $LASTEXITCODE'
-docker build --platform linux/amd64 -f Dockerfile.egress-guard -t workspace-egress-guard:egress-20261106 .
+docker build --platform linux/amd64 -f Dockerfile.egress-guard -t workspace-egress-guard:v1.0.1 .
 ```
 
 ### 4.3 填写每个集群的安装文件
@@ -186,7 +186,7 @@ docker build --platform linux/amd64 -f Dockerfile.egress-guard -t workspace-egre
 
 同时核对：
 
-- 4 处 image 保持本地 tag 原样（无 Harbor 不加前缀），与 tar 内标签一致：`workspace-egress-guard:egress-20261106`、两处 `api-server:egress-20261120`、`envoyproxy/envoy:v1.40.2`。
+- 4 处 image 保持本地 tag 原样（无 Harbor 不加前缀），与 tar 内标签一致：`workspace-egress-guard:v1.0.1`、两处 `api-server:v1.0.41`、`envoyproxy/envoy:v1.40.2`。
 - namespace（agent-deploy-system）与步骤 1 体检记录的实际 namespace 一致；不一致先改 YAML 再往下。
 - 不给 envoy 容器加 NET_ADMIN；该权限只属于 guard init 容器（YAML 已配好，别动）。
 - 两副本当前 nodeSelector 固定单节点（与测试部署一致）。若现场要求分散到两个节点，删掉 nodeSelector 让调度器分配，但**候选节点必须都导入镜像**。
@@ -276,7 +276,7 @@ sha256sum -c SHA256SUMS    # 必须全部 OK，否则重传
 ctr -n k8s.io images import workspace-operator.tar
 ctr -n k8s.io images import api-server.tar
 ctr -n k8s.io images import egress-proxy-base-20261120.tar
-ctr -n k8s.io images ls | grep -E "workspace-operator:egress-20261120|api-server:egress-20261120|envoy:v1.40.2|egress-guard:egress-20261106"
+ctr -n k8s.io images ls | grep -E "workspace-operator:v1.0.44|api-server:v1.0.41|envoy:v1.40.2|egress-guard:v1.0.1"
 ```
 
 **怎么算成功**：每个目标节点上最后一条 grep 输出 4 行（4 个镜像都在）。
@@ -372,7 +372,7 @@ kubectl auth can-i list deployments.apps --all-namespaces --as=system:serviceacc
 **干什么**：把 Operator 换到新版镜像（此刻 EGRESS_ENABLED 未开，行为与旧版一致）。容器名 manager 以步骤 1 记录为准。
 
 ```bash
-kubectl -n agent-deploy-system set image deployment/agent-deploy-controller-manager manager=workspace-operator:egress-20261120
+kubectl -n agent-deploy-system set image deployment/agent-deploy-controller-manager manager=workspace-operator:v1.0.44
 kubectl -n agent-deploy-system rollout status deployment/agent-deploy-controller-manager --timeout=180s
 kubectl -n agent-deploy-system logs deployment/agent-deploy-controller-manager -c manager --since=5m --tail=100
 ```
@@ -386,7 +386,7 @@ kubectl -n agent-deploy-system logs deployment/agent-deploy-controller-manager -
 **干什么**：同上，升级 API（含管理页面和 egress-sync）。
 
 ```bash
-kubectl -n default set image deployment/api-server api-server=api-server:egress-20261120
+kubectl -n default set image deployment/api-server api-server=api-server:v1.0.41
 kubectl -n default rollout status deployment/api-server --timeout=180s
 ```
 

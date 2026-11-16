@@ -191,7 +191,7 @@ spec:
           type: RuntimeDefault
       initContainers:
       - name: egress-guard
-        image: workspace-egress-guard:egress-20261106
+        image: workspace-egress-guard:v1.0.1
         imagePullPolicy: IfNotPresent
         envFrom:
         - configMapRef:
@@ -204,7 +204,7 @@ spec:
             drop: [ALL]
             add: [NET_ADMIN]
       - name: initialize-config
-        image: api-server:egress-20261120
+        image: api-server:v1.0.41
         command: ["/egress-sync"]
         imagePullPolicy: IfNotPresent
         args: ["--init"]
@@ -248,7 +248,7 @@ spec:
           mountPath: /var/lib/envoy
           readOnly: true
       - name: sync
-        image: api-server:egress-20261120
+        image: api-server:v1.0.41
         command: ["/egress-sync"]
         imagePullPolicy: IfNotPresent
         securityContext:
