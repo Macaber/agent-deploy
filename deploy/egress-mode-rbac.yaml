@@ -50,3 +50,28 @@ subjects:
 - kind: ServiceAccount
   name: workspace-egress
   namespace: agent-deploy-system
+---
+# New default-mode initialization persists configuration and its history marker.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workspace-egress-initializer
+  namespace: agent-deploy-system
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: workspace-egress-initializer
+  namespace: agent-deploy-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: workspace-egress-initializer
+subjects:
+- kind: ServiceAccount
+  name: agent-deploy-controller-manager
+  namespace: agent-deploy-system

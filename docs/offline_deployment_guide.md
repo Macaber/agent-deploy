@@ -11,6 +11,12 @@
 
 ---
 
+## 2026-11-20 增量发布入口：统一出站控制（双集群）
+
+两个生产集群（新/旧）仅升级 Operator、API 两个应用并新增共享出站代理，**无需重新执行 OSS/ossfs、Ingress、内网 DNS、Kata 或存储初始化步骤**。生产基线以 2026-11-13 投产后的实际版本为准（当天用体检脚本记录），不假定 v1.0.42/v1.0.39。本次离线交付不走 Harbor：tar 直传目标节点后 `ctr -n k8s.io images import` 导入，YAML 保持本地镜像 tag。
+
+执行本文件新增的 **附录 D**；详细步骤、逐项排障与回退见 [统一出站投产手册](egress-production-runbook.md)（唯一执行依据）。首次引入功能保持 `legacy`（默认策略），白名单后续另行验证。原步骤 1–8 继续作为平台全新安装参考，不应因本次升级整套重跑。
+
 ## 方案结论与适用范围
 
 ### 结论速览
@@ -163,7 +169,7 @@ docker save registry.k8s.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2 -
 # 3. 【主线必需】生成 Operator 一键安装包（内嵌 IMG 镜像地址）
 cd /path/to/agent-deploy
 GOWORK=off make build-installer IMG=workspace-operator:v1.0.0
-cp dist/install.yaml ./deploy/
+# 当前 Makefile 已直接输出 deploy/install.yaml，无需从 dist/install.yaml 复制。
 ```
 
 此时 `deploy` 目录即成为离线交付包。主线需要用到的清单如下（均在仓库 [deploy/](../deploy) 下）：
@@ -676,7 +682,10 @@ kubectl get runtimeclass
 
 ---
 
-### 7.3 维度三：网络隔离 (NetworkPolicy 零信任安全网)
+### 7.3 维度三：网络隔离（历史版本说明）
+
+> **版本说明（2026-11-12）**：以下内容为早期版本行为，不能作为本次新版网络验收标准。当前默认策略为命名空间共享 `workspace-shared-netpol`，入站不限制；CR 级 `blockedCIDRs`、`allowedCIDRs`、`allowedNamespaces` 已不再生效，仅保留 `disabled` 语义和控制器全局基础服务例外。新版全局三模式及 IP/域名规则以附录 D 和增量投产手册为准。不要用本节旧 CR 字段配置新白名单。
+
 
 Operator 默认会为每个 Workspace 创建专属的 `<workspace-name>-netpol` 网络策略（仅当 `spec.networkPolicy.disabled: true` 时关闭）：
 1. **入站 (Ingress) 按端口放行**：允许 Ingress Controller、节点转发及外部来源访问 Workspace 的 HTTP 端口；其他端口与 ICMP 不放行，兼容会 SNAT 或使用宿主机网络的 Ingress 实现。
@@ -693,7 +702,10 @@ Operator 默认会为每个 Workspace 创建专属的 `<workspace-name>-netpol` 
 
 ---
 
-### 7.4 在 Workspace 中启用 Kata 沙箱与自定义网络策略
+### 7.4 在 Workspace 中启用 Kata 沙箱与自定义网络策略（历史示例）
+
+> 本次升级继续保留 Kata 配置；下列示例中的 CR 级网络例外不适用于新版。新规则在全局网络页面配置，不能依赖这些已废弃字段放行生产依赖。
+
 
 在提交 Workspace CR 时，通过 `spec.runtime.runtimeClassName: "kata"` 启用 MicroVM 内核沙箱；NetworkPolicy 默认启用，也可以在 `spec.networkPolicy` 中灵活指定拦截/放行网段：
 
@@ -971,6 +983,42 @@ ACK 环境的差异点（托管 CSI / Ingress 无需自行部署）在该 README
 
 ---
 
+## 附录 D：在现有平台上新增统一出站控制（本次执行入口）
+
+### D.1 与原部署步骤的对应关系
+
+| 原步骤 | 本次怎么做 |
+| --- | --- |
+| 步骤 1：制包 | 更新 Operator/API，新增 Envoy/guard；不重打已有 OSS/Ingress/Kata/Workspace 镜像 |
+| 步骤 2：离线导入 | 本次不走 Harbor：tar 直传目标节点，`ctr -n k8s.io images import` 导入（无仓库时的替代路线） |
+| 步骤 3–5：存储/Ingress/DNS | 沿用生产现状，不重新安装 |
+| 步骤 6：Operator/API | 增量权限、按需单独更新 CRD、set image 升级；不覆盖整份旧 install.yaml/API 清单 |
+| 本次新增：共享出站代理 | 新建 SA/RBAC、默认配置、边界配置、Deployment、Service；当前无代理，不能仅 patch |
+| 步骤 7：安全配置 | 保留现有 Kata/RBAC 基线；网络行为按新版三模式，不执行旧 CR 白名单示例 |
+| 步骤 8：验收 | 先验收默认模式业务不变，后续验证全局切换与 IP/域名热更新 |
+
+### D.2 本次离线交付内容
+
+固定应用镜像版本：`egress-20261120`。基础镜像使用已固定的 Envoy/guard 版本（详见投产手册）。所有镜像均为 linux/amd64。
+
+- `workspace-operator.tar`：新版 Operator，沿用原交付文件名。
+- `api-server.tar`：新版 API，内含 `/api-server` 和 `/egress-sync`，不额外发送旧独立 sync 镜像。
+- `egress-proxy-base-20261120.tar`：Envoy 与 guard 两个新增基础镜像。
+- `egress-install.production.yaml`：一体化安装文件（增量权限 + 边界 ConfigMap + 代理 SA/Deployment/Service），每个集群填好占位符后使用；旧分文件 `egress-proxy.production.yaml`、`egress-boundary.production.yaml` 已合并废弃，不随包发送。
+- `egress-legacy-initial.yaml`：默认模式初始化（create-only）。
+- `ai.example.com_workspaces.yaml`：只用于比对/按需更新生产 CRD，不删除已有 CRD。
+- `egress-production-inspect.sh`、`egress-production-runbook.md`、`SHA256SUMS`：现场只读核对、执行手册、校验清单。
+
+生产 YAML 副本位于 `deploy/production-egress/`；DNS、保护范围和节点仍为明确占位符，投产当天填写并重新计算 SHA256。不得将测试节点/地址照搬生产。此次不使用 `deploy-ack/`，不传旧独立 sync 包，不对整个 deploy 目录一键 apply。
+
+### D.3 执行与验收
+
+严格按 [统一出站投产手册](egress-production-runbook.md) 的固定路线：体检 → 备份 → 镜像导入 → CRD 比对 → create-only 默认配置 → 首次代理安装 → 权限自检 → Operator/API 升级 → 接管 → 默认模式验收。镜像保持本地 tag（imagePullPolicy 均为 IfNotPresent），API 新镜像同时用于 API Deployment、代理 initialize-config 和 sync。
+
+默认模式保留原网络行为，白名单切换影响所有 Workspace 并允许重建 Pod；同模式新增/删除 IP、域名规则热更新，不重建 Pod。保存成功不是验收通过。真实服务器验证由现场执行，不能将本地单测当成生产验收。
+
+---
+
 ## 相关文档
 
 | 文档 | 定位 |
@@ -989,4 +1037,6 @@ ACK 环境的差异点（托管 CSI / Ingress 无需自行部署）在该 README
 
 | 日期 | 说明 |
 | :--- | :--- |
+| 2026-11-16 | 增量入口与附录 D 更新为 2026-11-20 双集群投产：镜像 tag 改为 egress-20261120，删除 Harbor 路线改为 tar + ctr 直导，安装清单合并为 egress-install.production.yaml 单文件，生产基线改为 11-13 投产后实际版本 |
+| 2026-11-12 | 增加附录 D 统一出站增量发布入口；保留 OSS/Ingress/Kata 基线，修正 installer 输出路径并标注旧网络章节的版本边界 |
 | 2026-11-04 | 重构为 OSS + ossfs 1.0 主线：删除"三方案可选"选型引导与对比表，改为「方案结论 + 为何选 OSS + ossfs 1.0」；步骤线性重排为 1–8；Local Path 移入附录 A、NAS/NFS 移入附录 B、ACK 部署包移入附录 C（暂不启用）；新增 SC/PV/FUSE Pod/共享卷/持久化的验收清单 |

@@ -1,0 +1,8 @@
+# First egress installation only: kubectl create, NEVER overwrite an existing policy.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workspace-egress-config
+  namespace: agent-deploy-system
+data:
+  policy.json: '{"mode":"legacy","ips":[],"domains":[],"services":[]}'
