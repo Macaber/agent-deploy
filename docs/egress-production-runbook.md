@@ -180,7 +180,7 @@ docker build --platform linux/amd64 -f Dockerfile.egress-guard -t workspace-egre
 
 | 占位符 | 填什么 | 从哪来 |
 | --- | --- | --- |
-| `__PRODUCTION_DNS_IPV4__` | 该集群 kube-dns 的 ClusterIP | `kubectl -n kube-system get svc kube-dns`（是 IP 地址，不是"coredns"字样） |
+| `__PRODUCTION_DNS_IPV4__` | 该集群 kube-dns 的 ClusterIP | `kubectl -n kube-system get svc kube-dns`（是 IP 地址，不是"coredns"字样）。⚠️ 若集群装有 NodeLocal DNSCache（体检脚本有专门一节），改填 Pod 实际使用的节点本地地址并记录，将来切 allowlist 时白名单 DNS 规则（§8.0）须与之同址 |
 | `__PRODUCTION_PROTECTED_CIDRS__` | 该集群 Pod 网段 + Service 网段 + 节点 IP + 管理/VIP 网段，逗号分隔 | 体检脚本的 ippools 输出 + **集群管理员逐段确认**（宁多勿漏，不能按节点 /24 猜总网段） |
 | `__PRODUCTION_NODE_NAME__`（nodeSelector） | 代理调度节点名 | 体检脚本节点清单；必须是导入了 3 个 tar 的节点 |
 
@@ -567,13 +567,52 @@ kubectl -n agent-deploy-system delete deployment/workspace-egress service/worksp
 
 ## 8. 后续：启用白名单（另行变更窗口，不在 11-20 做）
 
-前提：legacy 稳定运行一段时间。操作：管理页面把全局模式切到 allowlist（页面会提示**所有 Workspace Pod 将重建、连接中断**，需确认）。验收要点：
+### 8.0 切换前置条件（不满足不切）
+
+**1. 两份 DNS 配置都要就位——它们是不同的东西，缺一不可**
+
+| | ① 代理边界 DNS<br>（11-20 已配） | ② 白名单 DNS 放行规则<br>（切换前在页面配） |
+| --- | --- | --- |
+| 配在哪 | `workspace-egress-boundary` 的 `EGRESS_DNS_SERVERS` | `policy.json` 的 IP 类条目 |
+| 管谁 | **代理自己**：Envoy 解析白名单域名用哪个 DNS；guard 放行 Envoy→该地址:53 | **Workspace Pod 自己**：Pod 发出的 DNS 查询本身是出站连接，allowlist 默认全拒，不放行则连代理的 `.svc` 域名都解析不出来 |
+| 谁执行 | guard（iptables） | NetworkPolicy（Calico） |
+
+②的硬性格式（代码 MigrationCheck 强制，`internal/egress/preflight.go:11-36`）：**同一 DNS 目标必须同时配 TCP 53 和 UDP 53 两条**，缺任一协议切 allowlist 时会被拒绝迁移。例如：
+
+```
+10.243.0.10/32  TCP  53
+10.243.0.10/32  UDP  53
+```
+
+**2. 先配好业务规则再切，不能拿空白名单切**
+
+切 allowlist 时白名单若是空的（只有 DNS）= 除 DNS 外全部业务断网。切换前在页面配齐：业务域名（模型 API 等）＋ IP/CIDR 直连目标 ＋ 基础服务规则，并逐条核对（页面保存时 API 做格式校验；MigrationCheck 只拦 DNS 缺失，不保证业务清单完整——**漏配业务目标 = 切过去该业务就断**，完整性靠人工核对）。
+
+**3. 确认 Pod 实际使用的 DNS 地址（NodeLocal DNS 场景）**
+
+```bash
+# 体检脚本会显示；或单独查：
+kubectl -n kube-system get daemonset node-local-dns --ignore-not-found
+```
+
+- 无 NodeLocal（NotFound）→ DNS 就是 kube-dns ClusterIP，①② 都用这个地址（① 在 11-20 已填，核对一致即可）。
+- **有 NodeLocal** → Pod 的 resolv.conf 实际指向节点本地 link-local 地址（常见 `169.254.20.10`），不是 kube-dns ClusterIP。②必须放行 Pod 实际使用的地址（按 Pod 内 `cat /etc/resolv.conf` 核实）；①建议同址。⚠️ link-local 地址与保护 CIDR/iptables 内置段的交互需先与开发确认再切，不要自行其是。
+
+**4. 代理全部副本就绪且已加载当前版本**（MigrationCheck 一并强制；切换前页面确认无 pending）。
+
+**5. 选维护窗口**：切换会**重建所有 Workspace Pod、连接中断**，且覆盖历史 disabled 的 Workspace。
+
+### 8.1 切换操作与验收
+
+操作：管理页面把全局模式切到 allowlist（页面会提示重建影响，需确认，`confirmModeChange=true`）。切换后按页面待完成列表等所有 Workspace 完成，再验收：
 
 - 授权 IP 直连成功（`curl --noproxy '*' ...`）；授权域名经代理成功（`curl --noproxy '' --proxy http://workspace-egress.agent-deploy-system.svc:3128 ...`，在 Workspace 容器内执行）。
-- 未授权 IP/域名**新连接**失败；DNS 正常；真实模型 POST/SSE/取消。
+- 未授权 IP/域名**新连接**失败；DNS 正常（`nslookup` 任一域名不超时）；真实模型 POST/SSE/取消。
 - 热更新：增删规则后 Pod UID 不变、新连接按新规则生效。
 - 目标业务返回 403/404 ≠ 网络阻断（网络通但业务拒）；Envoy 的 403（响应头 server: envoy）才是代理拒绝。
 - 六方向切换（legacy→allowlist→unrestricted→legacy→unrestricted→allowlist→legacy）每步等旧 Pod 消失、目标 Pod Ready、页面待完成清空。
+
+**切完发现某业务断了**：第一时间在该业务目标补进白名单（热更新，秒级生效，不用回切模式）；判断不了就应急切回 legacy 恢复网络再排查（见 7.3 诉求 A）。
 
 ## 附录 A：双集群参数表（投产当天填/核）
 
