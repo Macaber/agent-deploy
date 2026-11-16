@@ -2,7 +2,7 @@
 
 > 更新：2026-11-16。**本手册完全替代 2026-11-12 版**，是 11-20 投产的唯一执行依据。Harbor 入库路线已删除（现场无仓库，走 tar + ctr 导入）。
 > 写给执行人自己看：每一步都说明**干什么、怎么算成功、失败了查哪里**。概念看不懂翻第 3 节速查表。
-> 原理与设计细节见 [egress-envoy-handover.md](egress-envoy-handover.md)、[egress-mode-design.md](egress-mode-design.md)，本手册只保留执行所需的最小原理。
+> 原理与设计细节见 [network_flow_pod_to_external.md](network_flow_pod_to_external.md)（出站架构评审文档），本手册只保留执行所需的最小原理。
 
 ## 0. 本次投产的范围
 

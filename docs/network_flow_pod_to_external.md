@@ -56,7 +56,7 @@ Workspace 里跑的是 Agent（可执行任意代码），必须做到：**出�
 NetworkPolicy（由 CNI=Calico 落地为 iptables/eBPF 规则）的语义是"Pod → 某 CIDR:端口的包放行/丢弃"。
 它**天生不认识域名**：域名的解析结果（IP）随时会变（CDN 调度、服务换址），不可能把域名写进 NetworkPolicy。
 若靠"定期解析域名→回写 IP 规则"，解析与生效之间总有时间窗，且多 IP/换址场景下规则集不可控——方案明确否决了这条路
-（`docs/egress-envoy-progress.md`："域名由 Envoy 解析，Operator 不解析业务域名生成 IP 规则"）。
+（设计约束："域名由 Envoy 解析，Operator 不解析业务域名生成 IP 规则"）。
 
 ### 1.3 为什么 Envoy 一条腿不够
 
@@ -176,7 +176,7 @@ graph TD
   隧道里跑什么协议 Envoy 不看（也不解密）。TLS 网站身份由客户端自己校验。
 - **NO_PROXY 只影响路由选择**：`.svc` 后缀和自身 Pod IP 不走代理（本地/集群内服务直连），
   但**直连仍受 NetworkPolicy 约束**——NO_PROXY 不构成任何授权（代码注释原话：`egress.go:145`）。
-- 端口语义：HTTP 仅 80 端口可省略；CONNECT 必须显式指定获准端口（`docs/egress-envoy-handover.md` §2026-11-10）。
+- 端口语义：HTTP 仅 80 端口可省略；CONNECT 必须显式指定获准端口（历史交接记录，2026-11-10 版本语义）。
 
 ### 4.2 路径 B：IP/CIDR 直连（NetworkPolicy 路径）
 
@@ -205,7 +205,7 @@ graph TD
 - **基础服务规则防扩大**（`policy.go:60-66`）：选择器强制 `app NotIn workspace`——
   一个 Workspace 的例外永远不能变成"Workspace 之间互通"。
 - IPv6 与 UDP 的 IP 规则仅适用于直连路径；代理路径（Envoy 路由）当前仅 IPv4 TCP
-  （`docs/egress-envoy-handover.md`：IPv6 新连接被 guard 拒绝）。
+  （guard 规则：IPv6 新连接被拒绝）。
 
 ### 4.3 被拒绝的样子（评审时建议现场演示）
 
@@ -304,7 +304,7 @@ sequenceDiagram
 
 - **原子写**：临时文件 + rename，Envoy 永远读到完整文件（`internal/egress/sync.go`，Envoy 文件 RDS 的官方要求）。
 - **不伪造 loaded**：sync 必须从 Envoy admin 接口读到实际加载版本才回报——历史上曾因"资源内容去重"导致
-  版本号不刷新的缺陷（r2 修复，把统一版本写进 RouteConfiguration metadata，`docs/egress-envoy-handover.md` §8）。
+  版本号不刷新的缺陷（r2 修复，把统一版本写进 RouteConfiguration metadata，r2 修复记录）。
 - **NetworkPolicy 与 Pod 模板同快照**：一次协调内策略和模板用同一份配置生成，避免并发保存产生错配
   （`internal/controller/egress.go:36-38`）。
 - **已知边界**：删除规则后，**已建立的连接不保证立即断开**（guard 的 ESTABLISHED 放行 + Envoy 存活隧道），
@@ -383,12 +383,12 @@ sequenceDiagram
 关键设计：
 
 - **为什么必须重建 Pod**：环境变量只能随容器启动注入，运行中进程的环境改不了
-  （`docs/egress-mode-design.md`"当前架构阻碍"）。这是选择"显式代理"方案（对比透明拦截）的核心代价。
+  （设计取舍记录："当前架构阻碍"）。这是选择"显式代理"方案（对比透明拦截）的核心代价。
 - **六方向切换**（legacy↔allowlist↔unrestricted）语义见 §7 状态机。
 - **期间不锁全局**：新旧 Pod 并存，各自受对应策略约束；202 响应 ≠ 全部完成。
 - **切回 legacy 的撤销语义**：恢复原共享策略（放行除私网外 0/0 + 基础服务例外 + TCP/UDP 53）、
   恢复用户原环境变量、恢复 disabled 语义；等待旧 Pod 退出后清理本功能产生的策略
-  （`internal/controller/egress.go:51-56`、`docs/egress-mode-design.md`）。
+  （`internal/controller/egress.go:51-56`，另见 §6.3 时序 C）。
 
 ### 6.4 时序 D：首次部署与代理 Pod 启动（对应投产手册步骤）
 
@@ -507,7 +507,7 @@ stateDiagram-v2
 | # | 限制 | 原因 / 取舍 |
 | :--- | :--- | :--- |
 | 1 | 只管 HTTP/HTTPS 家族的代理路径 | 显式代理的天然边界；非 HTTP 协议用 IP 直连规则覆盖 |
-| 2 | 模式切换重建 Pod、连接中断 | 环境变量注入机制；曾评估透明拦截（TPROXY/SNI），因 CNI 权限与 TLS 语义复杂度放弃（`docs/egress-mode-design.md`） |
+| 2 | 模式切换重建 Pod、连接中断 | 环境变量注入机制；曾评估透明拦截（TPROXY/SNI），因 CNI 权限与 TLS 语义复杂度放弃（设计取舍记录） |
 | 3 | 域名不支持通配符/URL 路径 | 授权粒度刻意收敛为完整域名+端口，避免规则爆炸与语义歧义 |
 | 4 | policyState/migrationState 页面显示 unverified | 保存成功 ≠ 数据面生效；状态聚合只到"副本加载一致"，实际效果要真发流量 |
 | 5 | 代理副本当前固定单节点（nodeSelector） | 离线镜像只确认该节点有；跨节点 HA 需镜像铺开（投产手册 §4.3） |
@@ -539,7 +539,6 @@ stateDiagram-v2
 
 - **入站（南北向）**：外部用户 → Pod，见 [network_flow_external_to_pod.md](network_flow_external_to_pod.md)。
 - **投产操作**（备份、镜像导入、11 步执行、回退）：[egress-production-runbook.md](egress-production-runbook.md)。
-- **开发过程与设计决策记录**：[egress-mode-design.md](egress-mode-design.md)（三模式设计）、
-  [egress-envoy-handover.md](egress-envoy-handover.md)（架构交接与现场快照）、
-  [egress-envoy-progress.md](egress-envoy-progress.md)（历史进度，部分过时）。
+- 历史开发交接文档（egress-mode-design / egress-envoy-handover / egress-envoy-progress）已于 2026-11-16 清理；
+  本文引用的其内容（透明拦截方案取舍、r2 修复、IPv6 拒绝语义）已内联至正文，出处标记仅作历史溯源。
 - **平台整体部署**（OSS 存储、Ingress、Kata）：[offline_deployment_guide.md](offline_deployment_guide.md)。
