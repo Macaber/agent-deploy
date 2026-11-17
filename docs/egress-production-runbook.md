@@ -104,7 +104,9 @@ Pod workspace-egress（2 副本，nodeSelector 指定节点，agent-deploy-syste
 | api-server.tar | 4.1 本机构建 | API/代理 init/sync 镜像（内含 api-server:v1.0.41） |
 | egress-proxy-base-20261120.tar | 4.2 本机导出 | Envoy v1.40.2 + guard v1.0.1 两镜像（沿用已验证版本，包名带新日期仅表示本次投产） |
 | egress-legacy-initial.yaml | deploy/production-egress/ | 首次初始化（**kubectl create，绝不能 apply**）。无占位符，两集群通用一份 |
-| egress-install.\<集群名\>.yaml | deploy/production-egress/egress-install.production.yaml 填好本集群参数 | **唯一要 apply 的安装文件**（RBAC + boundary + 代理 SA/Deployment/Service） |
+| egress-install.\<集群名\>.yaml | deploy/production-egress/（已定稿：old/new 两份） | **唯一要 apply 的安装文件**（RBAC + boundary + 代理 SA/Deployment/Service） |
+| install.yaml（镜像行改 v1.0.44） | deploy/install.yaml | **步骤 3.5** 提前升级用（2026-11-17 团队决定）；⚠️ 文件 env 不含 EGRESS 三件套，apply 前必须过步骤 3.5 的 diff 门禁；**EGRESS 三件套只由步骤 10 set env 注入，本文件下次投产再纳入** |
+| api-server-deploy.yaml（镜像行改 v1.0.41） | deploy/api-server-deploy.yaml | **步骤 3.5** 升级用，门禁同上 |
 | ai.example.com_workspaces.yaml | config/crd/bases/ | 与线上 CRD 比对，有合理差异才 apply |
 | egress-production-inspect.sh | deploy/ | 只读体检脚本 |
 | 本手册 | docs/egress-production-runbook.md | 执行与排障依据 |
@@ -176,7 +178,9 @@ docker build --platform linux/amd64 -f Dockerfile.egress-guard -t workspace-egre
 
 ### 4.3 填写每个集群的安装文件
 
-复制 `deploy/production-egress/egress-install.production.yaml` 两份（如 `egress-install.old.yaml` / `egress-install.new.yaml`），每个集群填 3 类占位符：
+**2026-11-17 定稿：两份集群文件已生成、预填并清完占位符（FINAL）**——`deploy/production-egress/egress-install.old.yaml`（旧集群，9 条 CIDR = 2 网段 + 7 节点）/ `egress-install.new.yaml`（新集群，10 条 = 2 网段 + 8 节点）。相对模板的差异：DNS、Pod/Service 网段、节点 /32 按附录 A 勘察值预填；nodeSelector 已按 B 方案**删除**（双副本由调度器分散，前提**全部节点导入镜像**）；**管理员已确认无独立管理网**，占位符已删。两文件 `grep "__"` 零残留，无需再改；当天仅需按附录 A 核对框逐项复核。
+
+原始占位符说明（保留备查，两份集群文件中前三项已填/删除）：
 
 | 占位符 | 填什么 | 从哪来 |
 | --- | --- | --- |
@@ -189,7 +193,7 @@ docker build --platform linux/amd64 -f Dockerfile.egress-guard -t workspace-egre
 - 4 处 image 保持本地 tag 原样（无 Harbor 不加前缀），与 tar 内标签一致：`workspace-egress-guard:v1.0.1`、两处 `api-server:v1.0.41`、`envoyproxy/envoy:v1.40.2`。
 - namespace（agent-deploy-system）与步骤 1 体检记录的实际 namespace 一致；不一致先改 YAML 再往下。
 - 不给 envoy 容器加 NET_ADMIN；该权限只属于 guard init 容器（YAML 已配好，别动）。
-- 两副本当前 nodeSelector 固定单节点（与测试部署一致）。若现场要求分散到两个节点，删掉 nodeSelector 让调度器分配，但**候选节点必须都导入镜像**。
+- 调度：集群文件已按 B 方案删除 nodeSelector（双副本由调度器分散），所以**全部节点**都必须导入 3 个 tar（见附录 A 核对框）。若现场临时改回固定节点调度，须重新加回 nodeSelector 并保证目标节点已导镜像。
 
 体检脚本可以提前一天拿到集群上跑（只读），把附录 A 两张表先填了，当天只做核对。
 
@@ -288,6 +292,30 @@ ctr -n k8s.io images ls | grep -E "workspace-operator:v1.0.44|api-server:v1.0.41
 - 不确定哪些节点会调度 → 所有工作节点全导一遍，最稳妥。
 - `docker load` 对 kubelet 无效，必须 ctr（或 crictl）。
 
+### 步骤 3.5：升级 Operator / API（提前 apply 路线，2026-11-17 团队决定）
+
+**干什么**：在初始化、装代理之前，用**改好 tag** 的 `install.yaml` + `api-server-deploy.yaml` 把两个组件升到 v1.0.44 / v1.0.41。此刻 EGRESS_ENABLED 未开，新版 Operator 行为与旧版一致。
+
+```bash
+# ① 门禁（一票否决）：diff 只允许出现镜像行（- 旧tag / + v1.0.44 或 v1.0.41）。
+#    出现任何其他 - / + 行 = 现场配置将被文件的旧快照值覆盖（replicas、env、资源限制等）
+#    → 停手，把 diff 输出抄进附录 A 投产记录，评估清楚再继续
+kubectl diff -f install.yaml
+kubectl diff -f api-server-deploy.yaml
+# ② 前提：镜像 tar 已导入对应节点（本步骤在步骤 3 之后，否则 ImagePullBackOff 起不来）
+kubectl apply -f install.yaml
+kubectl -n agent-deploy-system rollout status deployment/agent-deploy-controller-manager --timeout=180s
+kubectl apply -f api-server-deploy.yaml
+kubectl -n default rollout status deployment/api-server --timeout=180s
+```
+
+**怎么算成功**：两个 rollout 完成；管理页面能打开能登录；镜像确认新 tag：
+`kubectl -n agent-deploy-system get deployment agent-deploy-controller-manager -o jsonpath='{.spec.template.spec.containers[0].image}'` 输出 `workspace-operator:v1.0.44`，API 同理输出 `api-server:v1.0.41`。
+
+**失败怎么查**：镜像拉不到 → 步骤 3 没导够节点（提前 apply 的典型翻车点）；新版起不来 → `rollout undo --to-revision=<步骤2备份的 revision>` 回退并找开发。
+
+**已知代价与对后续的影响**：两个组件各滚动重启一次；11-06 快照字段按 ① 的 diff 覆盖现场值（**diff 看到什么变化，投产记录写什么**）；revision 链各插一版。步骤 8/9 的 set image 将变为**空操作确认**（见各步说明）。
+
 ### 步骤 4：CRD 比对（按需升级）
 
 **干什么**：确认线上 Workspace CRD 与当前代码一致。仓库 CRD 已与代码同步（2026-11-05 后类型无改动），但线上是 11-13 投产版本，可能有差异。
@@ -369,7 +397,9 @@ kubectl auth can-i list deployments.apps --all-namespaces --as=system:serviceacc
 
 ### 步骤 8：升级 Operator
 
-**干什么**：把 Operator 换到新版镜像（此刻 EGRESS_ENABLED 未开，行为与旧版一致）。容器名 manager 以步骤 1 记录为准。
+**干什么**：把 Operator 换到 v1.0.44（此刻 EGRESS_ENABLED 未开，行为与旧版一致）。容器名 manager 以步骤 1 记录为准。
+
+> **若步骤 3.5 已走 apply 路线**：镜像已是 v1.0.44，本步 set image 为**空操作**（输出 deployment ... not configured 之类即预期），不产生新滚动，照跑作确认即可。
 
 ```bash
 kubectl -n agent-deploy-system set image deployment/agent-deploy-controller-manager manager=workspace-operator:v1.0.44
@@ -377,20 +407,22 @@ kubectl -n agent-deploy-system rollout status deployment/agent-deploy-controller
 kubectl -n agent-deploy-system logs deployment/agent-deploy-controller-manager -c manager --since=5m --tail=100
 ```
 
-**怎么算成功**：rollout 完成；日志无持续报错刷屏。
+**怎么算成功**：rollout 完成（或空操作）；`kubectl -n agent-deploy-system get deployment agent-deploy-controller-manager -o jsonpath='{.spec.template.spec.containers[0].image}'` 显示 v1.0.44；日志无持续报错刷屏。
 
-**失败怎么查**：rollout 卡住 → 三板斧（get pods / describe / logs --previous）；镜像拉不到 → 步骤 3；新版起不来 → `kubectl -n agent-deploy-system rollout undo deployment/agent-deploy-controller-manager` 回退（回退后记录现象找开发）。
+**失败怎么查**：rollout 卡住 → 三板斧（get pods / describe / logs --previous）；镜像拉不到 → 步骤 3；新版起不来 → `kubectl -n agent-deploy-system rollout undo deployment/agent-deploy-controller-manager --to-revision=<步骤2备份的 revision>` 回退（回退后记录现象找开发）。
 
 ### 步骤 9：升级 API
 
 **干什么**：同上，升级 API（含管理页面和 egress-sync）。
+
+> **若步骤 3.5 已走 apply 路线**：本步同上，空操作确认。
 
 ```bash
 kubectl -n default set image deployment/api-server api-server=api-server:v1.0.41
 kubectl -n default rollout status deployment/api-server --timeout=180s
 ```
 
-**怎么算成功**：rollout 完成；浏览器打开管理页面正常、能登录、Workspace 列表正常。
+**怎么算成功**：rollout 完成（或空操作）；浏览器打开管理页面正常、能登录、Workspace 列表正常。
 
 **失败怎么查**：同步骤 8；页面 502 → 先看 API Pod 是否 Ready、再查 Ingress 指向。
 
@@ -475,7 +507,7 @@ kubectl -n agent-deploy-system get pods -l app.kubernetes.io/name=workspace-egre
 ### 7.0 回退原则（先读这五条再动手）
 
 1. **按记录回退，不盲猜**：镜像用步骤 1/2 记录的旧 tag 显式 `set image`；要用 `rollout undo` 就必须带 `--to-revision=<记录的 revision>`。
-2. **裸 `rollout undo` 是陷阱**：它只撤销**最后一次** spec 变更。步骤 8（set image）和步骤 10（set env）各产生一个新 revision——做完步骤 10 后裸 undo 只会回到"新镜像＋旧环境变量"，**镜像根本没回退**。
+2. **裸 `rollout undo` 是陷阱**：它只撤销**最后一次** spec 变更。步骤 3.5（apply 升级）和步骤 10（set env）各产生一个新 revision——做完步骤 10 后裸 undo 只会回到"新镜像＋旧环境变量"，**镜像根本没回退**；apply 路线让 revision 链更乱，更不可依赖。
 3. **逆向逐步撤**：先关接管 → 再回镜像 → 再撤代理 → 最后删配置；每步撤完验证再继续，不要一步跳到底。
 4. **配置与 history 同生共死**：只删 `workspace-egress-config` 留着 `workspace-egress-history`，下次启用时会触发"配置初始化后丢失"保护性报错（防误删设计，不是故障）。要删就一起删。
 5. **将来切了 allowlist 之后，`EGRESS_ENABLED=false` 不构成网络回退**（已注入的环境变量不会自动清除），必须先走 7.3。
@@ -614,6 +646,37 @@ kubectl -n kube-system get daemonset node-local-dns --ignore-not-found
 
 **切完发现某业务断了**：第一时间在该业务目标补进白名单（热更新，秒级生效，不用回切模式）；判断不了就应急切回 legacy 恢复网络再排查（见 7.3 诉求 A）。
 
+### 8.2 保护清单维护（节点扩缩容 / IP 变更后做）
+
+**哪些成分天然免疫变化、哪些要维护**：
+
+| 清单成分 | 会变吗 | 说明 |
+| --- | --- | --- |
+| Pod 网段 / Service 网段 | 集群级，基本不变 | 清单配的是**整段地址池**（ippools 全集 / service-cluster-ip-range）。单个 Pod、Service 的 IP 天天换（重建就重新领），换多少次都还在池内——**无需维护** |
+| kube-dns ClusterIP | 几乎不变 | Service 对象不删就固定，只有集群级重建才变 |
+| 节点 IP（/32 逐台） | **扩缩容必变** | 新增节点的 IP 不在清单里——本清单唯一现实的维护触发点 |
+| 管理网段 | 极少 | 管理员调整时同步 |
+
+**过期不断网，但护不住**：保护区是**禁达区**——guard 在 iptables 层直接 REJECT（`internal/egress/guard.go:43`），白名单直连规则配了保护区目标也会被拒收（`internal/egress/policy.go:55`）。清单缺了新节点 IP：legacy 模式无影响；allowlist 模式下 Pod 能直连该节点（本该禁达的内网没禁）。**不产生任何告警，是静默的保护缺口**——只能靠流程兜底：扩缩容或网络调整当天更新本清单。
+
+**更新步骤（两处同步改，值必须完全一致，缺一不可）**：
+
+```bash
+NEW_CIDRS='<新完整串：Pod网段,Service网段,节点IP/32…,管理网段>'
+# 1) Operator 侧（NetworkPolicy 生成用，与步骤 10 同一变量）
+kubectl -n agent-deploy-system set env deployment/agent-deploy-controller-manager EGRESS_PROTECTED_CIDRS="$NEW_CIDRS"
+kubectl -n agent-deploy-system rollout status deployment/agent-deploy-controller-manager --timeout=180s
+# 2) guard 侧（boundary ConfigMap → 重启生效）
+kubectl -n agent-deploy-system edit cm workspace-egress-boundary
+#   （把 EGRESS_PROTECTED_CIDRS 改成与上面 NEW_CIDRS 完全一致的串）
+kubectl -n agent-deploy-system rollout restart deployment/workspace-egress
+kubectl -n agent-deploy-system rollout status deployment/workspace-egress --timeout=180s
+# 3) 验证：guard init 容器无 fail（exit 0），代理 Pod 全部 Ready
+kubectl -n agent-deploy-system get pods -o wide
+```
+
+同步两件小事：发布目录里的 `egress-install.<集群>.yaml` 源文件也改一份（留档一致）；若 4.3 的参数表（附录 A）还在用，同步更新节点清单行。
+
 ## 附录 A：双集群参数表（投产当天填/核）
 
 ### 旧集群
@@ -621,24 +684,44 @@ kubectl -n kube-system get daemonset node-local-dns --ignore-not-found
 | 项 | 值 |
 | --- | --- |
 | kubeconfig context | |
+| master 节点名（IP 已确认在节点清单内，2026-11-17） | wdceuvd11 |
 | Operator Deployment（ns/name/容器名） | |
 | Operator 当前镜像 tag（回退基线）+ revision | |
 | API Deployment（ns/name/容器名/副本数） | |
 | API 当前镜像 tag（回退基线）+ revision | |
 | Workspace 命名空间（默认 bocomwork） | |
-| kube-dns ClusterIP → `EGRESS_DNS_SERVERS` | |
-| Pod 网段（ippools 全集） | |
-| Service 网段 | |
-| 节点 IP 清单（/32 逐个） | |
-| 管理/VIP/其他保护网段（管理员确认） | |
-| → 合成 `EGRESS_PROTECTED_CIDRS` | |
-| 代理调度节点名（nodeSelector） | |
+| kube-dns ClusterIP → `EGRESS_DNS_SERVERS` | **10.243.0.10**（勘察 2026-11-17） |
+| Pod 网段（ippools 全集） | **10.244.0.0/16** |
+| Service 网段 | **10.243.0.0/16** |
+| 节点 IP 清单（/32 逐个） | 182.232.103.17/30/32/36/38/40 + 182.251.239.233（共 7 台） |
+| 管理/VIP/其他保护网段（管理员确认） | **管理员确认无独立管理网（2026-11-17）** |
+| → 合成 `EGRESS_PROTECTED_CIDRS` | **已定稿**（egress-install.old.yaml：9 条 = 2 网段 + 7 节点） |
+| 代理调度 | **无 nodeSelector（B 方案）**：调度器自由分散双副本，全部节点须导镜像 |
 | 目标节点镜像导入完成（4 镜像 × 节点数） | ☐ |
 | 发布目录路径 / 备份目录名 | |
 
 ### 新集群
 
-（同上表，另填一份；**两表任何值不得互相复制**）
+| 项 | 值 |
+| --- | --- |
+| kubeconfig context | |
+| master 节点名（IP 已确认在节点清单内，2026-11-17） | tjyqcellm05 |
+| Operator Deployment（ns/name/容器名） | |
+| Operator 当前镜像 tag（回退基线）+ revision | |
+| API Deployment（ns/name/容器名/副本数） | |
+| API 当前镜像 tag（回退基线）+ revision | |
+| Workspace 命名空间（默认 bocomwork） | |
+| kube-dns ClusterIP → `EGRESS_DNS_SERVERS` | **10.243.0.10**（勘察 2026-11-17） |
+| Pod 网段（ippools 全集） | **10.244.0.0/16** |
+| Service 网段 | **10.243.0.0/16** |
+| 节点 IP 清单（/32 逐个） | 182.232.101.15/27/31/35/43/51 + 182.232.100.231/241（共 8 台，跨 101.x 与 100.x 两段） |
+| 管理/VIP/其他保护网段（管理员确认） | **管理员确认无独立管理网（2026-11-17）** |
+| → 合成 `EGRESS_PROTECTED_CIDRS` | **已定稿**（egress-install.new.yaml：10 条 = 2 网段 + 8 节点） |
+| 代理调度 | **无 nodeSelector（B 方案）**：调度器自由分散双副本，全部节点须导镜像 |
+| 目标节点镜像导入完成（4 镜像 × 节点数） | ☐ |
+| 发布目录路径 / 备份目录名 | |
+
+> 两集群 DNS/Pod/Service 网段完全一致（同一部署模板，勘察已证实），但**节点清单绝不相同**——上表逐台核对，仍不得互相复制。
 
 ## 附录 B：只读命令速查（排障用，都不改集群）
 

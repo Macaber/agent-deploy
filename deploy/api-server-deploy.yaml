@@ -1,3 +1,6 @@
+# WARNING (2026-11-17): snapshot is STALE vs production (image tags date to 11-06/11-10 test builds).
+# Do NOT apply for upgrades until refreshed from live cluster state.
+# For the 2026-11-20 rollout use docs/egress-production-runbook.md steps 8-9 (kubectl set image) instead.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
