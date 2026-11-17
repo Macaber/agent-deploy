@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>local-path → OSS 迁移控制台</title>
+<style>
+  :root {
+    --bg:#0f1420; --panel:#171e2e; --panel2:#1e273a; --line:#2a3550;
+    --fg:#e6ebf5; --muted:#8a97b0; --accent:#4c8dff; --ok:#38c172;
+    --warn:#f5a623; --err:#e5484d; --skip:#8a97b0;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC",sans-serif;
+         background:var(--bg); color:var(--fg); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex;
+           align-items:center; gap:14px; background:var(--panel); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  header .meta { color:var(--muted); font-size:12px; }
+  .badge { padding:2px 8px; border-radius:10px; font-size:12px; background:var(--panel2); border:1px solid var(--line); }
+  main { display:grid; grid-template-columns:260px 1fr; gap:0; height:calc(100vh - 58px); }
+  #nodes { border-right:1px solid var(--line); overflow:auto; padding:10px; }
+  #nodes .n { padding:10px 12px; border-radius:8px; cursor:pointer; margin-bottom:6px;
+              border:1px solid transparent; }
+  #nodes .n:hover { background:var(--panel2); }
+  #nodes .n.active { background:var(--panel2); border-color:var(--accent); }
+  #nodes .n .nm { font-weight:600; display:flex; justify-content:space-between; gap:8px; }
+  #nodes .n .ip { color:var(--muted); font-size:12px; }
+  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+  .dot.on { background:var(--ok); } .dot.off { background:var(--err); }
+  #content { padding:16px 20px; overflow:auto; }
+  .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
+  button { background:var(--panel2); color:var(--fg); border:1px solid var(--line);
+           border-radius:8px; padding:8px 14px; cursor:pointer; font-size:13px; }
+  button:hover { border-color:var(--accent); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { background:#3a1f22; border-color:var(--err); color:#ffb4b6; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:500; position:sticky; top:0; background:var(--bg); }
+  tr.sel td { background:#18233a; }
+  .pill { padding:1px 8px; border-radius:10px; font-size:12px; }
+  .pill.OK { background:#12351f; color:var(--ok); }
+  .pill.SKIP { background:#2a2f3a; color:var(--skip); }
+  .pill.FAIL { background:#3a1f22; color:var(--err); }
+  .pill.running { background:#22304d; color:var(--accent); }
+  .muted { color:var(--muted); }
+  .sec { margin-top:22px; }
+  .sec h2 { font-size:14px; margin:0 0 10px; color:var(--muted); font-weight:600; }
+  .empty { color:var(--muted); padding:30px 0; text-align:center; }
+  .errbox { background:#3a1f22; color:#ffb4b6; padding:10px 12px; border-radius:8px; margin-bottom:12px; }
+  label.chk { display:inline-flex; align-items:center; gap:6px; cursor:pointer; }
+  input[type=checkbox]{ width:15px;height:15px; }
+  #tasklog { font-family:ui-monospace,Menlo,monospace; font-size:12px; background:#0b0f18;
+             border:1px solid var(--line); border-radius:8px; padding:10px; max-height:260px; overflow:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>local-path → OSS 迁移控制台</h1>
+  <span class="badge" id="selfBadge">本机节点: …</span>
+  <span class="meta" id="ossInfo"></span>
+</header>
+<main>
+  <div id="nodes"><div class="empty">加载节点…</div></div>
+  <div id="content">
+    <div id="err"></div>
+    <div class="toolbar">
+      <strong id="curNode">请选择左侧节点</strong>
+      <span class="muted" id="wsCount"></span>
+      <span style="flex:1"></span>
+      <button id="btnSelectAll" disabled>全选</button>
+      <button id="btnNone" disabled>取消全选</button>
+      <button id="btnRefresh" disabled>刷新</button>
+      <label class="chk"><input type="checkbox" id="optDry" /> 演练(dry-run)</label>
+      <label class="chk"><input type="checkbox" id="optForce" /> 强制覆盖(force)</label>
+      <label class="chk"><input type="checkbox" id="optCleanup" /> 迁移后清理(删除 ws/PV/PVC，保留本地目录)</label>
+    </div>
+    <div id="wsWrap"><div class="empty">选择节点后显示该节点的 workspace</div></div>
+    <div class="toolbar" style="margin-top:14px">
+      <button class="primary" id="btnMigrate" disabled>迁移选中</button>
+      <button class="danger" id="btnCleanupOnly" disabled>仅清理选中(已迁移)</button>
+    </div>
+
+    <div class="sec">
+      <h2>任务进度 <span class="muted" id="taskHint"></span></h2>
+      <div id="tasks"><div class="empty">暂无任务</div></div>
+    </div>
+
+    <div class="sec">
+      <h2>迁移日志（本节点）</h2>
+      <div id="logRows"><div class="empty">暂无日志</div></div>
+    </div>
+  </div>
+</main>
+
+<script>
+function getBasePath() {
+  const p = location.pathname;
+  const idx = p.indexOf('/node/');
+  if (idx !== -1) {
+    return p.slice(0, idx + 1);
+  }
+  return p.endsWith('/') ? p : p.slice(0, p.lastIndexOf('/') + 1);
+}
+const BASE = getBasePath();
+const API = (node) => `${BASE}node/${encodeURIComponent(node)}/`;
+let SELF = null, NODES = [], CUR = null, WS = [], SELECTED = new Set();
+let pollTimer = null;
+
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtSize(b){ if(!b && b!==0) return '-'; const u=['B','K','M','G','T']; let i=0,v=b; while(v>=1024&&i<u.length-1){v/=1024;i++;} return i?v.toFixed(1)+u[i]:v+'B'; }
+function showErr(m){ const e=document.getElementById('err'); e.innerHTML = m ? `<div class="errbox">${esc(m)}</div>` : ''; }
+
+async function jget(url){
+  const r = await fetch(url, {cache:'no-store'});
+  const t = await r.text();
+  let d; try { d = t ? JSON.parse(t) : {}; } catch { throw new Error(`HTTP ${r.status}: ${t.slice(0,200)}`); }
+  if(!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+  return d;
+}
+async function jpost(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body||{})});
+  const t = await r.text();
+  let d; try { d = t ? JSON.parse(t) : {}; } catch { throw new Error(`HTTP ${r.status}: ${t.slice(0,200)}`); }
+  if(!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+  return d;
+}
+
+async function init(){
+  // 从当前 Pod 自身路径推断 self（页面可能通过 /node/<self>/ 或 / 打开）
+  try {
+    const info = await jget(`${BASE}api/node/info`);
+    SELF = info.name;
+  } catch(e) {
+    // fall back: parse from location if under /node/<self>/
+    const m = location.pathname.match(/\/node\/([^/]+)\//);
+    if(m) SELF = m[1];
+  }
+  if(!SELF){ showErr('无法确定本机节点(NODE_NAME)，请确认部署环境变量已设置'); return; }
+  document.getElementById('selfBadge').textContent = '本机节点: ' + SELF;
+  await loadNodes();
+  await loadLogs();
+  schedulePoll();
+}
+
+async function loadNodes(){
+  try {
+    const d = await jget(`${BASE}api/nodes`);
+    NODES = d.nodes || [];
+    const box = document.getElementById('nodes');
+    if(!NODES.length){ box.innerHTML = '<div class="empty">未发现节点</div>'; return; }
+    box.innerHTML = NODES.map(n => `
+      <div class="n ${n.name===CUR?'active':''}" data-name="${esc(n.name)}">
+        <div class="nm"><span>${esc(n.name)}${n.self?' <span class="muted">(本机)</span>':''}</span>
+          <span class="dot ${n.ready?'on':'off'}"></span></div>
+        <div class="ip">${esc(n.hostIP||'-')}</div>
+      </div>`).join('');
+    box.querySelectorAll('.n').forEach(el=>el.onclick=()=>selectNode(el.dataset.name));
+    if(!CUR) {
+      const self = NODES.find(n=>n.self) || NODES[0];
+      if(self) selectNode(self.name);
+    }
+  } catch(e){ showErr('加载节点失败: '+e.message); }
+}
+
+async function selectNode(name){
+  CUR = name; SELECTED.clear();
+  document.querySelectorAll('#nodes .n').forEach(el=>el.classList.toggle('active', el.dataset.name===name));
+  document.getElementById('curNode').textContent = '节点: ' + name;
+  ['btnSelectAll','btnNone','btnRefresh'].forEach(id=>document.getElementById(id).disabled=false);
+  await loadWorkspaces();
+  await loadTasks();
+  await loadLogs();
+}
+
+async function loadWorkspaces(){
+  if(!CUR) return;
+  const wrap = document.getElementById('wsWrap');
+  wrap.innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    const d = await jget(API(CUR)+'api/workspaces');
+    WS = d.workspaces || [];
+    // Prune selection to ids that still exist in the freshly loaded list, so a
+    // workspace removed (e.g. by "仅清理选中") does not linger as a stale
+    // selection and the buttons don't keep advertising a phantom count.
+    { const live = new Set(WS.map(w => w.id));
+      [...SELECTED].forEach(id => { if(!live.has(id)) SELECTED.delete(id); }); }
+    document.getElementById('wsCount').textContent = `共 ${WS.length} 个 workspace`;
+    if(!WS.length){ wrap.innerHTML = '<div class="empty">该节点 local-path 下没有 workspace</div>'; syncRows(); return; }
+    wrap.innerHTML = `
+      <table>
+        <thead><tr>
+          <th style="width:36px"><input type="checkbox" id="thAll" /></th>
+          <th>Workspace</th><th>子目录</th><th>大小</th><th>文件数</th><th>本地目录</th>
+        </tr></thead>
+        <tbody>
+        ${WS.map(w=>`
+          <tr data-id="${esc(w.id)}">
+            <td><input type="checkbox" class="rowchk" data-id="${esc(w.id)}" /></td>
+            <td><strong>${esc(w.name)}</strong></td>
+            <td class="muted">${esc((w.subdirs||[]).join(', ')||'-')}</td>
+            <td>${fmtSize(w.sizeBytes)}</td>
+            <td>${w.files??'-'}</td>
+            <td class="muted" style="font-family:monospace;font-size:11px">${esc(w.dir)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+    wrap.querySelectorAll('.rowchk').forEach(chk=>{
+      chk.onchange = ()=>{ chk.checked ? SELECTED.add(chk.dataset.id) : SELECTED.delete(chk.dataset.id); syncRows(); };
+    });
+    document.getElementById('thAll').onchange = (ev)=>{
+      SELECTED.clear();
+      if(ev.target.checked) WS.forEach(w=>SELECTED.add(w.id));
+      syncRows();
+    };
+    syncRows();
+  } catch(e){ wrap.innerHTML=''; showErr('加载 workspace 失败: '+e.message); }
+}
+
+function syncRows(){
+  document.querySelectorAll('.rowchk').forEach(chk=>{ chk.checked = SELECTED.has(chk.dataset.id); chk.closest('tr').classList.toggle('sel', chk.checked); });
+  const thAll = document.getElementById('thAll');
+  if(thAll) thAll.checked = WS.length>0 && SELECTED.size===WS.length;
+  updateButtons();
+}
+function updateButtons(){
+  const n = SELECTED.size;
+  document.getElementById('btnMigrate').disabled = !CUR || n===0;
+  document.getElementById('btnCleanupOnly').disabled = !CUR || n===0;
+  document.getElementById('btnMigrate').textContent = n ? `迁移选中 (${n})` : '迁移选中';
+  document.getElementById('btnCleanupOnly').textContent = n ? `仅清理选中 (${n})` : '仅清理选中(已迁移)';
+}
+
+async function doMigrate(){
+  if(!CUR || !SELECTED.size) return;
+  const ids = [...SELECTED];
+  const dry = document.getElementById('optDry').checked;
+  const force = document.getElementById('optForce').checked;
+  const cleanup = document.getElementById('optCleanup').checked;
+  let msg = `将在节点 ${CUR} 迁移 ${ids.length} 个 workspace 到 OSS。`;
+  if(dry) msg += '\n\n[演练模式] 只打印命令，不上传、不删除。';
+  if(force) msg += '\n\n[强制覆盖] 忽略远端已有数据，覆盖上传。';
+  if(cleanup && !dry) msg += '\n\n⚠ 迁移成功后还会 DELETE 这些 workspace 的 CR/PVC/PV（本地目录保留）。删除前会强制校验迁移证据，未迁移成功将拒绝删除。';
+  msg += '\n\n确认继续？';
+  if(!confirm(msg)) return;
+  showErr('');
+  try {
+    const d = await jpost(API(CUR)+'api/migrate/run', {ids, dryRun:dry, force, cleanup});
+    toastTask(d.taskId);
+    await loadTasks(); schedulePoll();
+  } catch(e){ showErr('提交迁移失败: '+e.message); }
+}
+
+async function doCleanupOnly(){
+  if(!CUR || !SELECTED.size) return;
+  const ids = [...SELECTED];
+  const dry = document.getElementById('optDry').checked;
+  let msg = `将清理节点 ${CUR} 上 ${ids.length} 个 workspace 的 CR/PVC/PV（本地目录保留）。\n仅当 PVC 为 local-path 且已迁移成功（日志 OK 或 OSS 有数据）时才会删除。`;
+  if(dry) msg += '\n\n[演练模式] 只显示将删除的内容，不实际删除。';
+  msg += '\n\n此操作不可恢复，确认继续？';
+  if(!confirm(msg)) return;
+  showErr('');
+  try {
+    const d = await jpost(API(CUR)+'api/migrate/cleanup', {ids, dryRun:dry});
+    renderCleanup(d.results||[]);
+    await loadWorkspaces();
+  } catch(e){ showErr('清理失败: '+e.message); }
+}
+
+function renderCleanup(results){
+  const box = document.getElementById('tasks');
+  if(!results.length){ box.innerHTML='<div class="empty">无清理结果</div>'; return; }
+  box.innerHTML = `<div class="sec" style="margin-top:0"><h2>清理结果</h2>` +
+    results.map(r=>`<div style="margin-bottom:8px">
+      <span class="pill ${r.status}">${esc(r.status)}</span> <strong>${esc(r.workspace)}</strong>
+      ${r.dryRun?'<span class="muted">(dry-run)</span>':''}
+      ${r.error?`<div class="errbox" style="margin-top:6px">${esc(r.error)}</div>`:''}
+      ${(r.actions||[]).length?`<ul class="muted" style="margin:6px 0 0 18px">${r.actions.map(a=>`<li>${esc(a)}</li>`).join('')}</ul>`:''}
+    </div>`).join('') + `</div>`;
+}
+
+let lastTask = null;
+function toastTask(id){ lastTask = id; }
+async function loadTasks(){
+  if(!CUR) return;
+  try {
+    const d = await jget(API(CUR)+'api/tasks');
+    const box = document.getElementById('tasks');
+    const tasks = d.tasks||[];
+    if(!tasks.length){ box.innerHTML='<div class="empty">暂无任务</div>'; return; }
+    const t = tasks[0];
+    const items = t.items||[];
+    let html = `<div class="muted">任务 ${esc(t.id)} · <span class="pill ${t.status==='running'?'running':'OK'}">${esc(t.status)}</span>
+      开始 ${esc(t.startedAt)} ${t.running?('· 处理中: '+esc(t.running)):''}</div>`;
+    if(items.length){
+      html += `<table style="margin-top:8px"><thead><tr>
+        <th>Workspace</th><th>状态</th><th>已同步子目录</th><th>跳过/排除/缺失</th><th>大小</th><th>文件</th><th>说明</th><th>耗时</th>
+      </tr></thead><tbody>` +
+        items.map(it=>`<tr>
+          <td><strong>${esc(it.workspace)}</strong></td>
+          <td><span class="pill ${it.status}">${esc(it.status)}</span></td>
+          <td>${(it.synced && it.synced.length)?it.synced.map(s=>`<span class="pill OK">${esc(s)}</span>`).join(' '):(it.dirs?esc(it.dirs):'-')}</td>
+          <td class="muted" style="font-size:12px">${
+            [
+              ...(it.skipped||[]).map(s=>`<span class="pill SKIP">${esc(s)}</span>`),
+              ...(it.missing||[]).map(m=>`<span class="pill FAIL">缺失:${esc(m)}</span>`)
+            ].join(' ') || '-'
+          }</td>
+          <td>${esc(it.size)}</td><td>${esc(it.files)}</td>
+          <td class="muted">${esc(it.note||'')}</td><td class="muted">${esc(it.elapsed||'')}</td>
+        </tr>`).join('') +
+        `</tbody></table>`;
+    }
+    if((t.cleanups||[]).length){
+      html += `<div class="muted" style="margin-top:8px">清理: ` + t.cleanups.map(c=>`${esc(c.workspace)}:${esc(c.status)}`).join(' , ') + `</div>`;
+    }
+    if((t.logs||[]).length){
+      html += `<div style="margin-top:12px">
+        <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px">任务控制台实时日志</div>
+        <div id="tasklog">${t.logs.map(l=>esc(l)).join('<br/>')}</div>
+      </div>`;
+    }
+    box.innerHTML = html;
+    const logBox = document.getElementById('tasklog');
+    if(logBox) logBox.scrollTop = logBox.scrollHeight;
+    document.getElementById('taskHint').textContent = t.status==='running' ? '运行中…' : '';
+  } catch(e){ /* ignore polling errors */ }
+}
+
+async function loadLogs(){
+  if(!CUR) return;
+  try {
+    const d = await jget(API(CUR)+'api/logs');
+    const rows = d.rows||[];
+    const box = document.getElementById('logRows');
+    if(!rows.length){ box.innerHTML='<div class="empty">暂无日志</div>'; return; }
+    box.innerHTML = `<table><thead><tr><th>时间</th><th>状态</th><th>Workspace</th><th>子目录</th><th>大小</th><th>文件</th><th>说明</th></tr></thead><tbody>` +
+      rows.slice(0,200).map(r=>`<tr><td class="muted">${esc(r.time)}</td>
+        <td><span class="pill ${esc(r.status)}">${esc(r.status)}</span></td>
+        <td><strong>${esc(r.workspace)}</strong></td><td class="muted">${esc(r.dirs)}</td>
+        <td>${esc(r.size)}</td><td>${esc(r.files)}</td><td class="muted">${esc(r.note)}</td></tr>`).join('') +
+      `</tbody></table>`;
+  } catch(e){ /* ignore */ }
+}
+
+function schedulePoll(){
+  if(pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async ()=>{
+    if(!CUR) return;
+    await loadTasks();
+    // stop polling briefly when idle is fine; keep lightweight
+  }, 2500);
+}
+
+document.getElementById('btnSelectAll').onclick = ()=>{ WS.forEach(w=>SELECTED.add(w.id)); syncRows(); };
+document.getElementById('btnNone').onclick = ()=>{ SELECTED.clear(); syncRows(); };
+document.getElementById('btnRefresh').onclick = ()=>{ loadWorkspaces(); loadTasks(); loadLogs(); };
+document.getElementById('btnMigrate').onclick = doMigrate;
+document.getElementById('btnCleanupOnly').onclick = doCleanupOnly;
+
+init();
+</script>
+</body>
+</html>

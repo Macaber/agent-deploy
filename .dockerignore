@@ -1,21 +1,25 @@
 # More info: https://docs.docker.com/engine/reference/builder/#dockerignore-file
-# Ignore everything by default and re-include only needed files
+# Ignore everything by default and re-include only what the Go build needs.
+# NOTE: with `**` ignoring everything first, a re-include like `!**/*.go` is not
+# reliable across Docker versions for deeply nested .go files. We therefore
+# re-include whole source directories explicitly instead.
 **
-
-# Frontend source/build tooling is not needed to compile the Go binary.
-# Exclude it before the HTML re-include rule so node_modules/dist never enter
-# the build context; the built portal lives at cmd/api-server/portal.html.
-web/
-
-# Re-include Go source files (but not *_test.go)
-!**/*.go
-**/*_test.go
-
-# Re-include Go module files
 !go.mod
 !go.sum
 
-# Re-include the built portal bundle for //go:embed
+# Go source trees needed to compile cmd/migrate-server (and cmd/api-server).
+!api/**
+!internal/**
+!cmd/**
+!pkg/**
+
+# Drop test files and other non-build junk that lives inside those trees.
+**/*_test.go
+**/testdata/**
 !cmd/api-server/portal.html
 !bin/egress-guard-linux-amd64
 !bin/egress-sync-linux-amd64
+!cmd/migrate-server/portal.html
+
+# migrate-server entrypoint script (copied into the image).
+!hack/migrate-entrypoint.sh

@@ -43,6 +43,9 @@ Multi-group layout organizes APIs by group name (e.g., `batch`, `apps`). Check t
 - `**/zz_generated.*.go` - from `make generate`
 - `PROJECT` - from `kubebuilder [OPTIONS]`
 
+### Never Point Go Caches Into The Repo
+NEVER override `GOCACHE` / `GOMODCACHE` to paths inside the project (e.g. `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache`) when running `go`/`make`. Use the default caches (`~/Library/Caches/go-build`, `~/go/pkg/mod`); they are already populated. Do not invent isolation with env-var prefixes — it re-downloads dependencies (wasting bandwidth) and litters the repo with cache directories. If a `.gocache`/`.gomodcache` appears in the repo root, stop the offending `go` process and delete it. These paths are also listed in `.gitignore`.
+
 ### Never Remove Scaffold Markers
 Do NOT delete `// +kubebuilder:scaffold:*` comments. CLI injects code at these markers.
 

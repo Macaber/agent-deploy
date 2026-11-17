@@ -1,0 +1,184 @@
+# migrate-server: DaemonSet, one Pod per node.
+#
+# Each Pod mounts ITS OWN node's /data/local-path-storage hostPath, so it can only
+# migrate/clean the Workspaces physically present on that node.
+#
+# Multi-node UI (method 2):
+#   - A single page lists all nodes (via the K8s API) and can select any node's
+#     workspaces.
+#   - Requests are routed by URL prefix /node/<name>/... to that node's Pod.
+#     nginx uses one upstream per node (see docs below) with
+#     externalTrafficPolicy: Local so traffic entering node X only reaches X's Pod.
+#   - Every Pod rejects requests whose /node/<name> is not its own NODE_NAME
+#     (HTTP 409), so a misroute can never touch another node's local disk.
+#
+# Data source is the node-local disk; target is OSS (see the alicloud-oss
+# StorageClass / oss-secret already deployed for the OSS-backed workspaces).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: migrate-server-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: migrate-server-clusterrole
+rules:
+  # Discover nodes and their internal IPs (UI node list).
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # Delete Workspace CRs as part of cleanup.
+  - apiGroups: ["ai.example.com"]
+    resources: ["workspaces", "workspaces/status"]
+    verbs: ["get", "list", "watch", "delete"]
+  # Delete PVC/PV (local-path only, enforced in code).
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims", "persistentvolumes"]
+    verbs: ["get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: migrate-server-clusterrolebinding
+subjects:
+  - kind: ServiceAccount
+    name: migrate-server-sa
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: migrate-server-clusterrole
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: migrate-server
+  namespace: default
+  labels:
+    app: migrate-server
+spec:
+  selector:
+    matchLabels:
+      app: migrate-server
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 10%
+  template:
+    metadata:
+      labels:
+        app: migrate-server
+    spec:
+      serviceAccountName: migrate-server-sa
+      # Cover all nodes, including control-plane / nodes with taints, so every
+      # node has a Pod able to migrate its own local-path data.
+      tolerations:
+        - operator: Exists
+      # Only run where local-path storage exists. Remove this nodeSelector if you
+      # want the Pod on every node regardless.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/os
+                    operator: In
+                    values: ["linux"]
+      containers:
+        - name: migrate-server
+          image: migrate-server:v1.0.0 # 替换为你的私有镜像仓库地址
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: PORT
+              value: "3000"
+            - name: LP_ROOT
+              value: "/data/work/local-path-storage" # 生产改为 /nginx/local-path-storage
+            - name: OSS_BUCKET
+              value: "oss://euvduatc-oss"
+            - name: OSS_PREFIX
+              value: "workspaces"
+            - name: OSS_MIGRATE_DIRS
+              value: "workspace,bocomwork,bocomcode"
+            - name: OSS_MIGRATE_EXCLUDES
+              value: "bocomwork/server/skills/builtin"
+            - name: OSS_MIGRATE_LOG
+              value: "/var/log/migrate-server/oss-migrate.log"
+            # OSS endpoint used by the entrypoint to write ~/.ossutilconfig.
+            # MUST be set here because oss-secret only carries akId/akSecret.
+            # Pick the endpoint matching the bucket's region AND reachable from
+            # the Pod:
+            #   - Pod inside the same VPC  -> internal endpoint, e.g.
+            #       oss-cn-hangzhou-internal.aliyuncs.com
+            #   - Pod over the public net -> public endpoint, e.g.
+            #       oss-cn-hangzhou.aliyuncs.com
+            # A wrong endpoint makes ossutil hang/timeout -> "exit status 1".
+            - name: OSS_ENDPOINT
+              value: "oss-cn-hangzhou-internal.aliyuncs.com" # 改成你 bucket 实际 region 的 endpoint
+          envFrom:
+            # Provides akId / akSecret (same secret the OSS StorageClass uses).
+            - secretRef:
+                name: oss-secret
+          securityContext:
+            # local-path PVC dirs are owned by root; migrate-server needs to read
+            # and (for cleanup) remove them.
+            runAsUser: 0
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          volumeMounts:
+            - name: local-path
+              mountPath: /data/work/local-path-storage
+            - name: log
+              mountPath: /var/log/migrate-server
+      volumes:
+        - name: local-path
+          hostPath:
+            path: /data/work/local-path-storage # 生产改为 /nginx/local-path-storage
+            type: Directory
+        - name: log
+          hostPath:
+            path: /var/log/migrate-server
+            type: DirectoryOrCreate
+---
+# NodePort + externalTrafficPolicy: Local: 访问某节点的 <nodeIP>:<nodePort>
+# 时，流量只会落到该节点自己的 migrate-server Pod（配合 nginx 每节点 upstream）。
+apiVersion: v1
+kind: Service
+metadata:
+  name: migrate-server-svc
+  namespace: default
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  selector:
+    app: migrate-server
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      nodePort: 30080

@@ -130,6 +130,47 @@ API_PLATFORM ?= linux/amd64
 docker-build-api-server: ## Build the api-server image (embeds the committed portal.html).
 	$(CONTAINER_TOOL) build --platform $(API_PLATFORM) -f Dockerfile.api-server -t $(API_IMG) .
 
+MIGRATE_IMG ?= migrate-server:latest
+MIGRATE_PLATFORM ?= linux/amd64
+
+.PHONY: docker-build-migrate-server
+docker-build-migrate-server: ## Build the migrate-server image (DaemonSet; embeds portal.html, bundles ossutil).
+	$(CONTAINER_TOOL) build --platform $(MIGRATE_PLATFORM) -f Dockerfile.migrate-server -t $(MIGRATE_IMG) .
+
+##@ Build & save images (docker build --platform + docker save to deploy/)
+
+# Shared knobs for the convenience targets below.
+#   make workspace-operator VERSION=v1.0.7
+# builds <name>:<VERSION> for linux/amd64 and saves it to deploy/<name>.tar
+VERSION ?= latest
+PLATFORM ?= linux/amd64
+IMAGE_DIR ?= deploy
+
+.PHONY: workspace-operator
+workspace-operator: ## Build workspace-operator:<VERSION> (linux/amd64) and save to deploy/workspace-operator.tar
+	$(CONTAINER_TOOL) build --platform $(PLATFORM) -f Dockerfile -t workspace-operator:$(VERSION) .
+	@mkdir -p $(IMAGE_DIR)
+	$(CONTAINER_TOOL) save -o $(IMAGE_DIR)/workspace-operator.tar workspace-operator:$(VERSION)
+	@echo ">> built workspace-operator:$(VERSION) -> $(IMAGE_DIR)/workspace-operator.tar"
+
+.PHONY: api-server
+# api-server embeds cmd/api-server/portal.html (a prebuilt Vite bundle). Rebuild
+# the frontend first so the image never ships a stale portal. Skip with
+# SKIP_PORTAL=1 when you already ran `make portal` or have no Node.js env.
+API_SERVER_DEPS := $(if $(SKIP_PORTAL),,portal)
+api-server: $(API_SERVER_DEPS) ## Build api-server:<VERSION> (linux/amd64) and save to deploy/api-server.tar
+	$(CONTAINER_TOOL) build --platform $(PLATFORM) -f Dockerfile.api-server -t api-server:$(VERSION) .
+	@mkdir -p $(IMAGE_DIR)
+	$(CONTAINER_TOOL) save -o $(IMAGE_DIR)/api-server.tar api-server:$(VERSION)
+	@echo ">> built api-server:$(VERSION) -> $(IMAGE_DIR)/api-server.tar"
+
+.PHONY: migrate-server
+migrate-server: ## Build migrate-server:<VERSION> (linux/amd64) and save to deploy/migrate-server.tar
+	$(CONTAINER_TOOL) build --platform $(PLATFORM) -f Dockerfile.migrate-server -t migrate-server:$(VERSION) .
+	@mkdir -p $(IMAGE_DIR)
+	$(CONTAINER_TOOL) save -o $(IMAGE_DIR)/migrate-server.tar migrate-server:$(VERSION)
+	@echo ">> built migrate-server:$(VERSION) -> $(IMAGE_DIR)/migrate-server.tar"
+
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build -t ${IMG} .

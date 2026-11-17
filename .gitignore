@@ -64,3 +64,7 @@ web/portal/dist/
 hack/logs/
 .tmp/
 .openidea
+
+# Go build/module caches accidentally written inside the repo (use default ~/Library/Caches/go-build and ~/go/pkg/mod instead)
+.gocache/
+.gomodcache/
