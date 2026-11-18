@@ -16,13 +16,9 @@
 # StorageClass / oss-secret already deployed for the OSS-backed workspaces).
 #
 # 登录认证：控制台可删除 Workspace/PVC/PV，已内置用户名/密码登录。
-# 账号/密码从 Secret migrate-auth-secret 读取（下面的 env 已引用）。
-# 部署前请先创建该 Secret（请替换真实值）：
-#   kubectl -n default create secret generic migrate-auth-secret \
-#     --from-literal=username=admin \
-#     --from-literal=password='<强密码>'
-# 注意：若该 Secret 不存在或 password 为空，登录会**关闭**（控制台对任何能访问的人
-# 开放），启动日志会打印明确警告。生产环境务必创建并设置强密码。
+# 下面 env 直接写了明文账号/密码（MIGRATE_AUTH_USER / MIGRATE_AUTH_PASSWORD），
+# 简单场景/内网即可用；改这里即可换账号密码。生产如需保密，可改为从 Secret 读取。
+# 注意：password 为空则登录**关闭**（控制台对任何能访问的人开放），启动日志会告警。
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -134,13 +130,13 @@ spec:
               value: "oss-cn-hangzhou-internal.aliyuncs.com" # 改成你 bucket 实际 region 的 endpoint
             # ---- 登录认证 ----
             # MIGRATE_AUTH_PASSWORD 为空 => 关闭登录（不建议，生产务必设置）。
-            # 账号/密码放在 Secret migrate-auth-secret，避免明文写进 YAML。
+            # 这里直接写明文值（简单场景/内网可用）。注意：明文会进入 Git 仓库和
+            # `kubectl get deploy -o yaml`，并非机密；生产建议改用 Secret（代码同样支持）：
+            #   valueFrom: { secretKeyRef: { name: migrate-auth-secret, key: password } }
             - name: MIGRATE_AUTH_USER
-              valueFrom:
-                secretKeyRef: { name: migrate-auth-secret, key: username, optional: true }
+              value: "admin"
             - name: MIGRATE_AUTH_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: migrate-auth-secret, key: password, optional: true }
+              value: "admin"
           envFrom:
             # Provides akId / akSecret (same secret the OSS StorageClass uses).
             - secretRef:

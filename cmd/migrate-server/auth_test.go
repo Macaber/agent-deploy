@@ -205,3 +205,43 @@ func TestRouteNodeGuardsConsole(t *testing.T) {
 		t.Fatalf("login page must not redirect back to login, got %d %q", rec2.Code, rec2.Header().Get("Location"))
 	}
 }
+
+// TestForwardedPrefixRedirect ensures that when nginx sets X-Forwarded-Prefix,
+// the login redirect keeps the service prefix instead of pointing at /login
+// (which 404s at the gateway). This is the page-can't-open regression guard.
+func TestForwardedPrefixRedirect(t *testing.T) {
+	a := newTestAuth(t, true)
+	req := httptest.NewRequest(http.MethodGet, "/", nil) // nginx already stripped the prefix
+	req.Header.Set("X-Forwarded-Prefix", "/bocomwork/workspace-migrate")
+	rec := httptest.NewRecorder()
+	a.requireAuth(func(w http.ResponseWriter, r *http.Request) { t.Fatal("must not run") })(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect, got %d", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/bocomwork/workspace-migrate/login?next=") {
+		t.Fatalf("login redirect must keep the service prefix, got %q", loc)
+	}
+	// next should point back through the gateway (prefixed), not to bare "/".
+	if !strings.Contains(loc, "next=") || strings.Contains(loc, "next=%2F%3F") {
+		t.Fatalf("unexpected next in %q", loc)
+	}
+}
+
+// TestLoginSuccessWithPrefixRedirectsHome checks the post-login default target
+// is the prefix-aware home, not "/".
+func TestLoginSuccessWithPrefixRedirectsHome(t *testing.T) {
+	a := newTestAuth(t, true)
+	form := url.Values{"username": {"admin"}, "password": {"s3cret"}}
+	req := httptest.NewRequest(http.MethodPost, "/login/submit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Forwarded-Prefix", "/bocomwork/workspace-migrate")
+	rec := httptest.NewRecorder()
+	a.handleLogin(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/bocomwork/workspace-migrate/" {
+		t.Fatalf("expected prefix-aware home, got %q", loc)
+	}
+}

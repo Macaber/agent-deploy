@@ -79,6 +79,7 @@ location ~ ^/bocomwork/workspace-migrate/(node/(?<node>[^/]+)/(.*))$ {
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Prefix /bocomwork/workspace-migrate;   # 让后端生成带前缀的登录跳转
     proxy_http_version 1.1;
 
     # 迁移是长任务，进度靠轮询；放宽超时、关闭缓冲
@@ -99,6 +100,7 @@ location /bocomwork/workspace-migrate/ {
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Prefix /bocomwork/workspace-migrate;   # 让后端生成带前缀的登录跳转
     proxy_http_version 1.1;
     proxy_read_timeout 600s;
     proxy_send_timeout 600s;
@@ -120,6 +122,7 @@ map $node $migrate_upstream {
 
 location ~ ^/bocomwork/workspace-migrate/(node/(?<node>[^/]+)/(.*))$ {
     proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Prefix /bocomwork/workspace-migrate;   # 让后端生成带前缀的登录跳转
     proxy_http_version 1.1;
     proxy_read_timeout 600s;
     proxy_send_timeout 600s;
@@ -143,6 +146,7 @@ location /bocomwork/workspace-migrate/ {
     proxy_set_header Host "launcher.workspace.bocomcode";
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Prefix /bocomwork/workspace-migrate;   # 让后端生成带前缀的登录跳转
     proxy_read_timeout 600s;
     proxy_buffering off;
     rewrite ^/bocomwork/workspace-migrate/(.*)$ /$1 break;

@@ -200,6 +200,50 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
+// externalPrefix returns the reverse-proxy mount prefix (e.g.
+// "/bocomwork/workspace-migrate") from the X-Forwarded-Prefix header that nginx
+// sets. nginx strips this prefix before proxying, so the Pod cannot otherwise
+// know where it is publicly mounted; without it, redirects such as /login would
+// drop the prefix and 404 at the gateway. We normalise to "no trailing slash".
+func externalPrefix(r *http.Request) string {
+	p := strings.TrimSpace(r.Header.Get("X-Forwarded-Prefix"))
+	if p == "" {
+		return ""
+	}
+	// Keep it a clean absolute path: must start with "/", no trailing "/",
+	// no scheme/host, no "//".
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	p = strings.TrimRight(p, "/")
+	if strings.HasPrefix(p, "//") || strings.Contains(p, "://") {
+		return ""
+	}
+	return p
+}
+
+// loginBasePath returns the absolute, prefix-aware path of the login page,
+// keeping the /node/<self>/ segment when the console is opened under one.
+func loginBasePath(r *http.Request) string {
+	prefix := externalPrefix(r)
+	node, rest := splitNodePrefix(r.URL.Path)
+	// When nginx stripped the service prefix, /node/<self>/login arrives as a
+	// real path on the Pod, so rest reflects it. Build prefix + that path.
+	_ = rest
+	if node != "" {
+		return prefix + "/node/" + node + "/login"
+	}
+	return prefix + "/login"
+}
+
+// homePath returns the prefix-aware root of the console.
+func homePath(r *http.Request) string {
+	if p := externalPrefix(r); p != "" {
+		return p + "/"
+	}
+	return "/"
+}
+
 // isAPIRequest reports whether the request targets the JSON API (vs. the UI).
 func isAPIRequest(r *http.Request) bool {
 	_, rest := splitNodePrefix(r.URL.Path)
@@ -220,19 +264,11 @@ func (a *authenticator) requireAuth(h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		// UI: bounce to login, preserving where to return after sign-in.
-		target := r.URL.RequestURI()
+		// After nginx's rewrite, r.URL.RequestURI() already lacks the service
+		// prefix; re-attach it so `next` points back through the gateway.
+		target := externalPrefix(r) + r.URL.RequestURI()
 		http.Redirect(w, r, loginBasePath(r)+"?next="+urlQueryEscape(target), http.StatusSeeOther)
 	}
-}
-
-// loginBasePath returns the path of the login page, keeping the /node/<self>/
-// prefix when the console is opened under one.
-func loginBasePath(r *http.Request) string {
-	node, _ := splitNodePrefix(r.URL.Path)
-	if node != "" {
-		return "/node/" + node + "/login"
-	}
-	return "/login"
 }
 
 // urlQueryEscape escapes a value for use in a query string (minimal, no import).
@@ -264,10 +300,11 @@ func safeNext(next string) string {
 // handleLoginPage serves the embedded login form.
 func (a *authenticator) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	if a.authenticated(r) {
-		http.Redirect(w, r, safeNext(r.URL.Query().Get("next")), http.StatusSeeOther)
-		if safeNext(r.URL.Query().Get("next")) == "" {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
+		next := safeNext(r.URL.Query().Get("next"))
+		if next == "" {
+			next = homePath(r)
 		}
+		http.Redirect(w, r, next, http.StatusSeeOther)
 		return
 	}
 	b, err := authFS.ReadFile("auth-ui.html")
@@ -317,7 +354,7 @@ func (a *authenticator) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 	next := safeNext(r.FormValue("next"))
 	if next == "" {
-		next = "/"
+		next = homePath(r)
 	}
 	http.Redirect(w, r, next, http.StatusSeeOther)
 }
