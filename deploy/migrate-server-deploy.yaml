@@ -14,6 +14,15 @@
 #
 # Data source is the node-local disk; target is OSS (see the alicloud-oss
 # StorageClass / oss-secret already deployed for the OSS-backed workspaces).
+#
+# 登录认证：控制台可删除 Workspace/PVC/PV，已内置用户名/密码登录。
+# 账号/密码从 Secret migrate-auth-secret 读取（下面的 env 已引用）。
+# 部署前请先创建该 Secret（请替换真实值）：
+#   kubectl -n default create secret generic migrate-auth-secret \
+#     --from-literal=username=admin \
+#     --from-literal=password='<强密码>'
+# 注意：若该 Secret 不存在或 password 为空，登录会**关闭**（控制台对任何能访问的人
+# 开放），启动日志会打印明确警告。生产环境务必创建并设置强密码。
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -123,6 +132,15 @@ spec:
             # A wrong endpoint makes ossutil hang/timeout -> "exit status 1".
             - name: OSS_ENDPOINT
               value: "oss-cn-hangzhou-internal.aliyuncs.com" # 改成你 bucket 实际 region 的 endpoint
+            # ---- 登录认证 ----
+            # MIGRATE_AUTH_PASSWORD 为空 => 关闭登录（不建议，生产务必设置）。
+            # 账号/密码放在 Secret migrate-auth-secret，避免明文写进 YAML。
+            - name: MIGRATE_AUTH_USER
+              valueFrom:
+                secretKeyRef: { name: migrate-auth-secret, key: username, optional: true }
+            - name: MIGRATE_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: migrate-auth-secret, key: password, optional: true }
           envFrom:
             # Provides akId / akSecret (same secret the OSS StorageClass uses).
             - secretRef:

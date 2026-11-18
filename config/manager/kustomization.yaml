@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: workspace-operator
-  newTag: egress-test-20261106
+  newTag: v1.0.43

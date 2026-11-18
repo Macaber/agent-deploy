@@ -68,3 +68,9 @@ hack/logs/
 # Go build/module caches accidentally written inside the repo (use default ~/Library/Caches/go-build and ~/go/pkg/mod instead)
 .gocache/
 .gomodcache/
+
+# Agent skill install output (npx skills add) - environment tooling, not project source
+.agents/
+.claude/
+agent/
+skills-lock.json

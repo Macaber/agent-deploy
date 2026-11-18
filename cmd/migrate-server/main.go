@@ -46,12 +46,12 @@ func main() {
 	}
 
 	cfg := MigrateConfig{
-		Root:       envOr("LP_ROOT", DefaultRoot),
-		OSSBucket:  envOr("OSS_BUCKET", DefaultOSSBucket),
-		OSSPrefix:  envOr("OSS_PREFIX", DefaultOSSPrefix),
-		Dirs:       splitList(envOr("OSS_MIGRATE_DIRS", DefaultDirs)),
-		Excludes:   ResolveExcludes(os.Getenv("OSS_MIGRATE_EXCLUDES")),
-		LogFile:    envOr("OSS_MIGRATE_LOG", "/var/log/migrate-server/oss-migrate.log"),
+		Root:        envOr("LP_ROOT", DefaultRoot),
+		OSSBucket:   envOr("OSS_BUCKET", DefaultOSSBucket),
+		OSSPrefix:   envOr("OSS_PREFIX", DefaultOSSPrefix),
+		Dirs:        splitList(envOr("OSS_MIGRATE_DIRS", DefaultDirs)),
+		Excludes:    ResolveExcludes(os.Getenv("OSS_MIGRATE_EXCLUDES")),
+		LogFile:     envOr("OSS_MIGRATE_LOG", "/var/log/migrate-server/oss-migrate.log"),
 		OSSUtilPath: os.Getenv("OSSUTIL_PATH"),
 	}
 	mig, err := NewMigrator(cfg)
@@ -69,6 +69,7 @@ func main() {
 		mig:      mig,
 		k8s:      k8sClient,
 		tasks:    newTaskStore(),
+		auth:     newAuthenticator(),
 	}
 
 	mux := http.NewServeMux()
@@ -76,10 +77,17 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	// Everything else is under /node/<name>/... (nginx strips nothing; we parse).
-	mux.HandleFunc("/", srv.route)
-	mux.HandleFunc("/node/", srv.route)
-	mux.HandleFunc("/api/", srv.route)
+	// Login/logout are reachable without a session (obviously), and are matched
+	// both at the root and under /node/<self>/ so the console works either way.
+	mux.HandleFunc("/login", srv.auth.handleLoginPage)
+	mux.HandleFunc("/login/submit", srv.auth.handleLogin)
+	mux.HandleFunc("/logout", srv.auth.handleLogout)
+	// /node/<self>/... is guarded for everything except its login/logout paths
+	// (routeNode decides), so the per-node console cannot bypass auth.
+	mux.HandleFunc("/node/", srv.routeNode)
+	// Everything else requires a valid session.
+	mux.HandleFunc("/", srv.auth.requireAuth(srv.route))
+	mux.HandleFunc("/api/", srv.auth.requireAuth(srv.route))
 
 	port := envOr("PORT", "3000")
 	hs := &http.Server{
@@ -121,6 +129,20 @@ type server struct {
 	mig      *Migrator
 	k8s      client.Client
 	tasks    *taskStore
+	auth     *authenticator
+}
+
+// routeNode guards the /node/<self>/... tree: login/logout sub-paths are open,
+// everything else requires a session. This closes the hole where the per-node
+// console UI (served under /node/<self>/) could be reached without logging in.
+func (s *server) routeNode(w http.ResponseWriter, r *http.Request) {
+	_, rest := splitNodePrefix(r.URL.Path)
+	switch rest {
+	case "/login", "/login/submit", "/logout":
+		s.route(w, r)
+	default:
+		s.auth.requireAuth(s.route)(w, r)
+	}
 }
 
 // route parses an optional /node/<name>/ prefix. When the prefix names a
@@ -138,6 +160,12 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case rest == "/login":
+		s.auth.handleLoginPage(w, r)
+	case rest == "/login/submit":
+		s.auth.handleLogin(w, r)
+	case rest == "/logout":
+		s.auth.handleLogout(w, r)
 	case rest == "/" || rest == "":
 		s.serveUI(w, r)
 	case rest == "/api/node/info":
@@ -152,6 +180,8 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 		s.handleRun(w, r)
 	case rest == "/api/migrate/cleanup":
 		s.handleCleanup(w, r)
+	case rest == "/api/migrate/resources":
+		s.handleResources(w, r)
 	case rest == "/api/tasks":
 		s.handleTasksList(w, r)
 	case strings.HasPrefix(rest, "/api/tasks/"):
@@ -421,6 +451,45 @@ func (s *server) handleCleanup(w http.ResponseWriter, r *http.Request) {
 		results = append(results, cl.Clean(ctx, *ws))
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"node": s.nodeName, "results": results})
+}
+
+// handleResources is a READ-ONLY listing of the local-path CR/PVC/PV behind the
+// selected workspaces, so an operator can inspect exactly what cleanup would
+// touch before deleting. It never deletes anything and never fails the request
+// for "nothing found" — missing objects come back as Found=false with a Note.
+func (s *server) handleResources(w http.ResponseWriter, r *http.Request) {
+	var req cleanupReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad body: "+err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	cl := NewCleaner(s.k8s, s.mig.cfg.Root, true, s.mig, s.mig.cfg.LogFile)
+	var results []ResourceInfo
+	for _, raw := range req.IDs {
+		ws, err := s.mig.ResolveLocal(raw)
+		if err != nil || ws == nil {
+			// Not a local dir (already cleaned, or ambiguous): still answer with
+			// an empty row rather than an error, so the operator sees "无".
+			results = append(results, ResourceInfo{Workspace: makeWsDisplayName(raw), Note: "本机未找到对应本地目录（可能已清理或名称二义）"})
+			continue
+		}
+		results = append(results, cl.InspectResources(ctx, *ws))
+	}
+	if results == nil {
+		results = []ResourceInfo{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"node": s.nodeName, "results": results})
+}
+
+// makeWsDisplayName normalizes a raw id to the "ws-<id>" display form.
+func makeWsDisplayName(raw string) string {
+	id := normalizeID(raw)
+	if id == "" {
+		return raw
+	}
+	return "ws-" + id
 }
 
 func (s *server) handleTasksList(w http.ResponseWriter, r *http.Request) {

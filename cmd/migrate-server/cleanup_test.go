@@ -196,3 +196,111 @@ func TestCleanupDryRunChangesNothing(t *testing.T) {
 		t.Errorf("dry-run must not delete workspace: %v", err)
 	}
 }
+
+// TestInspectResourcesFindsLocalPath: a fully present ws-9660946 returns the
+// CR, PVC (local-path) and PV details.
+func TestInspectResourcesFindsLocalPath(t *testing.T) {
+	root := t.TempDir()
+	pvc, pv, wsCR := buildLocalPathFixture(t, root)
+	cl := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pvc, pv, wsCR).Build()
+	ws := localWs(t, root)
+
+	info := NewCleaner(cl, root, true, nil, "").InspectResources(context.Background(), ws)
+	if !info.CRFound || !info.PVCFound || !info.PVFound {
+		t.Fatalf("expected CR/PVC/PV all found, got %+v", info)
+	}
+	if !info.PVCLocalPathOK || !info.PVLocalPath {
+		t.Errorf("expected local-path flags true, got pvcOK=%v pvLP=%v", info.PVCLocalPathOK, info.PVLocalPath)
+	}
+	if info.PVName != "ws-9660946-pv" || info.PVCVolumeName != "ws-9660946-pv" {
+		t.Errorf("unexpected names: pv=%q vol=%q", info.PVName, info.PVCVolumeName)
+	}
+	if info.Note != "" {
+		t.Errorf("expected no note when resources present, got %q", info.Note)
+	}
+}
+
+// TestInspectResourcesEmptyNoError: with no CR/PVC/PV at all, InspectResources
+// must still return a row (never panic / error) explaining "无".
+func TestInspectResourcesEmptyNoError(t *testing.T) {
+	root := t.TempDir()
+	cl := fake.NewClientBuilder().WithScheme(testScheme(t)).Build() // empty cluster
+	ws := localWs(t, root)
+
+	info := NewCleaner(cl, root, true, nil, "").InspectResources(context.Background(), ws)
+	if info.CRFound || info.PVCFound || info.PVFound {
+		t.Fatalf("expected all not-found, got %+v", info)
+	}
+	if info.Note == "" {
+		t.Errorf("expected a human note for the empty case, got empty")
+	}
+	if info.Workspace != "ws-9660946" {
+		t.Errorf("workspace name should be preserved, got %q", info.Workspace)
+	}
+}
+
+// TestCleanupWritesAuditLog: a successful cleanup appends a CLEANED row to the
+// migrate log (so cleanup has the same audit trail as migration), and that row
+// must NOT make LogHasOK report success for the workspace (cleanup is not
+// migration proof).
+func TestCleanupWritesAuditLog(t *testing.T) {
+	root := t.TempDir()
+	pvc, pv, wsCR := buildLocalPathFixture(t, root)
+	cl := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pvc, pv, wsCR).Build()
+	ws := localWs(t, root)
+
+	logPath := filepath.Join(t.TempDir(), "oss-migrate.log")
+	// Seed migration proof so cleanup proceeds.
+	os.WriteFile(logPath, []byte("# time\tstatus\tworkspace\tlocal_dir\tremote_prefix\tdirs\tsize\tfiles\tnote\n"+
+		"t\tOK\tws-9660946\t/dir\toss://b/workspaces/ws-9660946\tworkspace\t1K\t1\tx\n"), 0o644)
+
+	res := NewCleaner(cl, root, false, nil, logPath).Clean(context.Background(), ws)
+	if res.Status != "OK" {
+		t.Fatalf("expected cleanup OK, got %s (%s)", res.Status, res.Error)
+	}
+
+	rows, err := readLogTSV(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	var cleaned int
+	for _, r := range rows {
+		if r.Workspace == "ws-9660946" && r.Status == "CLEANED" {
+			cleaned++
+		}
+	}
+	if cleaned != 1 {
+		t.Fatalf("expected exactly one CLEANED row, got %d (rows=%+v)", cleaned, rows)
+	}
+	// The CLEANED row must still count as OK evidence only because of the
+	// pre-seeded migration row — a CLEANED-only log must not verify.
+	onlyCleanup := filepath.Join(t.TempDir(), "only.log")
+	os.WriteFile(onlyCleanup, []byte("t\tCLEANED\tws-9660946\t\t\t\t\t\tcleanup ok\n"), 0o644)
+	if LogHasOK(onlyCleanup, "ws-9660946") {
+		t.Error("a CLEANED row must NOT satisfy LogHasOK (cleanup is not migration proof)")
+	}
+}
+
+// TestCleanupRefusalLogged: a refused cleanup still writes a CLEAN-FAIL row.
+func TestCleanupRefusalLogged(t *testing.T) {
+	root := t.TempDir()
+	pvc, pv, wsCR := buildLocalPathFixture(t, root)
+	cl := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pvc, pv, wsCR).Build()
+	ws := localWs(t, root)
+
+	logPath := filepath.Join(t.TempDir(), "log")
+	res := NewCleaner(cl, root, false, nil, logPath).Clean(context.Background(), ws)
+	if res.Status != "FAIL" {
+		t.Fatalf("expected refusal, got %s", res.Status)
+	}
+	rows, _ := readLogTSV(logPath)
+	found := false
+	for _, r := range rows {
+		if r.Workspace == "ws-9660946" && r.Status == "CLEAN-FAIL" && r.Note != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a CLEAN-FAIL row with a note, rows=%+v", rows)
+	}
+}

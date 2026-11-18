@@ -5,82 +5,310 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>local-path → OSS 迁移控制台</title>
 <style>
+  /* ---- Design tokens: one coherent dark system -------------------------- */
   :root {
-    --bg:#0f1420; --panel:#171e2e; --panel2:#1e273a; --line:#2a3550;
-    --fg:#e6ebf5; --muted:#8a97b0; --accent:#4c8dff; --ok:#38c172;
-    --warn:#f5a623; --err:#e5484d; --skip:#8a97b0;
+    /* Ground & surfaces */
+    --bg:#0b0f17;
+    --bg-grid:rgba(255,255,255,.018);
+    --panel:#111827;
+    --panel2:#161f30;
+    --panel3:#1b2537;
+    --line:#233047;
+    --line-strong:#2f3f5c;
+
+    /* Ink */
+    --fg:#e8edf6;
+    --fg-dim:#c2cce0;
+    --muted:#8494ad;
+    --faint:#5d6b84;
+
+    /* Brand + state */
+    --accent:#5b93ff;
+    --accent-strong:#3f7bf0;
+    --accent-ink:#0a1424;
+    --ok:#3ddc84;
+    --ok-bg:rgba(61,220,132,.12);
+    --warn:#f5a623;
+    --warn-bg:rgba(245,166,35,.12);
+    --err:#ff6169;
+    --err-bg:rgba(255,97,105,.12);
+    --info:#6fb3ff;
+    --info-bg:rgba(111,179,255,.12);
+    --skip:#8494ad;
+    --skip-bg:rgba(132,148,173,.13);
+
+    /* Shape */
+    --r-sm:6px; --r:10px; --r-lg:14px; --r-pill:999px;
+    --shadow:0 1px 2px rgba(0,0,0,.35), 0 8px 24px -12px rgba(0,0,0,.6);
+    --shadow-lg:0 12px 40px -16px rgba(0,0,0,.7);
+    --ring:0 0 0 2px var(--bg), 0 0 0 4px rgba(91,147,255,.55);
+    --ease:cubic-bezier(.22,.61,.36,1);
+
+    --fs-xs:11.5px; --fs-sm:12.5px; --fs:13.5px; --fs-md:15px;
+    --lh:1.55;
   }
   * { box-sizing:border-box; }
-  body { margin:0; font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC",sans-serif;
-         background:var(--bg); color:var(--fg); }
-  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex;
-           align-items:center; gap:14px; background:var(--panel); flex-wrap:wrap; }
-  header h1 { font-size:16px; margin:0; font-weight:600; }
-  header .meta { color:var(--muted); font-size:12px; }
-  .badge { padding:2px 8px; border-radius:10px; font-size:12px; background:var(--panel2); border:1px solid var(--line); }
-  main { display:grid; grid-template-columns:260px 1fr; gap:0; height:calc(100vh - 58px); }
-  #nodes { border-right:1px solid var(--line); overflow:auto; padding:10px; }
-  #nodes .n { padding:10px 12px; border-radius:8px; cursor:pointer; margin-bottom:6px;
-              border:1px solid transparent; }
-  #nodes .n:hover { background:var(--panel2); }
-  #nodes .n.active { background:var(--panel2); border-color:var(--accent); }
-  #nodes .n .nm { font-weight:600; display:flex; justify-content:space-between; gap:8px; }
-  #nodes .n .ip { color:var(--muted); font-size:12px; }
-  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
-  .dot.on { background:var(--ok); } .dot.off { background:var(--err); }
-  #content { padding:16px 20px; overflow:auto; }
-  .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
-  button { background:var(--panel2); color:var(--fg); border:1px solid var(--line);
-           border-radius:8px; padding:8px 14px; cursor:pointer; font-size:13px; }
-  button:hover { border-color:var(--accent); }
-  button:disabled { opacity:.45; cursor:not-allowed; }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-  button.danger { background:#3a1f22; border-color:var(--err); color:#ffb4b6; }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
-  th { color:var(--muted); font-weight:500; position:sticky; top:0; background:var(--bg); }
-  tr.sel td { background:#18233a; }
-  .pill { padding:1px 8px; border-radius:10px; font-size:12px; }
-  .pill.OK { background:#12351f; color:var(--ok); }
-  .pill.SKIP { background:#2a2f3a; color:var(--skip); }
-  .pill.FAIL { background:#3a1f22; color:var(--err); }
-  .pill.running { background:#22304d; color:var(--accent); }
+  html,body { height:100%; }
+  body {
+    margin:0; color:var(--fg); line-height:var(--lh);
+    font:var(--fs)/var(--lh) -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    background:
+      radial-gradient(1200px 600px at 100% -10%, rgba(91,147,255,.08), transparent 60%),
+      radial-gradient(900px 500px at -10% 110%, rgba(61,220,132,.05), transparent 55%),
+      var(--bg);
+    background-attachment:fixed;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    font-variant-numeric:tabular-nums;
+  }
+  ::selection { background:rgba(91,147,255,.32); }
+  :focus-visible { outline:none; box-shadow:var(--ring); border-radius:var(--r-sm); }
+
+  /* Visible focus for keyboard users on interactive elements */
+  button:focus-visible, a:focus-visible, input:focus-visible, .n:focus-visible { box-shadow:var(--ring); outline:none; }
+
+  /* ---- Header / top bar -------------------------------------------------- */
+  header {
+    padding:14px 22px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    background:linear-gradient(180deg, rgba(23,31,45,.92), rgba(17,24,39,.92));
+    border-bottom:1px solid var(--line);
+    backdrop-filter:saturate(140%) blur(10px);
+    position:sticky; top:0; z-index:20;
+  }
+  .brand { display:flex; align-items:center; gap:11px; }
+  .brand .logo {
+    width:30px; height:30px; border-radius:9px; flex:0 0 auto;
+    display:grid; place-items:center; color:var(--accent-ink); font-weight:800; font-size:15px;
+    background:linear-gradient(150deg,#7fb0ff,#4c8dff);
+    box-shadow:0 6px 18px -8px rgba(91,147,255,.8), inset 0 1px 0 rgba(255,255,255,.4);
+  }
+  header h1 { font-size:var(--fs-md); margin:0; font-weight:650; letter-spacing:.2px; }
+  header h1 .sub { color:var(--muted); font-weight:500; font-size:var(--fs-sm); margin-left:2px; }
+  header .meta { color:var(--muted); font-size:var(--fs-sm); }
+  .badge {
+    display:inline-flex; align-items:center; gap:7px;
+    padding:4px 11px; border-radius:var(--r-pill); font-size:var(--fs-sm);
+    background:var(--panel2); border:1px solid var(--line); color:var(--fg-dim);
+  }
+  .badge b { color:var(--fg); font-weight:600; }
+  header .spacer { flex:1; }
+
+  /* ---- Layout ----------------------------------------------------------- */
+  main { display:grid; grid-template-columns:272px 1fr; height:calc(100vh - 61px); }
+  #nodes {
+    border-right:1px solid var(--line); overflow:auto; padding:14px 12px;
+    background:linear-gradient(180deg, rgba(23,31,45,.55), rgba(11,15,23,.2));
+  }
+  .side-label {
+    font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.09em;
+    color:var(--faint); font-weight:600; padding:2px 10px 10px;
+  }
+  #nodes .n {
+    padding:11px 12px; border-radius:var(--r); cursor:pointer; margin-bottom:6px;
+    border:1px solid transparent; transition:background .18s var(--ease), border-color .18s var(--ease), transform .18s var(--ease);
+  }
+  #nodes .n:hover { background:var(--panel2); border-color:var(--line); transform:translateY(-1px); }
+  #nodes .n.active {
+    background:linear-gradient(180deg,rgba(91,147,255,.16),rgba(91,147,255,.06));
+    border-color:rgba(91,147,255,.55);
+    box-shadow:inset 3px 0 0 var(--accent);
+  }
+  #nodes .n .nm { font-weight:600; display:flex; justify-content:space-between; gap:8px; align-items:center; }
+  #nodes .n .ip { color:var(--muted); font-size:var(--fs-sm); margin-top:2px; font-variant-numeric:tabular-nums; }
+  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex:0 0 auto; }
+  .dot.on { background:var(--ok); box-shadow:0 0 0 3px rgba(61,220,132,.16); }
+  .dot.off { background:var(--err); box-shadow:0 0 0 3px rgba(255,97,105,.16); }
+
+  #content { padding:22px 26px 40px; overflow:auto; }
+
+  /* ---- Toolbars & buttons ---------------------------------------------- */
+  .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
+  .toolbar .title { font-size:var(--fs-md); font-weight:650; }
+  .toolbar .count { color:var(--muted); font-size:var(--fs-sm); }
+  .grow { flex:1; }
+
+  button {
+    --bg-btn:var(--panel2); --bd:var(--line);
+    background:var(--bg-btn); color:var(--fg); border:1px solid var(--bd);
+    border-radius:var(--r); padding:8px 14px; cursor:pointer;
+    font-size:var(--fs); font-weight:550; font-family:inherit;
+    display:inline-flex; align-items:center; gap:7px; min-height:36px;
+    transition:background .16s var(--ease), border-color .16s var(--ease), transform .08s var(--ease), box-shadow .16s var(--ease);
+  }
+  button:hover:not(:disabled) { border-color:var(--line-strong); background:var(--panel3); transform:translateY(-1px); box-shadow:var(--shadow); }
+  button:active:not(:disabled) { transform:translateY(0) scale(.985); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  button svg { width:15px; height:15px; flex:0 0 auto; }
+  button.primary {
+    background:linear-gradient(180deg,#6aa0ff,var(--accent-strong));
+    border-color:var(--accent-strong); color:#fff;
+    box-shadow:0 6px 18px -10px rgba(91,147,255,.9), inset 0 1px 0 rgba(255,255,255,.25);
+  }
+  button.primary:hover:not(:disabled) { background:linear-gradient(180deg,#7aabff,#4a86f2); border-color:var(--accent); }
+  button.danger { background:rgba(255,97,105,.08); border-color:rgba(255,97,105,.45); color:#ffb4b6; }
+  button.danger:hover:not(:disabled) { background:rgba(255,97,105,.15); border-color:var(--err); }
+
+  label.chk {
+    display:inline-flex; align-items:center; gap:7px; cursor:pointer; color:var(--fg-dim);
+    font-size:var(--fs-sm); padding:6px 10px; border-radius:var(--r-sm);
+    border:1px solid transparent; transition:background .16s var(--ease), border-color .16s var(--ease);
+    user-select:none;
+  }
+  label.chk:hover { background:var(--panel2); border-color:var(--line); }
+  input[type=checkbox] { width:15px; height:15px; accent-color:var(--accent); cursor:pointer; }
+
+  /* ---- Tables ----------------------------------------------------------- */
+  .card {
+    background:linear-gradient(180deg, rgba(22,31,48,.6), rgba(17,24,39,.5));
+    border:1px solid var(--line); border-radius:var(--r-lg);
+    box-shadow:var(--shadow); overflow:hidden;
+  }
+  /* Wide tables scroll inside their card instead of pushing the page sideways. */
+  .card { overflow-x:auto; }
+  table { width:100%; border-collapse:separate; border-spacing:0; font-size:var(--fs); }
+  th, td { text-align:left; padding:11px 14px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  thead th {
+    color:var(--muted); font-weight:600; font-size:var(--fs-sm); position:sticky; top:0; z-index:2;
+    background:linear-gradient(180deg,#182134,#141c2c);
+    letter-spacing:.02em; text-transform:none;
+  }
+  tbody tr { transition:background .14s var(--ease); }
+  tbody tr:hover { background:rgba(91,147,255,.05); }
+  tbody tr:last-child td { border-bottom:none; }
+  tbody tr.sel { background:rgba(91,147,255,.12); }
+  tbody tr.sel:hover { background:rgba(91,147,255,.16); }
+  td strong { font-weight:600; color:#fff; }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:var(--fs-xs); color:var(--muted); }
+  .num { font-variant-numeric:tabular-nums; }
+
+  /* ---- Pills / status --------------------------------------------------- */
+  .pill {
+    display:inline-flex; align-items:center; gap:6px;
+    padding:2px 9px; border-radius:var(--r-pill); font-size:var(--fs-xs);
+    font-weight:600; letter-spacing:.02em; white-space:nowrap;
+    border:1px solid transparent;
+  }
+  .pill::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; opacity:.9; }
+  .pill.OK { background:var(--ok-bg); color:var(--ok); border-color:rgba(61,220,132,.28); }
+  .pill.SKIP { background:var(--skip-bg); color:var(--skip); border-color:rgba(132,148,173,.28); }
+  .pill.FAIL { background:var(--err-bg); color:var(--err); border-color:rgba(255,97,105,.3); }
+  .pill.CLEANED { background:var(--info-bg); color:var(--info); border-color:rgba(111,179,255,.3); }
+  .pill.CLEAN-FAIL { background:var(--err-bg); color:var(--err); border-color:rgba(255,97,105,.3); }
+  .pill.running { background:var(--info-bg); color:var(--info); border-color:rgba(111,179,255,.3); }
+  .pill.running::before { animation:pulse 1.3s var(--ease) infinite; }
+  @keyframes pulse { 0%,100%{opacity:1; transform:scale(1);} 50%{opacity:.35; transform:scale(.7);} }
+
   .muted { color:var(--muted); }
-  .sec { margin-top:22px; }
-  .sec h2 { font-size:14px; margin:0 0 10px; color:var(--muted); font-weight:600; }
-  .empty { color:var(--muted); padding:30px 0; text-align:center; }
-  .errbox { background:#3a1f22; color:#ffb4b6; padding:10px 12px; border-radius:8px; margin-bottom:12px; }
-  label.chk { display:inline-flex; align-items:center; gap:6px; cursor:pointer; }
-  input[type=checkbox]{ width:15px;height:15px; }
-  #tasklog { font-family:ui-monospace,Menlo,monospace; font-size:12px; background:#0b0f18;
-             border:1px solid var(--line); border-radius:8px; padding:10px; max-height:260px; overflow:auto; }
+  .faint { color:var(--faint); }
+  .warn-txt { color:var(--warn); font-size:var(--fs-sm); }
+
+  /* ---- Sections --------------------------------------------------------- */
+  .sec { margin-top:26px; }
+  .sec > h2 {
+    font-size:var(--fs-sm); margin:0 0 12px; color:var(--fg-dim); font-weight:650;
+    display:flex; align-items:center; gap:9px; letter-spacing:.02em;
+  }
+  .sec > h2::before { content:""; width:3px; height:15px; border-radius:2px; background:var(--accent); box-shadow:0 0 10px rgba(91,147,255,.6); }
+  .sec > h2 .muted { font-weight:500; }
+
+  .empty {
+    color:var(--muted); padding:34px 16px; text-align:center; font-size:var(--fs-sm);
+    border:1px dashed var(--line); border-radius:var(--r-lg); background:rgba(22,31,48,.35);
+  }
+  .errbox {
+    background:var(--err-bg); color:#ffc2c5; padding:11px 14px; border-radius:var(--r);
+    margin-bottom:12px; border:1px solid rgba(255,97,105,.35); font-size:var(--fs-sm);
+    display:flex; gap:9px; align-items:flex-start;
+  }
+  .errbox::before { content:"⚠"; color:var(--err); flex:0 0 auto; }
+
+  #tasklog {
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:var(--fs-xs);
+    background:#070b12; border:1px solid var(--line); border-radius:var(--r); padding:12px 14px;
+    max-height:280px; overflow:auto; color:#a9b6cd; line-height:1.65;
+    box-shadow:inset 0 1px 3px rgba(0,0,0,.5);
+  }
+
+  /* Scrollbars */
+  * { scrollbar-width:thin; scrollbar-color:#2a3852 transparent; }
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-thumb { background:#2a3852; border-radius:999px; border:2px solid transparent; background-clip:content-box; }
+  ::-webkit-scrollbar-thumb:hover { background:#39507a; background-clip:content-box; }
+
+  /* Reduced motion */
+  @media (prefers-reduced-motion:reduce) {
+    * { transition:none !important; animation:none !important; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>local-path → OSS 迁移控制台</h1>
-  <span class="badge" id="selfBadge">本机节点: …</span>
+  <div class="brand">
+    <span class="logo" aria-hidden="true">O</span>
+    <h1>local-path <span class="sub">→ OSS 迁移控制台</span></h1>
+  </div>
+  <span class="badge" id="selfBadge"><span class="dot on" aria-hidden="true"></span>本机节点: …</span>
   <span class="meta" id="ossInfo"></span>
+  <span class="spacer"></span>
+  <label class="chk" title="只演练，不上传、不删除">
+    <input type="checkbox" id="optDry" /> 演练 dry-run
+  </label>
+  <label class="chk" title="忽略远端已有数据，覆盖上传">
+    <input type="checkbox" id="optForce" /> 强制覆盖
+  </label>
+  <label class="chk" title="迁移成功后删除 ws/PV/PVC，保留本地目录">
+    <input type="checkbox" id="optCleanup" /> 迁移后清理
+  </label>
+  <button id="btnLogout" title="退出登录" style="margin-left:4px">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
+    退出
+  </button>
 </header>
 <main>
-  <div id="nodes"><div class="empty">加载节点…</div></div>
+  <div id="nodes">
+    <div class="side-label">节点</div>
+    <div class="empty" style="margin:0">加载节点…</div>
+  </div>
   <div id="content">
     <div id="err"></div>
+
     <div class="toolbar">
-      <strong id="curNode">请选择左侧节点</strong>
-      <span class="muted" id="wsCount"></span>
-      <span style="flex:1"></span>
+      <span class="title" id="curNode">请选择左侧节点</span>
+      <span class="count" id="wsCount"></span>
+      <span class="grow"></span>
       <button id="btnSelectAll" disabled>全选</button>
       <button id="btnNone" disabled>取消全选</button>
-      <button id="btnRefresh" disabled>刷新</button>
-      <label class="chk"><input type="checkbox" id="optDry" /> 演练(dry-run)</label>
-      <label class="chk"><input type="checkbox" id="optForce" /> 强制覆盖(force)</label>
-      <label class="chk"><input type="checkbox" id="optCleanup" /> 迁移后清理(删除 ws/PV/PVC，保留本地目录)</label>
+      <button id="btnRefresh" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+        刷新
+      </button>
     </div>
+
     <div id="wsWrap"><div class="empty">选择节点后显示该节点的 workspace</div></div>
-    <div class="toolbar" style="margin-top:14px">
-      <button class="primary" id="btnMigrate" disabled>迁移选中</button>
-      <button class="danger" id="btnCleanupOnly" disabled>仅清理选中(已迁移)</button>
+
+    <div class="toolbar" style="margin-top:16px">
+      <button class="primary" id="btnMigrate" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+        迁移 oss
+      </button>
+      <button id="btnInspect" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        查看资源 local-path PV/PVC
+      </button>
+      <button class="danger" id="btnCleanupOnly" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+        删除 resource
+      </button>
+    </div>
+
+    <div class="sec" id="resourceSec" style="display:none">
+      <h2>local-path 资源 <span class="muted" id="resourceHint"></span></h2>
+      <div id="resourceRes" class="card"></div>
+    </div>
+
+    <div class="sec" id="cleanupSec" style="display:none">
+      <h2>清理结果</h2>
+      <div id="cleanupRes" class="card" style="padding:14px"></div>
     </div>
 
     <div class="sec">
@@ -115,6 +343,7 @@ function showErr(m){ const e=document.getElementById('err'); e.innerHTML = m ? `
 
 async function jget(url){
   const r = await fetch(url, {cache:'no-store'});
+  if(r.status === 401){ goLogin(); throw new Error('登录已过期'); }
   const t = await r.text();
   let d; try { d = t ? JSON.parse(t) : {}; } catch { throw new Error(`HTTP ${r.status}: ${t.slice(0,200)}`); }
   if(!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
@@ -122,10 +351,16 @@ async function jget(url){
 }
 async function jpost(url, body){
   const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body||{})});
+  if(r.status === 401){ goLogin(); throw new Error('登录已过期'); }
   const t = await r.text();
   let d; try { d = t ? JSON.parse(t) : {}; } catch { throw new Error(`HTTP ${r.status}: ${t.slice(0,200)}`); }
   if(!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
   return d;
+}
+// goLogin bounces the browser to the login page, preserving the current URL.
+function goLogin(){
+  const base = BASE;
+  location.href = base + 'login?next=' + encodeURIComponent(location.pathname + location.search);
 }
 
 async function init(){
@@ -139,7 +374,7 @@ async function init(){
     if(m) SELF = m[1];
   }
   if(!SELF){ showErr('无法确定本机节点(NODE_NAME)，请确认部署环境变量已设置'); return; }
-  document.getElementById('selfBadge').textContent = '本机节点: ' + SELF;
+  document.getElementById('selfBadge').innerHTML = '<span class="dot on" aria-hidden="true"></span>本机节点: <b>' + esc(SELF) + '</b>';
   await loadNodes();
   await loadLogs();
   schedulePoll();
@@ -167,6 +402,10 @@ async function loadNodes(){
 
 async function selectNode(name){
   CUR = name; SELECTED.clear();
+  // Reset the read-only resource + cleanup panels when switching nodes so stale
+  // results from another node never linger.
+  { const rs = document.getElementById('resourceSec'); if(rs) rs.style.display='none';
+    const cs = document.getElementById('cleanupSec'); if(cs) cs.style.display='none'; }
   document.querySelectorAll('#nodes .n').forEach(el=>el.classList.toggle('active', el.dataset.name===name));
   document.getElementById('curNode').textContent = '节点: ' + name;
   ['btnSelectAll','btnNone','btnRefresh'].forEach(id=>document.getElementById(id).disabled=false);
@@ -183,16 +422,17 @@ async function loadWorkspaces(){
     const d = await jget(API(CUR)+'api/workspaces');
     WS = d.workspaces || [];
     // Prune selection to ids that still exist in the freshly loaded list, so a
-    // workspace removed (e.g. by "仅清理选中") does not linger as a stale
+    // workspace removed (e.g. by "删除 resource") does not linger as a stale
     // selection and the buttons don't keep advertising a phantom count.
     { const live = new Set(WS.map(w => w.id));
       [...SELECTED].forEach(id => { if(!live.has(id)) SELECTED.delete(id); }); }
     document.getElementById('wsCount').textContent = `共 ${WS.length} 个 workspace`;
     if(!WS.length){ wrap.innerHTML = '<div class="empty">该节点 local-path 下没有 workspace</div>'; syncRows(); return; }
     wrap.innerHTML = `
+      <div class="card">
       <table>
         <thead><tr>
-          <th style="width:36px"><input type="checkbox" id="thAll" /></th>
+          <th style="width:44px"><input type="checkbox" id="thAll" /></th>
           <th>Workspace</th><th>子目录</th><th>大小</th><th>文件数</th><th>本地目录</th>
         </tr></thead>
         <tbody>
@@ -200,13 +440,14 @@ async function loadWorkspaces(){
           <tr data-id="${esc(w.id)}">
             <td><input type="checkbox" class="rowchk" data-id="${esc(w.id)}" /></td>
             <td><strong>${esc(w.name)}</strong></td>
-            <td class="muted">${esc((w.subdirs||[]).join(', ')||'-')}</td>
-            <td>${fmtSize(w.sizeBytes)}</td>
-            <td>${w.files??'-'}</td>
-            <td class="muted" style="font-family:monospace;font-size:11px">${esc(w.dir)}</td>
+            <td class="muted">${(w.subdirs||[]).map(s=>`<span class="pill SKIP">${esc(s)}</span>`).join(' ')||'-'}</td>
+            <td class="num">${fmtSize(w.sizeBytes)}</td>
+            <td class="num">${w.files??'-'}</td>
+            <td class="mono">${esc(w.dir)}</td>
           </tr>`).join('')}
         </tbody>
-      </table>`;
+      </table>
+      </div>`;
     wrap.querySelectorAll('.rowchk').forEach(chk=>{
       chk.onchange = ()=>{ chk.checked ? SELECTED.add(chk.dataset.id) : SELECTED.delete(chk.dataset.id); syncRows(); };
     });
@@ -228,9 +469,11 @@ function syncRows(){
 function updateButtons(){
   const n = SELECTED.size;
   document.getElementById('btnMigrate').disabled = !CUR || n===0;
+  document.getElementById('btnInspect').disabled = !CUR || n===0;
   document.getElementById('btnCleanupOnly').disabled = !CUR || n===0;
-  document.getElementById('btnMigrate').textContent = n ? `迁移选中 (${n})` : '迁移选中';
-  document.getElementById('btnCleanupOnly').textContent = n ? `仅清理选中 (${n})` : '仅清理选中(已迁移)';
+  document.getElementById('btnMigrate').textContent = n ? `迁移 oss (${n})` : '迁移 oss';
+  document.getElementById('btnInspect').textContent = n ? `查看资源 (${n})` : '查看资源(local-path PV/PVC)';
+  document.getElementById('btnCleanupOnly').textContent = n ? `删除 resource (${n})` : '删除 resource';
 }
 
 async function doMigrate(){
@@ -257,28 +500,103 @@ async function doCleanupOnly(){
   if(!CUR || !SELECTED.size) return;
   const ids = [...SELECTED];
   const dry = document.getElementById('optDry').checked;
-  let msg = `将清理节点 ${CUR} 上 ${ids.length} 个 workspace 的 CR/PVC/PV（本地目录保留）。\n仅当 PVC 为 local-path 且已迁移成功（日志 OK 或 OSS 有数据）时才会删除。`;
+  let msg = `将删除节点 ${CUR} 上 ${ids.length} 个 workspace 的 resource：Workspace CR / PVC / PV（本地目录保留）。\n仅当 PVC 为 local-path 且已迁移成功（日志 OK 或 OSS 有数据）时才会删除。`;
   if(dry) msg += '\n\n[演练模式] 只显示将删除的内容，不实际删除。';
   msg += '\n\n此操作不可恢复，确认继续？';
   if(!confirm(msg)) return;
   showErr('');
   try {
     const d = await jpost(API(CUR)+'api/migrate/cleanup', {ids, dryRun:dry});
-    renderCleanup(d.results||[]);
+    const results = d.results || [];
+    renderCleanup(results);
+    // Deselect the processed ids so the button no longer advertises a phantom
+    // count. Cleanup intentionally keeps the local directory, so a processed
+    // workspace still appears in the next ListLocal() scan; without this the
+    // selection (and the "(N)" on the button) would linger until a full reload.
+    const processed = new Set(results.map(r => r.workspace));
+    ids.forEach(id => { if(processed.has(makeWsName(id))) SELECTED.delete(id); });
+    // The resource view is now stale (those PV/PVC/CR were just processed).
+    { const rs = document.getElementById('resourceSec'); if(rs) rs.style.display='none'; }
     await loadWorkspaces();
+    syncRows();
   } catch(e){ showErr('清理失败: '+e.message); }
 }
 
+// makeWsName maps a bare/loose id (e.g. 9660946 or ws-9660946) to the
+// "ws-<id>" form used by CleanupResult.workspace, mirroring the backend.
+function makeWsName(id){
+  let s = String(id ?? '').trim();
+  if(s.endsWith('/')) s = s.slice(0, -1);
+  const slash = s.lastIndexOf('/'); if(slash >= 0) s = s.slice(slash + 1);
+  const us = s.lastIndexOf('_ws-'); if(us >= 0) s = s.slice(us + 4);
+  s = s.replace(/^ws-/, '').replace(/-pvc$/, '');
+  return 'ws-' + s;
+}
+
 function renderCleanup(results){
-  const box = document.getElementById('tasks');
-  if(!results.length){ box.innerHTML='<div class="empty">无清理结果</div>'; return; }
-  box.innerHTML = `<div class="sec" style="margin-top:0"><h2>清理结果</h2>` +
-    results.map(r=>`<div style="margin-bottom:8px">
-      <span class="pill ${r.status}">${esc(r.status)}</span> <strong>${esc(r.workspace)}</strong>
-      ${r.dryRun?'<span class="muted">(dry-run)</span>':''}
-      ${r.error?`<div class="errbox" style="margin-top:6px">${esc(r.error)}</div>`:''}
-      ${(r.actions||[]).length?`<ul class="muted" style="margin:6px 0 0 18px">${r.actions.map(a=>`<li>${esc(a)}</li>`).join('')}</ul>`:''}
-    </div>`).join('') + `</div>`;
+  const sec = document.getElementById('cleanupSec');
+  const box = document.getElementById('cleanupRes');
+  if(!results.length){ box.style.padding='14px'; box.innerHTML='<div class="empty">无清理结果</div>'; sec.style.display=''; return; }
+  const ok = results.filter(r=>r.status==='OK').length;
+  const fail = results.length - ok;
+  box.style.padding='14px 16px';
+  box.innerHTML = `<div class="muted" style="margin-bottom:12px">共 ${results.length} 个：<span style="color:var(--ok)">成功 ${ok}</span>，<span style="color:var(--err)">失败 ${fail}</span></div>` +
+    results.map(r=>`<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--line)">
+      <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+        <span class="pill ${esc(r.status)}">${esc(r.status)}</span> <strong>${esc(r.workspace)}</strong>
+        ${r.dryRun?'<span class="pill SKIP">dry-run</span>':''}
+      </div>
+      ${r.error?`<div class="errbox" style="margin-top:8px">原因: ${esc(r.error)}</div>`:''}
+      ${(r.actions||[]).length?`<ul class="muted" style="margin:8px 0 0 18px;font-size:var(--fs-sm)">${r.actions.map(a=>`<li>${esc(a)}</li>`).join('')}</ul>`:''}
+    </div>`).join('');
+  sec.style.display='';
+}
+
+async function doInspect(){
+  if(!CUR || !SELECTED.size) return;
+  const ids = [...SELECTED];
+  showErr('');
+  try {
+    const d = await jpost(API(CUR)+'api/migrate/resources', {ids});
+    renderResources(d.results||[]);
+  } catch(e){ showErr('查询资源失败: '+e.message); }
+}
+
+function renderResources(results){
+  const sec = document.getElementById('resourceSec');
+  const box = document.getElementById('resourceRes');
+  const hint = document.getElementById('resourceHint');
+  sec.style.display='';
+  if(!results.length){ box.style.padding='14px'; box.innerHTML='<div class="empty">无结果</div>'; hint.textContent=''; return; }
+  box.style.padding='0';
+  const dash = '<span class="faint">无</span>';
+  let rows = results.map(r=>{
+    const cr = r.crFound ? `<span class="mono">${esc(r.crNamespace||'')}/${esc(r.crName||'')}</span>` : dash;
+    const pvc = r.pvcFound
+      ? `<strong>${esc(r.pvcNamespace||'')}/${esc(r.pvcName||'')}</strong><br/>
+         <span class="muted" style="font-size:var(--fs-xs)">sc=${esc(r.pvcStorageClass||'(默认)')} · ${esc(r.pvcPhase||'-')} · vol=${esc(r.pvcVolumeName||'-')}</span>
+         ${r.pvcLocalPathOK?'':'<div class="warn-txt">非 local-path</div>'}`
+      : dash;
+    const pv = r.pvFound
+      ? `<strong>${esc(r.pvName||'')}</strong><br/>
+         <span class="muted" style="font-size:var(--fs-xs)">${esc(r.pvDriver||r.pvLocalPathA||'-')} · reclaim=${esc(r.pvReclaim||'-')}</span>
+         ${r.pvLocalPath?'':'<div class="warn-txt">非 local-path 卷</div>'}
+         ${r.pvLocalPathA?`<div class="mono">${esc(r.pvLocalPathA)}</div>`:''}`
+      : dash;
+    const badge = (r.pvcFound||r.pvFound) ? '<span class="pill OK">有</span>' : '<span class="pill SKIP">无</span>';
+    return `<tr>
+      <td>${badge}</td>
+      <td><strong>${esc(r.workspace)}</strong>${r.note?`<div class="muted" style="font-size:var(--fs-xs)">${esc(r.note)}</div>`:''}</td>
+      <td class="muted">${cr}</td>
+      <td>${pvc}</td>
+      <td>${pv}</td>
+    </tr>`;
+  }).join('');
+  const withRes = results.filter(r=>r.pvcFound||r.pvFound).length;
+  hint.textContent = `共 ${results.length} 个 · 含资源 ${withRes} 个`;
+  box.innerHTML = `<table><thead><tr>
+    <th style="width:60px">占用</th><th>Workspace</th><th>Workspace CR</th><th>PVC</th><th>PV</th>
+  </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 let lastTask = null;
@@ -292,33 +610,33 @@ async function loadTasks(){
     if(!tasks.length){ box.innerHTML='<div class="empty">暂无任务</div>'; return; }
     const t = tasks[0];
     const items = t.items||[];
-    let html = `<div class="muted">任务 ${esc(t.id)} · <span class="pill ${t.status==='running'?'running':'OK'}">${esc(t.status)}</span>
-      开始 ${esc(t.startedAt)} ${t.running?('· 处理中: '+esc(t.running)):''}</div>`;
+    let html = `<div class="card" style="padding:14px 16px"><div class="muted">任务 ${esc(t.id)} · <span class="pill ${t.status==='running'?'running':'OK'}">${esc(t.status)}</span>
+      开始 ${esc(t.startedAt)} ${t.running?('· 处理中: '+esc(t.running)):''}</div></div>`;
     if(items.length){
-      html += `<table style="margin-top:8px"><thead><tr>
+      html += `<div class="card" style="margin-top:12px"><table><thead><tr>
         <th>Workspace</th><th>状态</th><th>已同步子目录</th><th>跳过/排除/缺失</th><th>大小</th><th>文件</th><th>说明</th><th>耗时</th>
       </tr></thead><tbody>` +
         items.map(it=>`<tr>
           <td><strong>${esc(it.workspace)}</strong></td>
           <td><span class="pill ${it.status}">${esc(it.status)}</span></td>
           <td>${(it.synced && it.synced.length)?it.synced.map(s=>`<span class="pill OK">${esc(s)}</span>`).join(' '):(it.dirs?esc(it.dirs):'-')}</td>
-          <td class="muted" style="font-size:12px">${
+          <td class="muted" style="font-size:var(--fs-xs)">${
             [
               ...(it.skipped||[]).map(s=>`<span class="pill SKIP">${esc(s)}</span>`),
               ...(it.missing||[]).map(m=>`<span class="pill FAIL">缺失:${esc(m)}</span>`)
             ].join(' ') || '-'
           }</td>
-          <td>${esc(it.size)}</td><td>${esc(it.files)}</td>
+          <td class="num">${esc(it.size)}</td><td class="num">${esc(it.files)}</td>
           <td class="muted">${esc(it.note||'')}</td><td class="muted">${esc(it.elapsed||'')}</td>
         </tr>`).join('') +
-        `</tbody></table>`;
+        `</tbody></table></div>`;
     }
     if((t.cleanups||[]).length){
-      html += `<div class="muted" style="margin-top:8px">清理: ` + t.cleanups.map(c=>`${esc(c.workspace)}:${esc(c.status)}`).join(' , ') + `</div>`;
+      html += `<div class="muted" style="margin-top:8px;padding-left:2px">清理: ` + t.cleanups.map(c=>`${esc(c.workspace)}:${esc(c.status)}`).join(' , ') + `</div>`;
     }
     if((t.logs||[]).length){
       html += `<div style="margin-top:12px">
-        <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px">任务控制台实时日志</div>
+        <div style="font-size:var(--fs-xs);font-weight:600;color:var(--muted);margin-bottom:7px;letter-spacing:.03em">任务控制台实时日志</div>
         <div id="tasklog">${t.logs.map(l=>esc(l)).join('<br/>')}</div>
       </div>`;
     }
@@ -336,12 +654,12 @@ async function loadLogs(){
     const rows = d.rows||[];
     const box = document.getElementById('logRows');
     if(!rows.length){ box.innerHTML='<div class="empty">暂无日志</div>'; return; }
-    box.innerHTML = `<table><thead><tr><th>时间</th><th>状态</th><th>Workspace</th><th>子目录</th><th>大小</th><th>文件</th><th>说明</th></tr></thead><tbody>` +
-      rows.slice(0,200).map(r=>`<tr><td class="muted">${esc(r.time)}</td>
+    box.innerHTML = `<div class="card"><table><thead><tr><th>时间</th><th>状态</th><th>Workspace</th><th>子目录</th><th>大小</th><th>文件</th><th>说明</th></tr></thead><tbody>` +
+      rows.slice(0,200).map(r=>`<tr><td class="mono">${esc(r.time)}</td>
         <td><span class="pill ${esc(r.status)}">${esc(r.status)}</span></td>
         <td><strong>${esc(r.workspace)}</strong></td><td class="muted">${esc(r.dirs)}</td>
-        <td>${esc(r.size)}</td><td>${esc(r.files)}</td><td class="muted">${esc(r.note)}</td></tr>`).join('') +
-      `</tbody></table>`;
+        <td class="num">${esc(r.size)}</td><td class="num">${esc(r.files)}</td><td class="muted">${esc(r.note)}</td></tr>`).join('') +
+      `</tbody></table></div>`;
   } catch(e){ /* ignore */ }
 }
 
@@ -358,7 +676,9 @@ document.getElementById('btnSelectAll').onclick = ()=>{ WS.forEach(w=>SELECTED.a
 document.getElementById('btnNone').onclick = ()=>{ SELECTED.clear(); syncRows(); };
 document.getElementById('btnRefresh').onclick = ()=>{ loadWorkspaces(); loadTasks(); loadLogs(); };
 document.getElementById('btnMigrate').onclick = doMigrate;
+document.getElementById('btnInspect').onclick = doInspect;
 document.getElementById('btnCleanupOnly').onclick = doCleanupOnly;
+document.getElementById('btnLogout').onclick = ()=>{ location.href = BASE + 'logout'; };
 
 init();
 </script>
