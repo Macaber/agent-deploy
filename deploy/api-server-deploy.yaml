@@ -1,6 +1,7 @@
-# WARNING (2026-11-17): snapshot is STALE vs production (image tags date to 11-06/11-10 test builds).
-# Do NOT apply for upgrades until refreshed from live cluster state.
-# For the 2026-11-20 rollout use docs/egress-production-runbook.md steps 8-9 (kubectl set image) instead.
+# NOTE (2026-11-18): image tag refreshed to v1.0.41 (includes batch-restart feature);
+# batch-restart RBAC appended at the end of this file.
+# Snapshot fields may still drift vs live cluster state — run kubectl diff and
+# reconcile before any full upgrade apply; see docs/egress-production-runbook.md.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -72,7 +73,7 @@ spec:
             app: api-server
       containers:
       - name: api-server
-        image: api-server:egress-unified-20261110-ip # 建议根据实际私有镜像仓库重命名，如 myharbor.local/library/api-server:egress-unified-20261110-ip
+        image: api-server:v1.0.41 # 建议根据实际私有镜像仓库重命名，如 myharbor.local/library/api-server:v1.0.41
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 3000
@@ -215,3 +216,34 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: api-server-egress
+---
+# 批量重启：任务状态与跨副本停止信号通过 default 命名空间的 ConfigMap 协调。
+# 现网部署可用追加命令把本段拼到既有 yaml 末尾（幂等），见投产手册。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: api-server-batch-restart
+  namespace: default
+rules:
+# Kubernetes RBAC cannot restrict create by resourceName.
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["api-server-batch-restart"]
+  verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: api-server-batch-restart
+  namespace: default
+subjects:
+- kind: ServiceAccount
+  name: api-server-sa
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: api-server-batch-restart

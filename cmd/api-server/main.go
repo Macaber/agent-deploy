@@ -102,6 +102,7 @@ func main() {
 	http.HandleFunc("/api/workspaces", workspaceRouter(k8sClient, workspaceCache))
 	http.HandleFunc("/api/workspaces/stop", stopWorkspaceHandler(k8sClient))
 	http.HandleFunc("/api/workspaces/wakeup", wakeupWorkspaceHandler(k8sClient, workspaceCache))
+	http.HandleFunc("/api/workspaces/batch-restart", batchRestartHandler(ctx, k8sClient, workspaceCache))
 
 	port := os.Getenv("PORT")
 	if port == "" {

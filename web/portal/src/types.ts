@@ -144,5 +144,35 @@ export interface ConfirmRequest {
 }
 
 export type DirectoryFilter = 'all' | 'running' | 'idle' | 'failed';
-export type MainTab = 'directory' | 'studio' | 'egress';
+export type MainTab = 'directory' | 'studio' | 'egress' | 'batch';
 export type InspectorTab = 'json' | 'yaml' | 'curl';
+
+export interface BatchFailedSample {
+  name: string;
+  error?: string;
+}
+
+export interface BatchStatus {
+  active: boolean;
+  state: 'none' | 'running' | 'stopping' | 'completed' | 'stopped' | string;
+  orphaned: boolean;
+  serverTime: string;
+  timezone: string;
+  namespace?: string;
+  image?: string;
+  total: number;
+  pending: number;
+  submitted: number;
+  running: number;
+  stopped: number;
+  failed: number;
+  skipped: number;
+  inFlight: number;
+  batchSize?: number;
+  wakeWindow?: string;
+  startTime?: string;
+  deadline?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  failedSamples?: BatchFailedSample[];
+}

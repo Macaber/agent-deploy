@@ -381,6 +381,9 @@
 .studio-section[data-section="环境变量"] { --section-ink: #d9480f; --section-tint: #fdf0ec; --section-wash: rgb(217 72 15 / .07); }
 .studio-section[data-section="初始化容器"],
 .studio-section[data-section="启动命令与生命周期"] { --section-ink: #5f3dc4; --section-tint: #f1edfb; --section-wash: rgb(95 61 196 / .07); }
+.studio-section[data-section="任务进度"] { --section-ink: #2f9e44; --section-tint: #ebfbee; --section-wash: rgb(47 158 68 / .07); }
+.studio-section[data-section="编排参数"] { --section-ink: #0c8599; --section-tint: #e7f4f6; --section-wash: rgb(12 133 153 / .07); }
+.studio-section[data-section="Workspace 模板"] { --section-ink: #d9480f; --section-tint: #fdf0ec; --section-wash: rgb(217 72 15 / .07); }
 .studio-section [role="list"] { gap: 0; }
 .studio-section [role="listitem"] {
  border: 0; border-block-end: 1px solid var(--border); border-radius: .375rem;
@@ -412,4 +415,7 @@
 .dark .studio-section[data-section="环境变量"] { --section-ink: #ffa94d; --section-tint: #33210f; }
 .dark .studio-section[data-section="初始化容器"],
 .dark .studio-section[data-section="启动命令与生命周期"] { --section-ink: #b197fc; --section-tint: #231d3a; }
+.dark .studio-section[data-section="任务进度"] { --section-ink: #69db7c; --section-tint: #11291a; }
+.dark .studio-section[data-section="编排参数"] { --section-ink: #66d9e3; --section-tint: #102a30; }
+.dark .studio-section[data-section="Workspace 模板"] { --section-ink: #ffa94d; --section-tint: #33210f; }
 .dark .studio-section:hover { box-shadow: 0 6px 20px rgb(0 0 0 / .4), 0 1px 3px rgb(0 0 0 / .3); }

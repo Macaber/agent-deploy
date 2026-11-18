@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from 'motion/react';
-import { LayoutGrid, ShieldCheck, SlidersHorizontal } from 'lucide-react';
+import { LayoutGrid, RotateCw, ShieldCheck, SlidersHorizontal } from 'lucide-react';
 import { useApp } from '@/store';
 import { cn } from '@/lib/utils';
 import type { MainTab } from '@/types';
@@ -8,6 +8,7 @@ const NAV_ITEMS: Array<{ value: MainTab; label: string; icon: typeof LayoutGrid 
   { value: 'directory', label: '工作空间', icon: LayoutGrid },
   { value: 'studio', label: '编排设计器', icon: SlidersHorizontal },
   { value: 'egress', label: '出站白名单', icon: ShieldCheck },
+  { value: 'batch', label: '批量重启', icon: RotateCw },
 ];
 
 export function Sidebar() {

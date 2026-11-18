@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { useApp } from '@/store';
 import { EgressView } from '@/components/egress-view';
+import { BatchRestartView } from '@/components/batch-restart-view';
 import { Header } from '@/components/header';
 import { Sidebar } from '@/components/sidebar';
 import { DirectoryView } from '@/components/directory/directory-view';
@@ -51,7 +52,15 @@ export default function App() {
               exit={reduce ? { opacity: 0 } : { opacity: 0, y: -3 }}
               transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
             >
-              {tab === 'egress' ? <EgressView /> : tab === 'directory' ? <DirectoryView /> : <StudioView />}
+              {tab === 'egress' ? (
+                <EgressView />
+              ) : tab === 'batch' ? (
+                <BatchRestartView />
+              ) : tab === 'directory' ? (
+                <DirectoryView />
+              ) : (
+                <StudioView />
+              )}
             </motion.div>
           </AnimatePresence>
           </main>
