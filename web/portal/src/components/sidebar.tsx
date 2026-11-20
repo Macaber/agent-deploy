@@ -42,7 +42,7 @@ export function Sidebar() {
                   transition={reduce ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 38 }}
                 />
               )}
-              <Icon className="size-4 shrink-0" strokeWidth={1.9} />
+              <Icon className="size-4 shrink-0" strokeWidth={1.5} />
               {item.label}
             </button>
           );

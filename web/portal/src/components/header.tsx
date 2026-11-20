@@ -2,6 +2,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Boxes, LogOut, Moon, Sun } from 'lucide-react';
 import { useApp } from '@/store';
 import { Button } from '@/components/ui/button';
+import { AnimatedNumber } from '@/components/ui/motion';
 
 export function Header() {
   const theme = useApp((state) => state.theme);
@@ -28,7 +29,7 @@ export function Header() {
           aria-label="返回工作空间列表"
         >
           <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-border bg-secondary text-foreground shadow-xs">
-            <Boxes className="size-4" strokeWidth={1.9} />
+            <Boxes className="size-4" strokeWidth={1.5} />
           </span>
           <span className="flex min-w-0 flex-col">
             <span className="truncate text-[13px] font-semibold leading-tight tracking-tight">
@@ -52,7 +53,9 @@ export function Header() {
           >
             <span className="size-1.5 rounded-full bg-success status-pulse" aria-hidden="true" />
             运行中
-            <span className="tabular-nums font-semibold">{running}</span>
+            <span className="tabular-nums font-semibold">
+              <AnimatedNumber value={running} />
+            </span>
           </button>
 
           <Button
@@ -71,7 +74,7 @@ export function Header() {
                 transition={{ duration: 0.16 }}
                 className="inline-flex"
               >
-                {theme === 'dark' ? <Moon className="size-4" /> : <Sun className="size-4" />}
+                {theme === 'dark' ? <Moon className="size-4" strokeWidth={1.5} /> : <Sun className="size-4" strokeWidth={1.5} />}
               </motion.span>
             </AnimatePresence>
           </Button>
@@ -91,7 +94,7 @@ export function Header() {
                 })
               }
             >
-              <LogOut className="size-4" />
+              <LogOut className="size-4" strokeWidth={1.5} />
             </Button>
           )}
         </div>

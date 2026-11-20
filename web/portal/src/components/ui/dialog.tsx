@@ -87,7 +87,7 @@ export function Modal({
                         aria-label="关闭"
                         className="absolute right-3.5 top-3.5 grid size-7 place-items-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40"
                       >
-                        <X className="size-4" />
+                        <X className="size-4" strokeWidth={1.5} />
                       </button>
                     </DialogPrimitive.Close>
                   )}

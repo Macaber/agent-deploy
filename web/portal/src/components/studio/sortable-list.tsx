@@ -119,7 +119,7 @@ function SortableRow({
         aria-label="拖拽调整顺序"
         className="drag-handle mt-0.5 grid size-7 shrink-0 place-items-center rounded text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40"
       >
-        <GripVertical className="size-3.5" />
+        <GripVertical className="size-3.5" strokeWidth={1.5} />
       </button>
       <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">{children}</div>
     </div>
