@@ -48,10 +48,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	aiv1alpha1 "github.com/example/workspace-operator/api/v1alpha1"
 	"github.com/example/workspace-operator/internal/egress"
@@ -107,6 +105,14 @@ type WorkspaceReconciler struct {
 	ActiveInstancesSyncInterval time.Duration
 	// backfillStartedAtOnce ensures historical Workspaces missing StartedAt are backfilled only once on startup.
 	backfillStartedAtOnce sync.Once
+	// migrationCleanupDone caches namespaces whose legacy-egress cleanup has
+	// fully converged (no Pods or Deployment templates carry the old migration
+	// labels and the legacy policies are gone). Re-checking used to run on
+	// every Workspace reconcile and listed every Pod and Deployment in the
+	// namespace; the marker turns that into at most one confirmation scan per
+	// namespace per process. Losing the marker on restart is safe: the scan is
+	// idempotent and simply re-converges.
+	migrationCleanupDone sync.Map
 }
 
 // +kubebuilder:rbac:groups=ai.example.com,resources=workspaces,verbs=get;list;watch;create;update;patch;delete
@@ -2016,9 +2022,9 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// Workspace, so a mapped watch repairs it across all Workspaces of the
 		// namespace whenever it drifts or is deleted (Task 2.1).
 		Watches(&networkingv1.NetworkPolicy{},
-			handler.EnqueueRequestsFromMapFunc(r.mapNetworkPolicyToWorkspaces),
+			netpolBroadcastHandler(r),
 			builder.WithPredicates(sharedNetpolPredicate())).
-		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.mapEgressConfig)).
+		Watches(&corev1.ConfigMap{}, egressConfigBroadcastHandler(r)).
 		WithOptions(controllerOptions).
 		Named("workspace").
 		Complete(r)
@@ -2174,41 +2180,6 @@ func sharedNetpolPredicate() predicate.Predicate {
 			return isShared(e.Object)
 		},
 	}
-}
-
-// mapNetworkPolicyToWorkspaces enqueues a single representative Workspace so the
-// shared template is re-converged (and recreated when deleted). The template is
-// namespace-scoped, so one reconcile is enough; enqueuing every Workspace turned
-// one template change into an N-request burst that also made concurrent workers
-// fight over the same Update (conflict storms).
-func (r *WorkspaceReconciler) mapNetworkPolicyToWorkspaces(ctx context.Context, obj client.Object) []reconcile.Request {
-	wsList := &aiv1alpha1.WorkspaceList{}
-	if err := r.List(ctx, wsList, client.InNamespace(obj.GetNamespace())); err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(wsList.Items))
-	keys := make(map[string]types.NamespacedName, len(wsList.Items))
-	for i := range wsList.Items {
-		item := &wsList.Items[i]
-		if !item.DeletionTimestamp.IsZero() {
-			continue
-		}
-		names = append(names, item.Name)
-		keys[item.Name] = client.ObjectKeyFromObject(item)
-	}
-	if len(names) == 0 {
-		return nil
-	}
-	if unifiedEgressEnabled() {
-		requests := make([]reconcile.Request, 0, len(names))
-		for _, name := range names {
-			requests = append(requests, reconcile.Request{NamespacedName: keys[name]})
-		}
-		return requests
-	}
-	// Deterministic pick (smallest name) so every replica maps the same event to
-	// the same request.
-	return []reconcile.Request{{NamespacedName: keys[slices.Min(names)]}}
 }
 
 func boolPtr(b bool) *bool {
