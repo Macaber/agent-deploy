@@ -30,7 +30,7 @@ export function LoginDialog() {
       title={
         <span className="flex items-center gap-2.5">
           <span className="grid size-8 place-items-center rounded-lg border border-border bg-secondary text-foreground">
-            <Boxes className="size-4" strokeWidth={1.9} />
+            <Boxes className="size-4" strokeWidth={1.5} />
           </span>
           登录工作空间控制台
         </span>

@@ -30,6 +30,20 @@ import { Segmented } from '@/components/ui/segmented';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Tip } from '@/components/ui/tooltip';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  AnimatedNumber,
+  SpotlightCard,
+  StaggerContainer,
+  StaggerItem,
+} from '@/components/ui/motion';
 import { cn, downloadText, formatDateTime, formatDuration, formatTime, initials, safeExternalUrl, toCsv } from '@/lib/utils';
 import { useMediaQuery } from '@/lib/use-media-query';
 
@@ -176,35 +190,41 @@ export function DirectoryView() {
     <div className="directory-page h-full overflow-y-auto overscroll-contain">
       <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-4 px-3 py-4 sm:px-5 sm:py-6">
         <header className="console-page-heading"><div><p className="console-eyebrow">工作空间管理</p><h1>工作空间</h1><p>查看实例运行状态，管理工作空间与资源配置。</p></div><span className="console-heading-badge">实例总览</span></header>
-        <div className="directory-stats grid grid-cols-3 gap-2 sm:gap-3">
-          <StatCard
-            label="运行中"
-            value={stats.running}
-            hint="可立即进入 IDE"
-            icon={<Play className="size-4" />}
-            tone="success"
-          />
-          <StatCard
-            label="待机 / 已停止"
-            value={stats.idle}
-            hint="按需唤醒，数据保留"
-            icon={<Pause className="size-4" />}
-            tone="warning"
-          />
-          <StatCard
-            label="工作空间总数"
-            value={stats.total}
-            hint={
-              stats.failed > 0
-                ? `${stats.failed} 个异常`
-                : directory.lastUpdated
-                  ? `更新于 ${formatTime(directory.lastUpdated)}`
-                  : '尚未同步'
-            }
-            icon={<Layers className="size-4" />}
-            tone={stats.failed > 0 ? 'destructive' : 'neutral'}
-          />
-        </div>
+        <StaggerContainer className="directory-stats grid grid-cols-3 gap-2 sm:gap-3">
+          <StaggerItem>
+            <StatCard
+              label="运行中"
+              value={stats.running}
+              hint="可立即进入 IDE"
+              icon={<Play className="size-4" />}
+              tone="success"
+            />
+          </StaggerItem>
+          <StaggerItem>
+            <StatCard
+              label="待机 / 已停止"
+              value={stats.idle}
+              hint="按需唤醒，数据保留"
+              icon={<Pause className="size-4" />}
+              tone="warning"
+            />
+          </StaggerItem>
+          <StaggerItem>
+            <StatCard
+              label="工作空间总数"
+              value={stats.total}
+              hint={
+                stats.failed > 0
+                  ? `${stats.failed} 个异常`
+                  : directory.lastUpdated
+                    ? `更新于 ${formatTime(directory.lastUpdated)}`
+                    : '尚未同步'
+              }
+              icon={<Layers className="size-4" />}
+              tone={stats.failed > 0 ? 'destructive' : 'neutral'}
+            />
+          </StaggerItem>
+        </StaggerContainer>
 
         <Card className="directory-toolbar p-3">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
@@ -319,142 +339,138 @@ export function DirectoryView() {
           </div>
 
           {isDesktop && (
-          <div>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[960px] border-collapse text-sm">
-                <caption className="sr-only">工作空间实例列表</caption>
-                <thead>
-                  <tr className="border-b border-border bg-muted/30 text-left text-[11px] font-medium text-muted-foreground">
-                    <th scope="col" className="px-4 py-2.5 font-medium">用户</th>
-                    <th scope="col" className="px-4 py-2.5 font-medium">实例</th>
-                    <th scope="col" className="px-4 py-2.5 font-medium">容器镜像</th>
-                    <th scope="col" className="px-4 py-2.5 font-medium">规格</th>
-                    <th scope="col" className="px-4 py-2.5 font-medium">状态</th>
-                    <th scope="col" className="px-4 py-2.5 font-medium">运行时间</th>
-                    <th scope="col" className="px-4 py-2.5 text-right font-medium">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <AnimatePresence initial={false}>
-                    {pageItems.map((item) => (
-                      <motion.tr
-                        key={`${item.namespace}/${item.name}`}
-                        layout
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        className="group border-b border-border/70 transition-colors last:border-0 hover:bg-muted/25"
-                      >
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2.5">
-                            <span className="grid size-8 shrink-0 place-items-center rounded-full border border-border bg-secondary text-[11px] font-semibold text-secondary-foreground">
-                              {initials(item.userId)}
-                            </span>
-                            <div className="min-w-0">
-                              <div className="truncate text-[13px] font-medium">{item.userId || '—'}</div>
-                              <div className="mt-0.5 text-[11px] text-muted-foreground">
-                                {item.oa ? (
-                                  <span className="font-mono">OA {item.oa}</span>
-                                ) : (
-                                  '未绑定 OA'
-                                )}
-                              </div>
+            <Table className="min-w-[960px]">
+              <caption className="sr-only">工作空间实例列表</caption>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>用户</TableHead>
+                  <TableHead>实例</TableHead>
+                  <TableHead>容器镜像</TableHead>
+                  <TableHead>规格</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>运行时间</TableHead>
+                  <TableHead className="text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <AnimatePresence initial={false}>
+                  {pageItems.map((item) => (
+                    <motion.tr
+                      key={`${item.namespace}/${item.name}`}
+                      layout
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="group border-b border-border/70 transition-colors last:border-0 hover:bg-muted/25"
+                    >
+                      <TableCell className="px-4 py-3">
+                        <div className="flex items-center gap-2.5">
+                          <span className="grid size-8 shrink-0 place-items-center rounded-full border border-border bg-secondary text-[11px] font-semibold text-secondary-foreground">
+                            {initials(item.userId)}
+                          </span>
+                          <div className="min-w-0">
+                            <div className="truncate text-[13px] font-medium">{item.userId || '—'}</div>
+                            <div className="mt-0.5 text-[11px] text-muted-foreground">
+                              {item.oa ? (
+                                <span className="font-mono">OA {item.oa}</span>
+                              ) : (
+                                '未绑定 OA'
+                              )}
                             </div>
                           </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="truncate font-mono text-xs">{item.name || '—'}</div>
-                          <div className="mt-0.5 text-[11px] text-muted-foreground">
-                            {item.namespace || '—'}
-                          </div>
-                        </td>
-                        <td className="max-w-[280px] px-4 py-3">
-                          <div className="truncate font-mono text-xs text-muted-foreground" title={item.image || ''}>
-                            {item.image || '—'}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-                            <span className="rounded border border-border bg-muted/40 px-1.5 py-0.5">
-                              {item.cpu || '—'} CPU
-                            </span>
-                            <span className="rounded border border-border bg-muted/40 px-1.5 py-0.5">
-                              {item.memory || '—'}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <StatusBadge phase={item.phase} />
-                        </td>
-                        <td className="px-4 py-3">
-                          {(() => {
-                            const isRunning = (item.phase || '').toLowerCase() === 'running';
-                            if (isRunning) {
-                              if (item.startedAt) {
-                                const startMs = new Date(item.startedAt).getTime();
-                                const durationText = isNaN(startMs)
-                                  ? '—'
-                                  : formatDuration(Math.max(0, now - startMs));
-                                return (
-                                  <div className="min-w-0">
-                                    <div className="flex items-center gap-1.5 text-[12px] font-medium text-emerald-600 dark:text-emerald-400">
-                                      <Clock className="size-3.5 shrink-0" />
-                                      <span className="font-mono">已运行 {durationText}</span>
-                                    </div>
-                                    <div
-                                      className="mt-0.5 text-[11px] text-muted-foreground font-mono"
-                                      title={`运行起始时间: ${formatDateTime(item.startedAt)}`}
-                                    >
-                                      起: {formatDateTime(item.startedAt)}
-                                    </div>
-                                  </div>
-                                );
-                              }
-                              return (
-                                <div className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
-                                  <Clock className="size-3.5 shrink-0" />
-                                  <span>运行中</span>
-                                </div>
-                              );
-                            }
+                        </div>
+                      </TableCell>
+                      <TableCell className="px-4 py-3">
+                        <div className="truncate font-mono text-xs">{item.name || '—'}</div>
+                        <div className="mt-0.5 text-[11px] text-muted-foreground">
+                          {item.namespace || '—'}
+                        </div>
+                      </TableCell>
+                      <TableCell className="max-w-[280px] px-4 py-3">
+                        <div className="truncate font-mono text-xs text-muted-foreground" title={item.image || ''}>
+                          {item.image || '—'}
+                        </div>
+                      </TableCell>
+                      <TableCell className="px-4 py-3">
+                        <div className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+                          <span className="rounded border border-border bg-muted/40 px-1.5 py-0.5">
+                            {item.cpu || '—'} CPU
+                          </span>
+                          <span className="rounded border border-border bg-muted/40 px-1.5 py-0.5">
+                            {item.memory || '—'}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="px-4 py-3">
+                        <StatusBadge phase={item.phase} />
+                      </TableCell>
+                      <TableCell className="px-4 py-3">
+                        {(() => {
+                          const isRunning = (item.phase || '').toLowerCase() === 'running';
+                          if (isRunning) {
                             if (item.startedAt) {
+                              const startMs = new Date(item.startedAt).getTime();
+                              const durationText = isNaN(startMs)
+                                ? '—'
+                                : formatDuration(Math.max(0, now - startMs));
                               return (
                                 <div className="min-w-0">
-                                  <div className="text-[12px] text-muted-foreground">
-                                    最近一次启动
+                                  <div className="flex items-center gap-1.5 text-[12px] font-medium text-emerald-600 dark:text-emerald-400">
+                                    <Clock className="size-3.5 shrink-0" strokeWidth={1.5} />
+                                    <span className="font-mono">已运行 {durationText}</span>
                                   </div>
                                   <div
                                     className="mt-0.5 text-[11px] text-muted-foreground font-mono"
-                                    title={`最近一次启动时间: ${formatDateTime(item.startedAt)}`}
+                                    title={`运行起始时间: ${formatDateTime(item.startedAt)}`}
                                   >
-                                    {formatDateTime(item.startedAt)}
+                                    起: {formatDateTime(item.startedAt)}
                                   </div>
                                 </div>
                               );
                             }
                             return (
-                              <div className="text-[12px] text-muted-foreground">
-                                未曾启动
+                              <div className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                                <Clock className="size-3.5 shrink-0" strokeWidth={1.5} />
+                                <span>运行中</span>
                               </div>
                             );
-                          })()}
-                        </td>
-                        <td className="px-4 py-3">
-                          <RowActions
-                            item={item}
-                            onStop={confirmStop}
-                            onEdit={() => void loadWorkspace(item.userId, item.namespace || 'bocomwork')}
-                            onWakeup={() => void inlineWakeup(item.userId, item.namespace || 'bocomwork')}
-                            busy={!!operation}
-                          />
-                        </td>
-                      </motion.tr>
-                    ))}
-                  </AnimatePresence>
-                </tbody>
-              </table>
-            </div>
-          </div>
+                          }
+                          if (item.startedAt) {
+                            return (
+                              <div className="min-w-0">
+                                <div className="text-[12px] text-muted-foreground">
+                                  最近一次启动
+                                </div>
+                                <div
+                                  className="mt-0.5 text-[11px] text-muted-foreground font-mono"
+                                  title={`最近一次启动时间: ${formatDateTime(item.startedAt)}`}
+                                >
+                                  {formatDateTime(item.startedAt)}
+                                </div>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div className="text-[12px] text-muted-foreground">
+                              未曾启动
+                            </div>
+                          );
+                        })()}
+                      </TableCell>
+                      <TableCell className="px-4 py-3 text-right">
+                        <RowActions
+                          item={item}
+                          onStop={confirmStop}
+                          onEdit={() => void loadWorkspace(item.userId, item.namespace || 'bocomwork')}
+                          onWakeup={() => void inlineWakeup(item.userId, item.namespace || 'bocomwork')}
+                          busy={!!operation}
+                        />
+                      </TableCell>
+                    </motion.tr>
+                  ))}
+                </AnimatePresence>
+              </TableBody>
+            </Table>
           )}
 
           {!isDesktop && (
@@ -573,11 +589,11 @@ function StatCard({
   }[tone];
 
   return (
-    <Card className="flex items-start justify-between gap-2 p-2.5 sm:p-4">
+    <SpotlightCard className="flex items-start justify-between gap-2 p-2.5 sm:p-4">
       <div className="min-w-0">
         <p className="truncate text-[10px] font-medium text-muted-foreground sm:text-xs">{label}</p>
         <p className="mt-1 text-xl font-semibold leading-none tracking-tight tabular-nums sm:mt-1.5 sm:text-2xl">
-          {value}
+          <AnimatedNumber value={value} />
         </p>
         <p className="mt-1.5 truncate text-[10px] text-muted-foreground sm:mt-2 sm:text-[11px]" title={hint}>
           {hint}
@@ -586,7 +602,7 @@ function StatCard({
       <span className={cn('hidden size-9 shrink-0 place-items-center rounded-lg border sm:grid', toneClass)}>
         {icon}
       </span>
-    </Card>
+    </SpotlightCard>
   );
 }
 

@@ -1,6 +1,7 @@
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Loader2 } from 'lucide-react';
 import { useApp } from '@/store';
+import { BorderTrail } from '@/components/ui/motion';
 
 export function OperationBanner() {
   const operation = useApp((state) => state.operation);
@@ -14,11 +15,12 @@ export function OperationBanner() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={reduce ? { opacity: 0 } : { opacity: 0, y: -6, scale: 0.98 }}
             transition={{ type: 'spring', stiffness: 420, damping: 32 }}
-            className="pointer-events-auto flex max-w-md items-center gap-2.5 rounded-lg border border-border bg-popover/95 px-3 py-2 text-popover-foreground shadow-lg backdrop-blur"
+            className="pointer-events-auto relative flex max-w-md items-center gap-2.5 overflow-hidden rounded-lg border border-border bg-popover/95 px-3.5 py-2.5 text-popover-foreground shadow-lg backdrop-blur"
             role="status"
             aria-live="polite"
           >
-            <Loader2 className="size-3.5 shrink-0 animate-spin text-info" />
+            <BorderTrail size={25} duration={2.5} />
+            <Loader2 className="size-3.5 shrink-0 animate-spin text-info" strokeWidth={1.5} />
             <div className="min-w-0">
               <p className="truncate text-xs font-medium">{operation.title}</p>
               {operation.detail && (

@@ -342,6 +342,14 @@ type WorkspaceStatus struct {
 	// +optional
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`
 
+	// RunAsUser is the UID the workspace Pod template runs as, as observed on the
+	// workspace Deployment. 0 means the image's own (root) user is used; a positive
+	// value means the workspace runs as that non-root UID. Unset until the
+	// Deployment exists. It reflects the Pod template, so a running Pod may still be
+	// on the previous value until it is restarted.
+	// +optional
+	RunAsUser *int64 `json:"runAsUser,omitempty"`
+
 	// Conditions represent the current state of the Workspace resource.
 	// +listType=map
 	// +listMapKey=type
@@ -354,6 +362,7 @@ type WorkspaceStatus struct {
 // +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Owner",type=string,JSONPath=".spec.owner"
+// +kubebuilder:printcolumn:name="RunAs",type=integer,JSONPath=".status.runAsUser",description="0 = root (legacy), >0 = non-root UID"
 // +kubebuilder:printcolumn:name="Started",type=date,JSONPath=".status.startedAt"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 

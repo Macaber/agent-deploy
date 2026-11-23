@@ -49,7 +49,7 @@ graph TD
 * **具体职责**：
   * **资源状态监听**：不断轮询监听 K8s 集群中 Workspace 实例的创建、修改和删除事件。
   * **子资源编排（一键拉起）**：根据 Workspace 的声明规格，自动创建并管理对应的 `PersistentVolumeClaim`（持久化卷）、`Deployment`（计算负载）、`Service`（内网暴露）和 `Ingress`（外部路由）；计算与网络子资源建立 **Owner Reference（所有者引用）** 确保级联删除，而存储卷（PVC/PV）不绑定 Owner Reference，Workspace 删除后数据与卷对象持久保留。
-  * **OSS 静态卷自动创建**：当 `spec.storage.storageClass`（或集群默认存储类）命中 OSS 时，Operator 直接创建静态 PV（名称 `<workspace>-pv`，子路径 `/workspaces/<workspace-name>`，`ReadWriteMany`，`reclaimPolicy: Retain`），再创建精确绑定该 PV 的 PVC（`<workspace>-pvc`）。SC 中的 `bucket` / `url` / `otherOpts` / `fuseType` / `sigVersion` / `region` / Secret 引用会被透传到 PV。
+  * **OSS 静态卷自动创建**：当 `spec.storage.storageClass`（或集群默认存储类）命中 OSS 时，Operator 直接创建静态 PV（名称 `<workspace>-pv`，子路径 `/workspaces/<workspace-name>`，`ReadWriteMany`，`reclaimPolicy: Retain`），再创建精确绑定该 PV 的 PVC（`<workspace>-pvc`）。SC 中的 `bucket` / `url` / `otherOpts` / `fuseType` / `sigVersion` / `region` / Secret 引用会被透传到 PV。非 root 运行（`--default-run-as-user`）要求 `otherOpts` 含 `uid=<UID>,gid=<UID>`，operator 仅对满足该条件的 OSS PV 切换非 root，详见 `docs/workspace-nonroot-migration.md`。
   * **会话超时自动休眠（`idleTimeout`）**：以 `Status.LastActiveTime` 为起点计时（创建/API 唤醒/从非 Running 进入 Running 时更新），**不是**根据 Ingress 实时流量判断“是否有人在用”。超过 `idleTimeout` 后 Operator 将 Deployment 副本缩至 `0`，状态为 `Sleeping`。唤醒需通过 API（更新 `lastActiveTime`）或将 `stopped` 置回 false 后由控制器拉起。
   * **副本管理**：Deployment 的 `replicas` 始终由 Operator 根据 `stopped` / `idleTimeout` 写入，无需额外扩缩容组件。
 

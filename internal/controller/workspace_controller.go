@@ -89,8 +89,17 @@ const (
 // WorkspaceReconciler reconciles a Workspace object
 type WorkspaceReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	// DefaultRunAsUser is the non-root UID applied to every workspace whose volume
+	// is ready for it (see resolveRunAsUser). 0 disables the default; the
+	// per-workspace annotation still works.
+	DefaultRunAsUser int64
+
+	// APIReader reads straight from the API server (no cache). Used for objects
+	// outside the filtered informer cache, e.g. the egress proxy Deployment/Pods.
+	// Falls back to Client when nil (tests).
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Recorder  record.EventRecorder
 	// GlobalAllowedNamespaces holds controller-wide NetworkPolicy egress exceptions that
 	// are applied to EVERY Workspace on top of spec.networkPolicy.allowedNamespaces
 	// (e.g. letting all workspaces export OTLP to a shared collector). Populated from
@@ -338,6 +347,7 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 	oldPVCName := ws.Status.PVCName
 	oldEndpoint := ws.Status.Endpoint
 	oldStartedAt := ws.Status.StartedAt
+	oldRunAsUser := ws.Status.RunAsUser
 
 	ws.Status.PVCName = pvcName
 	ws.Status.Endpoint = endpoint
@@ -346,6 +356,12 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 	var selectedPodStartTime *metav1.Time
 	deploy := &appsv1.Deployment{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: deployName}, deploy); err == nil {
+		// Migration progress: the UID the Pod template runs as (0 = image/root user).
+		observedUID := int64(0)
+		if sc := deploy.Spec.Template.Spec.SecurityContext; sc != nil && sc.RunAsUser != nil {
+			observedUID = *sc.RunAsUser
+		}
+		ws.Status.RunAsUser = &observedUID
 		if ws.Spec.Stopped {
 			ws.Status.Phase = aiv1alpha1.WorkspaceStopped
 			ws.Status.PodName = ""
@@ -424,7 +440,8 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Update status if anything changed
 	startedAtChanged := !equality.Semantic.DeepEqual(oldStartedAt, ws.Status.StartedAt)
-	if oldPhase != ws.Status.Phase || oldPodName != ws.Status.PodName || oldPVCName != ws.Status.PVCName || oldEndpoint != ws.Status.Endpoint || startedAtChanged {
+	if oldPhase != ws.Status.Phase || oldPodName != ws.Status.PodName || oldPVCName != ws.Status.PVCName || oldEndpoint != ws.Status.Endpoint || startedAtChanged ||
+		!equality.Semantic.DeepEqual(oldRunAsUser, ws.Status.RunAsUser) {
 		log.Info("Updating Workspace status", "phase", ws.Status.Phase, "podName", ws.Status.PodName)
 		desiredPhase := ws.Status.Phase
 		desiredPodName := ws.Status.PodName
@@ -432,6 +449,7 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 		desiredEndpoint := ws.Status.Endpoint
 		desiredLastActiveTime := ws.Status.LastActiveTime
 		desiredStartedAt := ws.Status.StartedAt
+		desiredRunAsUser := ws.Status.RunAsUser
 
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			latestWs := &aiv1alpha1.Workspace{}
@@ -442,6 +460,9 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 			latestWs.Status.PodName = desiredPodName
 			latestWs.Status.PVCName = desiredPVCName
 			latestWs.Status.Endpoint = desiredEndpoint
+			if desiredRunAsUser != nil {
+				latestWs.Status.RunAsUser = desiredRunAsUser
+			}
 			if desiredLastActiveTime != nil && (latestWs.Status.LastActiveTime == nil || desiredLastActiveTime.After(latestWs.Status.LastActiveTime.Time)) {
 				latestWs.Status.LastActiveTime = desiredLastActiveTime
 			}
@@ -575,6 +596,11 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 					bucket := "your-user-workspaces-bucket"
 					url := "oss-cn-hangzhou-internal.aliyuncs.com"
 					otherOpts := "-o max_stat_cache_size=100000 -o allow_other"
+					if r.DefaultRunAsUser > 0 {
+						// Fallback only (StorageClass without otherOpts): keep the PV usable by the
+						// default non-root UID. An explicit StorageClass otherOpts replaces this.
+						otherOpts += fmt.Sprintf(" -o uid=%d,gid=%d,umask=022", r.DefaultRunAsUser, r.DefaultRunAsUser)
+					}
 					fuseType := "ossfs"
 					secretName := "oss-secret"
 					secretNamespace := "default"
@@ -893,7 +919,10 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	log := logf.FromContext(ctx)
 	deployName := ws.Name + "-deploy"
 	deploy := &appsv1.Deployment{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: deployName}, deploy)
+	// Uncached: the informer copy of a Deployment has its pod template spec
+	// stripped (see stripDeploymentForCache), and this object is mutated and
+	// written back below, so it must be the full object.
+	err := r.uncachedReader().Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: deployName}, deploy)
 
 	// Operator always owns Deployment.spec.replicas (Stopped / IdleTimeout / default 1).
 	desiredReplicas := computeDesiredReplicas(ws, log)
@@ -1185,6 +1214,21 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	// Hardened security context shared with the update path, so a reconcile always
 	// converges on the same values.
 	podSecurityContext, containerSecurityContext := buildWorkspaceSecurityContexts()
+	runAsUID, skipReason, uidErr := r.resolveRunAsUser(ctx, ws, pvcName)
+	if uidErr != nil {
+		// Never fall back to root on a transient lookup error: that would flip the
+		// Pod template and restart the workspace. Retry instead.
+		return "", 0, uidErr
+	}
+	if skipReason != "" {
+		log.Info("Keeping image user: workspace volume is not ready for non-root", "reason", skipReason)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(ws, corev1.EventTypeWarning, "RunAsUserSkipped", "Running as the image user: %s", skipReason)
+		}
+	}
+	if runAsUID > 0 {
+		applyNonRoot(podSecurityContext, containerSecurityContext, runAsUID)
+	}
 	// Pods are the only resources that carry the managed-by marker (the shared
 	// NetworkPolicy selects on it); PVCs/Services/Ingresses must stay clean.
 	podLabels := buildPodLabels(ws)
@@ -1430,7 +1474,9 @@ func computeDesiredReplicas(ws *aiv1alpha1.Workspace, log interface {
 func (r *WorkspaceReconciler) reconcileService(ctx context.Context, ws *aiv1alpha1.Workspace) (string, error) {
 	svcName := ws.Name + "-svc"
 	svc := &corev1.Service{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: svcName}, svc)
+	// Uncached: Services are not watched, so a cached Get would start a full
+	// cluster-wide informer just for this lookup.
+	err := r.uncachedReader().Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: svcName}, svc)
 
 	// Protocol must match the API-server default ("TCP") so the Task 1.2 diff converges.
 	ports := []corev1.ServicePort{
@@ -1496,7 +1542,8 @@ func (r *WorkspaceReconciler) reconcileService(ctx context.Context, ws *aiv1alph
 func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alpha1.Workspace, svcName string) (string, error) {
 	ingressName := ws.Name + "-ingress"
 	ingress := &networkingv1.Ingress{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: ingressName}, ingress)
+	// Uncached for the same reason as Services (no informer for Ingress).
+	err := r.uncachedReader().Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: ingressName}, ingress)
 
 	host := getWorkspaceHost(ws.Name)
 	pathType := networkingv1.PathTypePrefix
@@ -2016,8 +2063,9 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&aiv1alpha1.Workspace{}, builder.WithPredicates(workspacePredicate())).
 		Owns(&appsv1.Deployment{}, builder.WithPredicates(deploymentPredicate())).
-		Owns(&corev1.Service{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Owns(&networkingv1.Ingress{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		// Service/Ingress are intentionally NOT watched: nothing edits them in
+		// production, and they are created/repaired on demand (uncached Get) on
+		// each Workspace reconcile, so no informer is kept for them.
 		// The shared namespace-level NetworkPolicy template is not owned by any single
 		// Workspace, so a mapped watch repairs it across all Workspaces of the
 		// namespace whenever it drifts or is deleted (Task 2.1).
@@ -2245,6 +2293,127 @@ var workspaceAddedCapabilities = []corev1.Capability{
 	"SYS_CHROOT",
 }
 
+// runAsUserAnnotation overrides the non-root UID of a single Workspace:
+//   - absent/empty: use the controller default (--default-run-as-user), if any;
+//   - "0":          explicit opt-out, keep the image's own (root) user — the
+//     per-workspace rollback switch;
+//   - positive N:   run as N:N (still subject to the volume-readiness check).
+//
+// The annotation is only picked up on a reconcile that mutates the Pod template
+// (e.g. when a sleeping/stopped Workspace wakes up); changing it does not itself
+// trigger a reconcile.
+const runAsUserAnnotation = "ai.example.com/run-as-user"
+
+// csiDriverOSS is the Alibaba Cloud OSS CSI driver whose mount options carry the
+// uid/gid mapping non-root workspaces depend on.
+const csiDriverOSS = "ossplugin.csi.alibabacloud.com"
+
+// runAsUserFromAnnotation parses runAsUserAnnotation. set is false when the
+// annotation is absent or empty. "0" is returned as (0, true, nil): an explicit
+// opt-out. Negative or non-numeric values are errors.
+func runAsUserFromAnnotation(ws *aiv1alpha1.Workspace) (uid int64, set bool, err error) {
+	raw := strings.TrimSpace(ws.Annotations[runAsUserAnnotation])
+	if raw == "" {
+		return 0, false, nil
+	}
+	uid, err = strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("parse %s: %w", runAsUserAnnotation, err)
+	}
+	if uid < 0 {
+		return 0, false, fmt.Errorf("%s must not be negative, got %d", runAsUserAnnotation, uid)
+	}
+	return uid, true, nil
+}
+
+// applyNonRoot runs the Pod as uid:uid and strips every Linux capability.
+//   - FSGroup is deliberately NOT set: OSS volumes get their ownership from the
+//     ossfs mount options (uid/gid), and an fsGroup chown pass is both useless
+//     and slow there.
+//   - Capabilities are dropped entirely: the CHOWN/SETUID/... set that root
+//     workspaces keep exists for a root entrypoint and means nothing to a non-root
+//     process (no ambient caps, and allowPrivilegeEscalation=false blocks setuid
+//     binaries), so keeping it only widens the surface.
+func applyNonRoot(psc *corev1.PodSecurityContext, csc *corev1.SecurityContext, uid int64) {
+	psc.RunAsUser = &uid
+	psc.RunAsGroup = &uid
+	psc.RunAsNonRoot = boolPtr(true)
+	csc.Capabilities = &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}
+}
+
+// resolveRunAsUser decides which UID the workspace Pod runs as. It returns 0 to
+// keep the image user. skipReason is non-empty when a non-root UID was wanted but
+// the workspace volume is not ready for it; err is a transient lookup failure the
+// caller must retry (never treat it as "keep root").
+func (r *WorkspaceReconciler) resolveRunAsUser(ctx context.Context, ws *aiv1alpha1.Workspace, pvcName string) (uid int64, skipReason string, err error) {
+	want := r.DefaultRunAsUser
+	if v, set, annErr := runAsUserFromAnnotation(ws); annErr != nil {
+		logf.FromContext(ctx).Error(annErr, "Ignoring invalid run-as-user annotation, using the controller default",
+			"value", ws.Annotations[runAsUserAnnotation], "annotation", runAsUserAnnotation)
+	} else if set {
+		want = v
+	}
+	if want <= 0 {
+		return 0, "", nil
+	}
+	reason, err := r.volumeBlocksRunAsUser(ctx, ws, pvcName, want)
+	if err != nil || reason != "" {
+		return 0, reason, err
+	}
+	return want, "", nil
+}
+
+// volumeBlocksRunAsUser reports why the workspace volume cannot be used by a
+// non-root uid ("" = ready). Only OSS volumes mounted with matching uid/gid
+// options qualify: ossfs synthesizes ownership from those options, so a PV that
+// was created before they were added still presents root-owned files that a
+// non-root process cannot write. PV volumeAttributes are immutable, which is why
+// such a PV has to be recreated (see docs/workspace-nonroot-migration.md).
+func (r *WorkspaceReconciler) volumeBlocksRunAsUser(ctx context.Context, ws *aiv1alpha1.Workspace, pvcName string, uid int64) (string, error) {
+	if pvcName == "" {
+		return "workspace has no PVC (non-root is only supported on OSS volumes)", nil
+	}
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: pvcName}, pvc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Sprintf("PVC %s not found", pvcName), nil
+		}
+		return "", err
+	}
+	if pvc.Spec.VolumeName == "" {
+		return fmt.Sprintf("PVC %s is not bound to a PV yet", pvcName), nil
+	}
+	pv := &corev1.PersistentVolume{}
+	if err := r.Get(ctx, client.ObjectKey{Name: pvc.Spec.VolumeName}, pv); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Sprintf("PV %s not found", pvc.Spec.VolumeName), nil
+		}
+		return "", err
+	}
+	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != csiDriverOSS {
+		return fmt.Sprintf("PV %s is not an OSS volume (non-root is only supported on OSS)", pv.Name), nil
+	}
+	if !mountOptionsMapUID(pv.Spec.CSI.VolumeAttributes["otherOpts"], uid) {
+		return fmt.Sprintf("PV %s was created without uid=%d,gid=%d mount options; delete the PVC and PV of the stopped workspace so they are recreated", pv.Name, uid, uid), nil
+	}
+	return "", nil
+}
+
+// mountOptionsMapUID reports whether an ossfs otherOpts string maps both uid and
+// gid to the given id (e.g. "-o allow_other -o uid=10001,gid=10001,umask=022").
+func mountOptionsMapUID(otherOpts string, id int64) bool {
+	var uidOK, gidOK bool
+	for _, tok := range strings.FieldsFunc(otherOpts, func(c rune) bool { return c == ' ' || c == ',' || c == '\t' }) {
+		switch tok {
+		case fmt.Sprintf("uid=%d", id):
+			uidOK = true
+		case fmt.Sprintf("gid=%d", id):
+			gidOK = true
+		}
+	}
+	return uidOK && gidOK
+}
+
 func buildWorkspaceSecurityContexts() (*corev1.PodSecurityContext, *corev1.SecurityContext) {
 	return &corev1.PodSecurityContext{
 		SeccompProfile: &corev1.SeccompProfile{
@@ -2365,4 +2534,11 @@ func buildPodLabels(ws *aiv1alpha1.Workspace) map[string]string {
 	}
 	labels[managedByLabelKey] = managedByLabelValue
 	return labels
+}
+
+func (r *WorkspaceReconciler) uncachedReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }

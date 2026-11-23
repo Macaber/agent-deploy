@@ -16,6 +16,13 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import {
+  AnimatedNumber,
+  AnimatedProgress,
+  BorderTrail,
+  CollapsibleMotion,
+  SpotlightCard,
+} from '@/components/ui/motion';
 import { cn } from '@/lib/utils';
 import type { BatchStatus } from '@/types';
 
@@ -79,31 +86,32 @@ function Section({
   title,
   badge,
   action,
+  hasTrail,
   children,
 }: {
   icon: ReactNode;
   title: string;
   badge?: ReactNode;
   action?: ReactNode;
+  hasTrail?: boolean;
   children: ReactNode;
 }) {
   return (
-    <Card className="studio-section overflow-hidden p-0" data-section={title}>
-      <div className="flex flex-wrap items-center justify-between gap-2 px-0 py-2.5">
+    <Card className="relative overflow-hidden shadow-xs">
+      {hasTrail && <BorderTrail duration={3.5} size={25} />}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-muted/40 px-4 py-3">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span className="studio-section-icon grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground">
+          <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-border bg-card text-primary shadow-2xs">
             {icon}
           </span>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h2 className="truncate text-sm font-semibold tracking-tight">{title}</h2>
-              {badge}
-            </div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold tracking-tight text-foreground">{title}</h2>
+            {badge}
           </div>
         </div>
         {action && <div className="ml-auto">{action}</div>}
       </div>
-      <div className="pb-2">{children}</div>
+      <div className="p-4">{children}</div>
     </Card>
   );
 }
@@ -126,6 +134,7 @@ export function BatchRestartView() {
   const [jsonText, setJsonText] = useState(TEMPLATE_JSON);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [failedExpanded, setFailedExpanded] = useState(false);
 
   const [jsonError, jsonValue] = (() => {
     try {
@@ -257,22 +266,20 @@ export function BatchRestartView() {
   }
 
   return (
-    <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-4xl space-y-6 p-6">
-        <header className="space-y-1">
-          <p className="text-xs font-medium tracking-widest text-muted-foreground">运维工具</p>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h1 className="text-xl font-semibold">批量重启</h1>
-            {status && (
-              <Badge variant="outline" className="gap-1.5 font-mono text-[11px] tabular-nums">
-                <Timer className="size-3" aria-hidden="true" />
-                服务器时间 {status.serverTime} · {status.timezone}
-              </Badge>
-            )}
+    <div className="h-full overflow-y-auto overscroll-contain">
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-3 py-4 sm:px-6 sm:py-6">
+        <header className="console-page-heading">
+          <div>
+            <p className="console-eyebrow">运维工具</p>
+            <h1>批量重启</h1>
+            <p>分批拉起 Sleeping / Stopped 工作空间，促发埋点数据上传，运行一段时间后自动停止。</p>
           </div>
-          <p className="text-sm text-muted-foreground">
-            分批拉起 Sleeping/Stopped 工作空间，促发埋点数据上传，运行一段时间后自动停止
-          </p>
+          {status && (
+            <Badge variant="outline" className="gap-1.5 font-mono text-[11px] tabular-nums">
+              <Timer className="size-3" strokeWidth={1.5} aria-hidden="true" />
+              服务器时间 {status.serverTime} · {status.timezone}
+            </Badge>
+          )}
         </header>
 
         {statusError && (
@@ -285,6 +292,7 @@ export function BatchRestartView() {
         <Section
           icon={<Activity className="size-4" aria-hidden="true" />}
           title="任务进度"
+          hasTrail={active}
           badge={
             <Badge
               variant={active ? 'default' : 'secondary'}
@@ -313,24 +321,18 @@ export function BatchRestartView() {
               <>
                 <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
                   {COUNTERS.map((counter) => (
-                    <div key={counter.key} className="rounded-lg border border-border bg-card p-2.5 text-center">
+                    <SpotlightCard key={counter.key} className="p-2.5 text-center">
                       <div className={cn('text-lg font-semibold tabular-nums', counter.tone)}>
-                        {Number(status[counter.key] ?? 0)}
+                        <AnimatedNumber value={Number(status[counter.key] ?? 0)} />
                       </div>
                       <div className="text-[11px] text-muted-foreground">{counter.label}</div>
-                    </div>
+                    </SpotlightCard>
                   ))}
                 </div>
-                <div
-                  role="progressbar"
-                  aria-valuenow={percent}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-label="重启进度"
-                  className="h-2 overflow-hidden rounded-full bg-muted"
-                >
-                  <div className="h-full rounded-full bg-primary transition-[width] duration-500" style={{ width: `${percent}%` }} />
-                </div>
+                <AnimatedProgress
+                  value={percent}
+                  indicatorClassName={status.orphaned ? 'bg-destructive' : 'bg-primary'}
+                />
                 <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                   <span>进度 {processed}/{status.total}（{percent}%）</span>
                   {status.state === 'waiting' && status.startTime && (
@@ -348,19 +350,28 @@ export function BatchRestartView() {
                   </p>
                 )}
                 {!!status.failedSamples?.length && (
-                  <details className="rounded-lg border border-border bg-card p-2.5">
-                    <summary className="cursor-pointer text-xs font-medium text-destructive">
-                      失败样例（共 {status.failed} 个，最多展示 {status.failedSamples.length} 条）
-                    </summary>
-                    <ul className="mt-2 space-y-1">
-                      {status.failedSamples.map((sample) => (
-                        <li key={sample.name} className="font-mono text-[11px] leading-relaxed text-muted-foreground">
-                          {sample.name}
-                          {sample.error ? `：${sample.error}` : ''}
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
+                  <div className="rounded-lg border border-border bg-card p-3">
+                    <button
+                      type="button"
+                      onClick={() => setFailedExpanded((v) => !v)}
+                      className="flex w-full items-center justify-between text-left text-xs font-medium text-destructive outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <span>失败样例（共 {status.failed} 个，最多展示 {status.failedSamples.length} 条）</span>
+                      <span className="text-[11px] text-muted-foreground underline underline-offset-2">
+                        {failedExpanded ? '收起' : '展开详情'}
+                      </span>
+                    </button>
+                    <CollapsibleMotion open={failedExpanded}>
+                      <ul className="mt-2.5 space-y-1.5 border-t border-border pt-2">
+                        {status.failedSamples.map((sample) => (
+                          <li key={sample.name} className="font-mono text-[11px] leading-relaxed text-muted-foreground">
+                            {sample.name}
+                            {sample.error ? `：${sample.error}` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    </CollapsibleMotion>
+                  </div>
                 )}
               </>
             ) : (

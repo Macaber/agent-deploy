@@ -21,7 +21,16 @@ spec:
     matchLabels:
       control-plane: controller-manager
       app.kubernetes.io/name: agent-deploy
-  replicas: 1
+  # Two replicas for HA: only the leader-elected one reconciles, the other is a
+  # warm standby (its informer cache is already populated on failover).
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Required anti-affinity below allows one Pod per node; surging a third Pod
+      # would sit Pending on a 2-node cluster and stall the rollout.
+      maxSurge: 0
+      maxUnavailable: 1
   template:
     metadata:
       annotations:
@@ -50,6 +59,16 @@ spec:
       #             operator: In
       #             values:
       #               - linux
+      # Never schedule the two replicas on the same node, so a single node failure
+      # cannot take out both the leader and the standby.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                control-plane: controller-manager
+                app.kubernetes.io/name: agent-deploy
       securityContext:
         # Projects are configured by default to adhere to the "restricted" Pod Security Standards.
         # This ensures that deployments meet the highest security requirements for Kubernetes.
@@ -62,6 +81,7 @@ spec:
         - /manager
         args:
           - --leader-elect
+          - --default-run-as-user=0
           - --health-probe-bind-address=:8081
         image: controller:latest
         name: manager
@@ -96,6 +116,10 @@ spec:
         # TODO(user): Configure the resources accordingly based on the project requirements.
         # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
         env:
+        # Make the Go GC aware of the container limit (~80%) so it collects
+        # before the cgroup OOM-killer fires during cold-start List bursts.
+        - name: GOMEMLIMIT
+          value: "800MiB"
         - name: WORKSPACE_DOMAIN
           value: "bocomcode"
         # Controller-wide NetworkPolicy egress exceptions applied to EVERY workspace.
@@ -107,11 +131,11 @@ spec:
           value: '[{"namespace":"monitoring","podSelector":{"app.kubernetes.io/name":"otel-collector"},"ports":[4318]}]'
         resources:
           limits:
-            cpu: 500m
-            memory: 128Mi
+            cpu: "2"
+            memory: 1Gi
           requests:
-            cpu: 10m
-            memory: 64Mi
+            cpu: 200m
+            memory: 512Mi
         volumeMounts: []
       volumes: []
       serviceAccountName: controller-manager

@@ -23,7 +23,7 @@ parameters:
   bucket: "your-user-workspaces-bucket"                 # 个人工作空间 Bucket（与集群同 Region）
   region: "cn-hangzhou"                                 # Bucket 所在 Region（V4 签名必填）
   url: "https://oss-cn-hangzhou-internal.aliyuncs.com"  # 同 Region 内网 Endpoint（免流费、低延迟）
-  otherOpts: "-o max_stat_cache_size=100000 -o allow_other"  # ossfs 1.0 参数
+  otherOpts: "-o max_stat_cache_size=100000 -o allow_other -o uid=10001,gid=10001,umask=022"  # ossfs 1.0 参数；uid/gid 必须与 operator --default-run-as-user 一致（非 root 运行）
   fuseType: "ossfs"                                     # ossfs 1.0 客户端（随机写安全）
   sigVersion: "v4"                                      # V4 签名（新建 Bucket 必填）
   csi.storage.k8s.io/provisioner-secret-name: "oss-secret"

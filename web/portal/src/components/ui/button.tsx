@@ -3,7 +3,7 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 
 export const buttonVariants = cva(
-  'inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium outline-none transition-[color,background-color,border-color,box-shadow,opacity] focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0',
+  'inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium outline-none transition-[color,background-color,border-color,box-shadow,opacity] focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:stroke-[1.5]',
   {
     variants: {
       variant: {
@@ -12,7 +12,7 @@ export const buttonVariants = cva(
         secondary:
           'border border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80',
         outline:
-          'border border-border bg-transparent text-foreground shadow-xs hover:bg-accent hover:text-accent-foreground',
+          'border border-border bg-background text-foreground shadow-xs hover:bg-accent hover:text-accent-foreground',
         ghost: 'border border-transparent text-foreground hover:bg-accent hover:text-accent-foreground',
         destructive:
           'border border-transparent bg-destructive/10 text-destructive hover:bg-destructive/15 focus-visible:ring-destructive/30',

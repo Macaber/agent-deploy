@@ -1,350 +1,248 @@
 # Workspace 非 Root 化迁移 Runbook（OSS 存储）
 
-> **适用场景**：数据持久化在 `oss://<bucket>/workspaces/<ws>/` 的集群。  
-> **核心目标**：workspace Pod 内以**高位专属非 root 用户（推荐 UID/GID `10001`）**运行，消除容器逃逸风险与 root 特权滥用。  
-> **核心特性**：
-> 1. **家目录与路径零变动**：容器内 `~` 与 `$HOME` 依然是 `/root`，Agent 读写 `/root/.bocomwork`、`/root/.config` 源码与脚本**无需改动任何路径**。
-> 2. **数据零迁移**：OSS 对象存储不存 POSIX 属主，通过 ossfs 挂载参数实时合成属主，**无需 initContainer，无需重新搬迁 OSS 数据**。
-> 3. **避免 UID 冲突**：不使用易与宿主机默认普通用户（如 `ubuntu`）或 Docker 服务冲突的 `1000`，改用云原生标准的专属高位 UID（`10001`）。
-> 4. **渐进式灰度**：基于 Workspace 注解驱动，一次只改一个变量，任意阶段支持秒级回滚。
+> **目标**：所有 workspace（存量 + 新建）的 Pod 都以非 root（UID/GID `10001`）运行，且 `drop ALL` capabilities。
+> **适用**：数据在 `oss://<bucket>/workspaces/<ws>/`，OSS CSI（ossfs 1.0）。
 
 ---
 
-## 0. 关键认知与前置答疑
+## ⛔ 先读这个：存量 PV / PVC 必须删除重建
 
-### 0.1 为什么避开 UID 1000，改用 10001？
-* **宿主机冲突隐患**：Ubuntu/Debian 等主流 Linux 宿主机在创建第一个普通登录用户时，默认起始 UID 就是 `1000`；部分环境中的 `docker` 用户组或服务账号也会占用 `1000` 或 `999`。如果以后涉及节点级权限或文件交汇，使用 `1000` 容易发生属主混淆。
-* **高位专属 UID 规范**：行业通用规范（如 Google Distroless 的 `10001`，或专用应用 UID 如 `20000`）采用高位 UID 彻底避开系统内置保留段。本 Runbook 统一以 **`10001`** 作为标准示范（集群若有既定规范，只需保证全局统一即可）。
-
-### 0.2 能不能保持 `~` 就是 `/root`？Agent 存的文件需要迁移吗？
-* **完全可以！** Linux 下 `~` 的展开取决于 `$HOME` 环境变量和 `/etc/passwd`，没有任何系统规则禁止非 root 用户将 `/root` 设为家目录。
-* 只要镜像内执行 `chmod 755 /root && chown -R 10001:10001 /root`，非 root 进程即可自由进出并在 `/root` 下工作。
-* **数据完全不需要迁移**：OSS 存储里的文件属主完全由 ossfs 挂载参数（`uid=10001,gid=10001`）在挂载点上**动态合成**。在容器看来，挂载进来的 `/root/.bocomwork` 天然就属于 UID 10001，直接具备读写权限。
-
-### 0.3 为什么不用 initContainer？
-* 对象存储本身没有 Linux 权限位，在 initContainer 中跑 `chown -R` 对 OSS 对象是无效的，反而会在启动时因 FUSE 大量写元数据导致容器启动严重超时。
-* **改挂载参数是让 OSS 文件呈现给指定 UID 的唯一且最高效的手段。**
-
-### 0.4 为什么存量 PV 必须重建？（已实测验证）
-```text
-PersistentVolume "ws-x-pv" is invalid: spec.persistentvolumesource:
-Forbidden: spec.persistentvolumesource is immutable after creation
-```
-由于 Kubernetes 的 `csi.volumeAttributes` 属于不可变字段，修改 StorageClass 只对新建的 PV 生效；**存量 PV 需通过“停止 -> 删除 PVC/PV -> 启动触发重建”的方式生效**。因为 PV 回收策略是 `Retain`，数据一直在 OSS 上，重建 PV 不会丢失任何业务数据。
+> ### 🔴 回答：**是的，所有存量 workspace 的 PVC 和 PV 都必须删除重建，没有别的办法。**
+> `csi.volumeAttributes`（其中的 `otherOpts` 决定 ossfs 的 `uid/gid`）在 PV 创建后**不可修改**；改 StorageClass **只影响以后新建的 PV**。
+> 不重建的 workspace：operator 检测到 PV 缺少 `uid=10001,gid=10001`，**会保持 root 运行**（并发 Warning Event `RunAsUserSkipped`），不会坏，但也**不会非 root**。
+>
+> ### 🔴 删除操作的铁律（逐条遵守）
+> 1. **只删「已停止、Pod 已消失」的 workspace 的 PVC/PV。** 删除运行中 workspace 的 PVC/PV 会让挂载中的 Pod 读写失败。
+> 2. **顺序：先 PVC，后 PV。**（PVC 有保护 finalizer，Pod 未退出会一直 Terminating。）
+> 3. **PV 名称必须从 PVC 的 `spec.volumeName` 取，不要手拼**；删前核对 `volumeAttributes.path` 就是 `/workspaces/<该 ws>`，确认没删错别人的卷。
+> 4. **绝不要把 PV 的 `persistentVolumeReclaimPolicy` 改成 `Delete`。** 现在是 `Retain`：删除 PV 只删 K8s 对象，**OSS 里的数据不会删**。改成 Delete 会连 OSS 数据一起清掉。
+> 5. 一次只试一个 workspace（S2），确认数据完整、能启动，再批量。
+> 6. 删除前先备份：`kubectl get pvc,pv ... -o yaml > backup/`。
 
 ---
 
-## 1. 目标状态架构
+## 1. 方案总览（默认策略）
 
-```text
-┌──────────────────────── Pod (runAsUser=10001, HOME=/root) ────────────────────────┐
-│  agent 进程 UID/GID = 10001, HOME=/root, echo ~ 展开为 /root                      │
-│  可正常读写 /root/.bocomwork，无任何路径迁移成本                                    │
-│  seccomp: RuntimeDefault, allowPrivilegeEscalation: false                         │
-└──────────────────────────────────────┬────────────────────────────────────────────┘
-                                       │ 挂载点（由 ossfs 合成 uid=10001,gid=10001,umask=022）
-                                       ▼
-    oss://<bucket>/workspaces/<ws>/ ── workspace/ bocomwork/ config/ share/ state/ cache/
-```
+不再依赖逐个打注解。**operator 带全局默认 UID**（启动参数 `--default-run-as-user=10001`），对每个 workspace 的 Pod 模板：
 
-| 治理层级 | 改动内容 | 变更位置 |
-|---|---|---|
-| **镜像层** | 赋予 `/root` 给 10001 权限，保持 `HOME=/root`，预建系统目录 | Agent 基础镜像 Dockerfile |
-| **存储层** | SC `otherOpts` 增加 `-o uid=10001,gid=10001,umask=022` | StorageClass 配置 |
-| **PV 层** | 存量 PV 逐个平滑重建以加载新参数（OSS 数据不动） | K8s 资源调度 |
-| **控制器** | 支持基于注解 `ai.example.com/run-as-user` 动态注入 SecurityContext | `workspace_controller.go`（§3） |
+> **当前提交的配置默认仍是 root**：`config/manager/manager.yaml` 和 `deploy/install.yaml` 里是 `--default-run-as-user=0`，只发布新代码不会有任何行为变化。
+> **切换为非 root 的开关就是 §2 第 3 步把这个值从 `0` 改成 `10001`**；改回 `0` 即全局回退。
 
----
 
-## 2. 前置检查（只读）
+| 条件 | 结果 |
+|---|---|
+| PV 是 OSS 且 `otherOpts` 含 `uid=10001` 与 `gid=10001` | **非 root**：`runAsUser/Group=10001`、`runAsNonRoot`、`capabilities.drop=[ALL]`、`allowPrivilegeEscalation=false`、不设 fsGroup |
+| PV 不满足（旧 PV / 非 OSS / 还没绑定） | **保持镜像用户（root）**，打日志 + Warning Event `RunAsUserSkipped`，**不报错、不重启** |
+| 注解 `ai.example.com/run-as-user: "0"` | 该 workspace **显式退出**，保持 root（单个回滚开关） |
+| 注解为其他正整数 | 以该 UID 运行（同样要求 PV 带对应 uid/gid） |
+| 注解非法 | 忽略，使用默认值 |
+| 查询 PVC/PV 临时失败 | 本轮 reconcile 报错重试，**不会回退成 root**（避免 Pod 模板来回翻转导致重启） |
 
-在正式开始前，在跳板机上确认以下环境信息：
+因此新建的 workspace：SC 带 uid → operator 自动建的 PV 带 uid → 自动非 root。存量 workspace：重建 PV 后，**下次 Pod 模板被 reconcile 修改（唤醒）时**自动非 root。**不需要任何打注解操作**（`"0"` 仅作回滚）。
+
+> 默认策略只在「会修改 Pod 模板的 reconcile」生效（`workspacePredicate` 忽略注解变化；休眠路径不改模板）。已运行的 Pod 不会被中途重启，等下次启动生效即可。
+
+### 1.1 迁移进度可视化
+
+`Workspace.status.runAsUser` 记录 **Deployment Pod 模板**的 UID（0 = root/镜像用户，>0 = 非 root），`kubectl get ws` 多了 `RunAs` 列：
 
 ```bash
 export NS=bocomwork
-export BUCKET='<your-bucket>'
+kubectl -n $NS get workspace                      # RunAs 列：0=仍是 root，10001=非 root，空=Deployment 尚未创建
+# 统计
+kubectl -n $NS get workspace -o json | jq -r '
+  .items | group_by(.status.runAsUser // "unset")
+  | map({runAs: (.[0].status.runAsUser // "unset"), count: length})'
+# 还是 root 的 workspace 清单
+kubectl -n $NS get workspace -o json | jq -r '.items[] | select((.status.runAsUser // 0)==0) | .metadata.name'
+# 已非 root 的清单
+kubectl -n $NS get workspace -o json | jq -r '.items[] | select((.status.runAsUser // 0)>0) | .metadata.name'
+```
+
+**注意**：`RunAs` 反映的是 *Pod 模板*。刚重建 PV、还没唤醒的 workspace 仍显示 0；唤醒后变 10001。运行中 Pod 的真实身份以 `kubectl debug`/`id` 为准。
+
+「PV 还没重建」的存量卷（决定谁需要做 S2）：
+
+```bash
+kubectl get pv -o json | jq -r '.items[]
+  | select(.spec.csi.driver=="ossplugin.csi.alibabacloud.com")
+  | select((.spec.csi.volumeAttributes.otherOpts // "") | test("uid=10001") | not)
+  | .metadata.name'
+# 被跳过的原因
+kubectl -n $NS get events --field-selector reason=RunAsUserSkipped
+```
+
+---
+
+## 2. 发布顺序（必须按序）
+
+1. **镜像**（`agent-work` 的 `Dockerfile.musl/glibc` + `dist/Dockerfile` 二次构建，见 §4），并让**所有** workspace 先用上新镜像。
+   *旧镜像没有 10001 属主的 `/root`、`/app`，如果旧镜像 + 已重建 PV → 非 root 会启动失败。operator 不检查镜像，这一步靠流程保证。*
+2. **StorageClass** 追加 uid/gid（§5）。之后新建 workspace 的 PV 才带 uid。
+3. **operator 发新版本**（`--default-run-as-user=0`，仍是 root，无行为变化），再**打开开关：把 `0` 改成 `10001`**：
+   ```bash
+   # 方式 A：改 deploy/install.yaml 中 manager 容器 args 的这一行，然后 kubectl apply -f deploy/install.yaml
+   #           - --default-run-as-user=0      →      - --default-run-as-user=10001
+   #   同时把 config/manager/manager.yaml 里同一行也改成 10001，否则下次 make build-installer 会改回 0
+   # 方式 B：线上直接 patch（args 下标需先确认；本仓库 manager 容器里该参数是第 4 个，即 /args/3）
+   kubectl -n agent-deploy-system get deploy agent-deploy-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}'
+   kubectl -n agent-deploy-system patch deploy agent-deploy-controller-manager --type json \
+     -p '[{"op":"replace","path":"/spec/template/spec/containers/0/args/3","value":"--default-run-as-user=10001"}]'
+   kubectl -n agent-deploy-system rollout status deploy/agent-deploy-controller-manager
+   ```
+   （方式 B 的容器下标 `0` 需先确认是 manager 容器。）2 副本滚动，期间旧 leader 不认识新策略，但没有任何 Pod 模板被改动，无影响。
+   此时所有 PV 仍是旧的存量 workspace 保持 root，**不会批量重启**。
+4. **逐批重建存量 PV**（§6）。
+
+---
+
+## 3. 代码实现（已落地，未提交）
+
+`internal/controller/workspace_controller.go`
+
+- `Reconciler.DefaultRunAsUser` ← `--default-run-as-user`（0 = 关闭默认）。
+- `resolveRunAsUser`：默认值/注解解析 + `volumeBlocksRunAsUser`（PVC 存在且已绑定 → PV 是 OSS CSI → `otherOpts` 含匹配 `uid=`/`gid=`）。
+- `applyNonRoot`：`RunAsUser=RunAsGroup=uid`、`RunAsNonRoot=true`、`Capabilities{Drop:[ALL]}`（不设 Add，**不设 FSGroup**：OSS 卷 RWX 且 CSIDriver `fsGroupPolicy=ReadWriteOnceWithFSType`，fsGroup 本就不会生效）。
+- 兜底建 PV（SC 无 `otherOpts` 时）也会追加 `uid/gid/umask`；SC 显式配置时以 SC 为准。
+- `status.runAsUser` + `RunAs` printcolumn；缓存里的 Deployment 保留 Pod 级 SecurityContext 用于该字段（其余仍剥离）。
+- 单元测试：`internal/controller/workspace_runasuser_test.go`（注解解析、applyNonRoot、otherOpts 解析、PV 守卫全分支）。
+
+---
+
+## 4. 镜像（已改）
+
+- `agent-work/Dockerfile.musl`、`Dockerfile.glibc`：创建 10001 用户（**不写 `USER`**）、预建 `/root/*` 目录、`chmod 755 /root`、`chown -R 10001 /root`、`chown 10001 /app`、`HOME=/root`。
+- `dist/Dockerfile`：`COPY --chown=10001:10001` dist/、opencode、APPEND_SYSTEM.md，`chown /root/.pi/agent`。
+- `dist/move.sh`：`cp -a` 改为 `cp`（非 root 无法保留属主，busybox 可能报错）。
+- `dist/workspace.json`：NAS 共享卷 `readOnly: true`。
+
+> **不要在镜像写 `USER 10001`**：是否非 root 只由 operator 决定。固化 USER 会绕过「PV 未重建就保持 root」的保护，旧 PV 下直接写入失败。
+
+自测：`docker run --rm --user 10001:10001 <image> sh -c 'id; echo ~; touch ~/.config/.t /app/.t'`，并完整跑 `apikey.sh && move.sh && start-prod.sh`（`move.sh` 要覆盖「有新 tar / 新 opencode」分支）。
+
+---
+
+## 5. StorageClass
+
+`deploy-ack/storageclass.yaml`、`deploy/oss/storageclass.yaml` 已加 `-o uid=10001,gid=10001,umask=022`。线上执行：
+
+```bash
 export SC=alicloud-oss
-export APP_UID=10001
-
-# 2.1 确认 OSS StorageClass 当前挂载参数
-kubectl get sc $SC -o yaml | grep -A 5 "parameters:"
-
-# 2.2 抽查存量 Workspace 的 OSS 挂载路径
-export WS=ws-<ID>
-kubectl -n $NS get pvc ${WS}-pvc -o jsonpath='{.spec.volumeName}{"\n"}'
-kubectl get pv ${WS}-pv -o jsonpath='{.spec.csi.volumeAttributes.path}{"\n"}'
-# 期望返回: /workspaces/$WS
-
-# 2.3 记录 OSS 对象数（对比基线，确保无数据变动）
-ossutil ls -s "oss://$BUCKET/workspaces/$WS/" | tail -5 | tee /tmp/oss-count-before.txt
-
-# 2.4 查看当前 Pod 内运行用户与 HOME 现状
-kubectl -n $NS exec deploy/${WS}-deploy -- sh -c 'id; echo HOME=$HOME; ls -ld /root; ls -ld /root/.bocomwork 2>/dev/null'
-```
-
----
-
-## 3. 控制器改造：注解灰度开关
-
-为确保**平滑灰度、单点可控、支持秒级回滚**，不采用一刀切的全局写死方式，而是引入注解控制：**不加注解保持历史 root 行为，显式加注解才切换非 root**。
-
-### 3.1 代码实现 (`internal/controller/workspace_controller.go`)
-
-在常量定义区新增：
-```go
-// runAsUserAnnotation opts a single Workspace into running as a non-root UID.
-// Absent annotation keeps the historical root behaviour, so the migration can be
-// canaried per Workspace and rolled back without redeploying the controller.
-const runAsUserAnnotation = "ai.example.com/run-as-user"
-```
-
-在 `reconcileDeployment` 方法中，获取 `podSecurityContext, containerSecurityContext := buildWorkspaceSecurityContexts()` 之后加入解析逻辑：
-
-```go
-if raw := ws.Annotations[runAsUserAnnotation]; raw != "" {
-	uid, convErr := strconv.ParseInt(raw, 10, 64)
-	switch {
-	case convErr != nil:
-		log.Error(convErr, "Ignoring unparsable run-as-user annotation",
-			"value", raw, "annotation", runAsUserAnnotation)
-	case uid <= 0:
-		log.Info("Ignoring non-positive run-as-user annotation, keeping image user",
-			"value", raw, "annotation", runAsUserAnnotation)
-	default:
-		podSecurityContext.RunAsUser = &uid
-		podSecurityContext.RunAsGroup = &uid
-		podSecurityContext.FSGroup = &uid
-		podSecurityContext.RunAsNonRoot = boolPtr(true)
-	}
-}
-```
-
-*说明：更新路径已具备 `DeepEqual(podSpec.SecurityContext, podSecurityContext)` 自动收敛，存量 Deployment 会在加/减注解时自动同步并重新调度，无需手动修改 Deployment。*
-
-### 3.2 编译与更新部署
-```bash
-make manifests generate && make test
-IMG=<registry>/workspace-operator:<tag> && make docker-build docker-push IMG=$IMG
-kubectl -n agent-deploy-system set image deploy/agent-deploy-controller-manager manager=$IMG
-kubectl -n agent-deploy-system rollout status deploy/agent-deploy-controller-manager
-```
-
----
-
-## 4. 镜像适配（Agent Image）
-
-保证 `~` 依然指向 `/root`，避免路径迁移与用户混淆。
-
-### Dockerfile 关键调整：
-```dockerfile
-# 1) 创建高位专属 UID 10001 用户，家目录依然指定为 /root
-RUN groupadd -g 10001 agent && \
-    useradd -u 10001 -g 10001 -d /root -s /bin/bash agent
-
-# 2) 【核心】开放 /root 权限，使得 10001 用户可自由进出和读写
-#    Linux 默认 /root 是 0700，必须赋权否则普通用户无法进入 ~
-RUN chmod 755 /root && \
-    chown -R 10001:10001 /root
-
-# 3) 预建常用的内部目录（防止运行时由于父目录权限无法创建）
-RUN mkdir -p /root/.bocomwork /root/.config /root/.local /root/.cache && \
-    chown -R 10001:10001 /root/.bocomwork /root/.config /root/.local /root/.cache
-
-# 4) 显式固定 HOME 环境变量为 /root
-ENV HOME=/root
-USER 10001:10001
-WORKDIR /root
-```
-
-**自测要点**：
-* 本地构建后运行 `docker run --rm -it <image> bash`
-* 执行 `id` 输出应为 `uid=10001(agent) gid=10001(agent)`
-* 执行 `echo ~` 和 `echo $HOME` 必须输出 `/root`
-* 执行 `touch ~/.bocomwork/test.txt && rm ~/.bocomwork/test.txt` 验证成功
-
----
-
-## 5. StorageClass 挂载参数调整
-
-调整 StorageClass 的 `otherOpts`，增加 OSS 客户端属主映射参数。
-
-```bash
-# 5.1 备份现有 StorageClass
 kubectl get sc $SC -o yaml > backup/sc-$SC-$(date +%F-%H%M).yaml
-
-# 5.2 Patch 注入 uid=10001,gid=10001,umask=022
+kubectl get sc $SC -o jsonpath='{.parameters.otherOpts}{"\n"}'   # 先看线上现值！patch 会整体覆盖
 kubectl patch sc $SC --type merge -p '{"parameters":{"otherOpts":"-o max_stat_cache_size=100000 -o allow_other -o uid=10001,gid=10001,umask=022"}}'
-
-# 5.3 校验生效
-kubectl get sc $SC -o jsonpath='{.parameters.otherOpts}{"\n"}'
-# 期望输出: -o max_stat_cache_size=100000 -o allow_other -o uid=10001,gid=10001,umask=022
 ```
 
-*注意：此变更对新创建的 PV 自动生效。存量 PV 需在下一步中执行重新绑定。*
+> K8s 中 StorageClass 的 `parameters` **创建后不可变**，上面的 `patch` 大概率会被拒绝。此时需要 `kubectl delete sc` 后用新 yaml `kubectl apply`（SC 删除不影响已存在的 PV/PVC，只影响新建）。操作前务必备份。
+
+此变更**只对新建的 PV 生效**，这也是 §6 要删除重建的原因。
 
 ---
 
-## 6. 分阶段灰度执行
+## 6. 存量 workspace 重建 PV（夜间窗口）
 
-遵循“**一次只动一个变量**”原则：
-* **S1**：全新租户验证（端到端打通）
-* **S2**：存量单个空间更新 PV 挂载参数（容器暂不切非 root，验证挂载与数据完整性）
-* **S3**：存量单个空间打注解切非 root（验证业务逻辑与读写）
-* **S4**：批量推广上线
+生产在夜间操作，此时 running 的 workspace 很少，策略：**先停 → 删 → 启动**。休眠/已停止的 workspace 没有 Pod，可直接进入删除步骤。
 
-### S1：新建测试工作空间验证（全新环境）
+### S1：新建 workspace 验证
+SC 与 operator 已就绪后新建一个 workspace，应 `RunAs=10001`，且 `kubectl debug` 进入后 `id` 为 10001、能写 `~/.bocomwork`。
 
-```bash
-kubectl -n $NS apply -f - <<'EOF'
-apiVersion: ai.example.com/v1alpha1
-kind: Workspace
-metadata:
-  name: ws-canary-10001
-  namespace: bocomwork
-  annotations:
-    ai.example.com/run-as-user: "10001"
-spec:
-  owner: canary-tester
-  runtime:
-    image: <your-registry>/bocomwork:<new-10001-tag>
-    cpu: "1"
-    memory: "2Gi"
-  storage:
-    size: "1Gi"
-EOF
-
-# 验证就绪
-kubectl -n $NS wait --for=condition=Available deploy/ws-canary-10001-deploy --timeout=300s
-
-# 验证容器内身份与路径
-kubectl -n $NS exec deploy/ws-canary-10001-deploy -- id
-# 期望: uid=10001 gid=10001
-
-kubectl -n $NS exec deploy/ws-canary-10001-deploy -- sh -c 'echo ~; echo $HOME'
-# 期望均为: /root
-
-kubectl -n $NS exec deploy/ws-canary-10001-deploy -- sh -c 'touch ~/.bocomwork/.write_test && rm ~/.bocomwork/.write_test && echo WRITE_OK'
-# 期望输出: WRITE_OK
-```
-
-### S2：存量空间重建 PV（保持 root，仅变更 OSS 映射）
-
-选择一个存量 Workspace（如 `ws-test01`）：
+### S2：单个存量 workspace
 
 ```bash
-export WS=ws-test01
+export WS=ws-xxx
+# 0) 备份
+mkdir -p backup
+kubectl -n $NS get pvc ${WS}-pvc -o yaml > backup/${WS}-pvc.yaml
+PV=$(kubectl -n $NS get pvc ${WS}-pvc -o jsonpath='{.spec.volumeName}')
+kubectl get pv $PV -o yaml > backup/${WS}-pv.yaml
+kubectl get pv $PV -o jsonpath='{.spec.persistentVolumeReclaimPolicy} {.spec.csi.volumeAttributes.path}{"\n"}'
+# 必须输出: Retain /workspaces/<WS>   —— 不是就停手
 
-# 1) 停止工作空间（副本缩为 0，释放 OSS 卷挂载占用）
+# 1) 停止并确认 Pod 已消失
 kubectl -n $NS patch workspace $WS --type merge -p '{"spec":{"stopped":true}}'
 kubectl -n $NS wait --for=delete pod -l "app=workspace,workspace=$WS" --timeout=300s
 
-# 2) 删除旧参数的 PVC 和 PV（OSS 数据保留在远端，不受任何影响）
+# 2) ⛔ 删除（先 PVC 后 PV）。仅删 K8s 对象，OSS 数据保留
 kubectl -n $NS delete pvc ${WS}-pvc
-kubectl delete pv ${WS}-pv
+kubectl delete pv $PV
 
-# 3) 启动工作空间（触发 Controller 使用新的 SC 参数自动重新创建 PV & PVC）
+# 3) 启动：operator 按新 SC 重建 PV/PVC
 kubectl -n $NS patch workspace $WS --type merge -p '{"spec":{"stopped":false}}'
+kubectl get pv ${WS}-pv -o jsonpath='{.spec.csi.volumeAttributes.otherOpts}{"\n"}'   # 应含 uid=10001,gid=10001
 
-# 4) 等待 PV 重建并确认包含 uid=10001
-until kubectl get pv ${WS}-pv -o jsonpath='{.spec.csi.volumeAttributes.otherOpts}' 2>/dev/null | grep -q 'uid=10001'; do
-  sleep 3
-done
-echo "PV_REBUILT_WITH_10001_OK"
-
-# 5) 数据核对（此时由于仍是 root 启动，验证数据是否完好无损）
-kubectl -n $NS exec deploy/${WS}-deploy -- sh -c 'ls -ln /root/.bocomwork | head -10'
+# 4) 验证
+kubectl -n $NS get workspace $WS           # RunAs=10001
+kubectl -n $NS get events --field-selector involvedObject.name=$WS | grep RunAsUserSkipped   # 不应有
 ```
 
-### S3：存量空间启用非 root 用户运行
+> 若 operator 在你删除 PVC/PV 后、启动前就把它们按新 SC 重建了，是正常且期望的行为（新 PV 带 uid）。
+> 步骤 3 后 `RunAs` 仍为 0：看 Warning Event，多半是 SC 还没改 / PV 没重建 / 镜像未更新。
+
+### S3：批量（夜间）
 
 ```bash
-# 打上注解切换到 UID 10001
-kubectl -n $NS annotate workspace $WS ai.example.com/run-as-user="10001" --overwrite
-
-# 等待 Deployment 滚动更新就绪
-kubectl -n $NS rollout status deploy/${WS}-deploy --timeout=300s
-
-# 进入终态验证
-kubectl -n $NS exec deploy/${WS}-deploy -- id
-# 期望: uid=10001 gid=10001
-
-kubectl -n $NS exec deploy/${WS}-deploy -- sh -c 'echo ~; echo $HOME'
-# 期望: /root /root
-
-kubectl -n $NS exec deploy/${WS}-deploy -- sh -c 'ls -ld ~/.bocomwork; touch ~/.bocomwork/.canary && rm ~/.bocomwork/.canary && echo PASS'
-# 期望: PASS
-```
-
-### S4：批量执行上线（使用脚本安全受控执行）
-
-针对批量迁移，利用暂停 Controller 的方式规避删除与重建时的调度竞态：
-
-```bash
-# 准备目标清单
-cat <<EOF > ws-batch-list.txt
-ws-user01
-ws-user02
-ws-user03
-EOF
-
-# A. 批量停止
+# ws-batch-list.txt：每行一个已停止或休眠的 workspace（可先用 §1.1 的 root 清单）
 for W in $(cat ws-batch-list.txt); do
   kubectl -n $NS patch workspace $W --type merge -p '{"spec":{"stopped":true}}'
 done
-kubectl -n $NS wait --for=delete pod -l app=workspace --timeout=600s
-
-# B. 临时暂停 Operator，消除重建竞态
-kubectl -n agent-deploy-system scale deploy/agent-deploy-controller-manager --replicas=0
-
-# C. 批量清除旧 PV/PVC
 for W in $(cat ws-batch-list.txt); do
-  kubectl -n $NS delete pvc ${W}-pvc --ignore-not-found
-  kubectl delete pv ${W}-pv --ignore-not-found
-  # 同步打上注解
-  kubectl -n $NS annotate workspace $W ai.example.com/run-as-user="10001" --overwrite
+  kubectl -n $NS wait --for=delete pod -l "app=workspace,workspace=$W" --timeout=600s
 done
-
-# D. 恢复 Operator 自动重建并批量启动
-kubectl -n agent-deploy-system scale deploy/agent-deploy-controller-manager --replicas=1
-
+# ⛔ 删除段：确认上面全部 Pod 已消失再执行
+for W in $(cat ws-batch-list.txt); do
+  PV=$(kubectl -n $NS get pvc ${W}-pvc -o jsonpath='{.spec.volumeName}' 2>/dev/null)
+  kubectl -n $NS delete pvc ${W}-pvc --ignore-not-found
+  [ -n "$PV" ] && kubectl delete pv "$PV" --ignore-not-found
+done
+# 启动（也可用 cmd/api-server 的批量重启管理页分批拉起，避免集中冷启动）
 for W in $(cat ws-batch-list.txt); do
   kubectl -n $NS patch workspace $W --type merge -p '{"spec":{"stopped":false}}'
 done
 ```
 
----
-
-## 7. 秒级回滚方案
-
-如果在非 root 化过程中遇到业务报错或不兼容，各阶段均提供独立、确定的回滚指令：
-
-### 7.1 单个 Workspace 紧急回滚为 root 运行（**耗时 < 30 秒**）
-只需移除注解，Controller 调谐器会自动将 Pod 恢复为原有的 root 启动模式：
-```bash
-kubectl -n $NS annotate workspace $WS ai.example.com/run-as-user-
-```
-> **原理保底**：因为 OSS 挂载设置了 `uid=10001`，当回滚为 root (uid=0) 启动时，由于 root 原生具备 `CAP_DAC_OVERRIDE` 能力，依然能无障碍读写 10001 属主的文件，因此**无需回退存储参数即可立即恢复业务**。
-
-### 7.2 挂载参数彻底回退
-如果需要将 StorageClass 和 PV 完全恢复为旧版无 uid/gid 模式：
-```bash
-# 1. 恢复 StorageClass
-kubectl apply -f backup/sc-$SC-<timestamp>.yaml
-
-# 2. 对指定工作空间重复 S2 的“停 -> 删 PVC/PV -> 启动”操作，PV 自动按原参数重建
-```
+不需要缩容 operator：workspace 已停止，operator 重建 PV 用的就是新 SC。**休眠(Sleeping)的 workspace 没有 Pod，可不唤醒**，只做删除，等用户下次使用时自动非 root（但进度表里会一直显示 0，直到唤醒）。需要尽快把进度推满，用批量重启工具分批拉起。
 
 ---
 
-## 8. 终态验收清单
+## 7. 回滚
 
-| 验收项 | 检查命令 | 预期输出 | 说明 |
-|---|---|---|---|
-| **生效 UID** | `kubectl exec -it <pod> -- id` | `uid=10001 gid=10001` | 已脱离 root 特权 |
-| **家目录展开** | `kubectl exec -it <pod> -- sh -c 'echo ~'` | `/root` | `~` 完全保持历史路径 |
-| **环境变量** | `kubectl exec -it <pod> -- sh -c 'echo $HOME'` | `/root` | 保证各类 cli 依赖正常寻找配置 |
-| **业务数据可写** | `kubectl exec -it <pod> -- touch ~/.bocomwork/.p && rm ~/.bocomwork/.p` | 返回成功 | OSS 卷属主正确合成映射 |
-| **配置目录可写** | `kubectl exec -it <pod> -- touch ~/.config/.p && rm ~/.config/.p` | 返回成功 | 镜像层授权生效 |
-| **防提权** | `kubectl exec -it <pod> -- cat /proc/self/status \| grep NoNewPrivs` | `NoNewPrivs: 1` | `allowPrivilegeEscalation: false` |
-| **容器能力** | `kubectl exec -it <pod> -- capsh --print` | 无 `CAP_SYS_ADMIN` 等危险项 | 最小特权集生效 |
-| **对象完整性** | `ossutil ls -s "oss://$BUCKET/workspaces/$WS/"` | 对象数与迁移前完全一致 | OSS 存储数据未受损 |
+- **单个 workspace**：`kubectl -n $NS annotate workspace $WS ai.example.com/run-as-user="0" --overwrite`，下次启动（停→启）生效，回到 root。root 具备 `DAC_OVERRIDE`，可读写 uid=10001 属主的文件，**不需回退存储**。
+- **全局**：operator 去掉 `--default-run-as-user`（或设 0）后，下一次模板被 reconcile 时回到 root；同样无需动 PV。
+- **彻底回退挂载参数**：恢复 SC 备份，再对目标 workspace 重复 S2（⛔ 同样的删除铁律）。
+
+---
+
+## 8. 迁移后行为变化（有影响的操作，全部在这里）
+
+| 变化 | 影响 / 做法 |
+|---|---|
+| `kubectl exec` 进容器现在是 **10001**，不再是 root | 需要 root 排查用 `kubectl debug -it <pod> --target=<container> --image=<img> -- sh`（临时容器仍受集群策略约束）。`exec` 里 `apk add` / `apt install` / 改 `/etc`、`/usr` 均失败 |
+| `npm i -g`、`pip install`（全局）失败 | 全局目录 root 属主。可用 `pip install --user`（落到 `~/.local`，不在 OSS 卷上，**重启丢失**）。需要固定工具请进镜像 |
+| `postStartScript` 以 10001 执行 | 脚本里写 `/etc`、`/usr`、装包、绑 <1024 端口会失败 |
+| `capabilities` 全部丢弃（`drop: ALL`） | 不能 `chown` 到其他用户、`setuid/setgid`、`ping`(raw socket)、绑特权端口。应用端口 3001/25808 不受影响 |
+| `allowPrivilegeEscalation=false`（NoNewPrivs） | `sudo`、setuid 程序不可用 |
+| 文件属主 | OSS 卷内文件一律显示 `10001:10001`、权限由 `umask=022` 合成（目录 755/文件 644）。`chown/chmod` 在 OSS 卷上无效或被忽略 |
+| 回滚到 root 后 | OSS 卷依旧 10001 属主，root 靠 `DAC_OVERRIDE` 仍可读写；但镜像层 `/root` 下新建文件会是 root 属主 |
+| `/root`、`/app` 之外的镜像目录不可写 | 只有 `/root`（整树）、`/app` 目录本身、`/tmp`、OSS 卷可写。agent 写其他路径会报权限错误 |
+| 热更新（`move.sh`） | 只在 `/app/out`、`/app/packages`、`/usr/local/bin/opencode` 上操作，均已归 10001。若以后新增热更新目标路径，需同步在镜像里 `chown` |
+| NAS 共享卷 `/opt/bocom-defaults` 改为只读 | 不能在 workspace 内往里写。发布新版本需在 NAS 侧（别处）替换文件；`move.sh` 只读取（先 copy 到别的路径，不在共享卷上原地改） |
+| 旧镜像 + 已重建（带 uid）的 PV | 非 root 会因 `/root`/`/app` 属主是 root 而启动失败。**务必先完成镜像升级**（§2） |
+| 新建 workspace 使用了非 OSS 存储 | 保持 root（守卫），Event 会提示。目前仅 OSS 受支持 |
+| `kubectl get ws` 新增 `RunAs` 列 | CRD 新增 `status.runAsUser`，需要 `make manifests` 后 apply 新 CRD |
+| operator 内存缓存 | Deployment 缓存多保留一个小字段（Pod SecurityContext），可忽略 |
+
+---
+
+## 9. 终态验收
+
+| 项 | 命令 | 预期 |
+|---|---|---|
+| 进度 | `kubectl -n $NS get workspace` | `RunAs=10001` |
+| 无 skip 事件 | `kubectl -n $NS get events --field-selector reason=RunAsUserSkipped` | 空 |
+| UID | `kubectl -n $NS exec deploy/${WS}-deploy -- id` | `uid=10001 gid=10001` |
+| HOME | `... -- sh -c 'echo ~'` | `/root` |
+| OSS 可写 | `... -- sh -c 'touch ~/.bocomwork/.p && rm ~/.bocomwork/.p'` | 成功 |
+| 配置目录可写 | `... -- sh -c 'touch ~/.config/.p && rm ~/.config/.p'` | 成功 |
+| NoNewPrivs | `... -- grep NoNewPrivs /proc/self/status` | `NoNewPrivs: 1` |
+| 能力 | `... -- grep Cap /proc/self/status` | `CapEff/CapPrm/CapBnd` 全 0 |
+| OSS 数据 | `ossutil ls -s oss://$BUCKET/workspaces/$WS/` | 与迁移前一致 |

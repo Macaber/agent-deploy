@@ -32,15 +32,15 @@ function ToastItem({ toast, reduce }: { toast: Toast; reduce: boolean }) {
 
   const tones = {
     success: {
-      icon: <CircleCheck className="size-4" />,
+      icon: <CircleCheck className="size-4" strokeWidth={1.5} />,
       className: 'text-success',
     },
     error: {
-      icon: <CircleAlert className="size-4" />,
+      icon: <CircleAlert className="size-4" strokeWidth={1.5} />,
       className: 'text-destructive',
     },
     info: {
-      icon: <Info className="size-4" />,
+      icon: <Info className="size-4" strokeWidth={1.5} />,
       className: 'text-info',
     },
   }[toast.tone];
@@ -70,7 +70,7 @@ function ToastItem({ toast, reduce }: { toast: Toast; reduce: boolean }) {
         onClick={() => dismiss(toast.id)}
         className="grid size-6 shrink-0 place-items-center rounded text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40"
       >
-        <X className="size-3" />
+        <X className="size-3" strokeWidth={1.5} />
       </button>
     </motion.div>
   );

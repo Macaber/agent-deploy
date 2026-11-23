@@ -34,7 +34,7 @@
 | 位置 | 参数 | 说明 |
 | :--- | :--- | :--- |
 | `StorageClass alicloud-oss` | `fuseType: "ossfs"` | 指定 1.0 客户端；`ossfs2`、`direct` 均不使用 |
-| SC / PV | `otherOpts: "-o max_stat_cache_size=100000 -o allow_other"` | 1.0 参数；`allow_other` 保证容器内非 root 用户可读写 |
+| SC / PV | `otherOpts: "-o max_stat_cache_size=100000 -o allow_other -o uid=10001,gid=10001,umask=022"` | 1.0 参数；`uid/gid` 让 ossfs 把全部文件呈现为 10001 属主（非 root 运行必需，需与 `--default-run-as-user` 一致）；改动只对新建 PV 生效，旧 PV 见 `docs/workspace-nonroot-migration.md` |
 | SC / PV | `url: "http://<oss-endpoint>"` | 专有云/内网 OSS 显式写协议与内网 Endpoint（不写协议会被驱动强制补 `https://`） |
 | SC（按需） | `sigVersion: "v4"` + `region` | 仅当 Bucket 为公共云新建 Bucket（2025-09-01 起强制 V4）时添加；存量专有云 Bucket 保持 V1，不要加 |
 
