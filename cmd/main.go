@@ -97,6 +97,11 @@ func main() {
 	flag.Float64Var(&kubeAPIQPS, "kube-api-qps", 300, "Maximum QPS to the API server from this controller.")
 	flag.IntVar(&kubeAPIBurst, "kube-api-burst", 600, "Maximum burst for throttle to the API server.")
 	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 30, "Maximum number of concurrent reconciles for the controller.")
+	var defaultRunAsUser int64
+	flag.Int64Var(&defaultRunAsUser, "default-run-as-user", 0,
+		"Non-root UID/GID every workspace runs as once its OSS volume carries matching uid/gid mount options "+
+			"(0 disables the default; the ai.example.com/run-as-user annotation still works). "+
+			"Workspaces whose PV has not been recreated keep running as the image user.")
 	var activeInstancesSyncInterval time.Duration
 	flag.DurationVar(&activeInstancesSyncInterval, "active-instances-sync-interval", 0,
 		"How often to rebuild the workspace_active_instances gauge from a cluster-wide Workspace list; "+
@@ -238,6 +243,7 @@ func main() {
 		Recorder:                    mgr.GetEventRecorderFor("workspace-controller"),
 		GlobalAllowedNamespaces:     globalAllowedNamespaces,
 		MaxConcurrentReconciles:     maxConcurrentReconciles,
+		DefaultRunAsUser:            defaultRunAsUser,
 		ActiveInstancesSyncInterval: activeInstancesSyncInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "workspace")
@@ -321,7 +327,9 @@ func stripDeploymentForCache(obj interface{}) (interface{}, error) {
 	if d, ok := obj.(*appsv1.Deployment); ok {
 		d.SetManagedFields(nil)
 		d.Annotations = nil
-		d.Spec.Template.Spec = corev1.PodSpec{}
+		// Keep the Pod-level SecurityContext: Workspace status reports the observed
+		// runAsUser (migration progress) from it.
+		d.Spec.Template.Spec = corev1.PodSpec{SecurityContext: d.Spec.Template.Spec.SecurityContext}
 	}
 	return obj, nil
 }

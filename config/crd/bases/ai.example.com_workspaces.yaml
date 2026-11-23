@@ -21,6 +21,10 @@ spec:
     - jsonPath: .spec.owner
       name: Owner
       type: string
+    - description: 0 = root (legacy), >0 = non-root UID
+      jsonPath: .status.runAsUser
+      name: RunAs
+      type: integer
     - jsonPath: .status.startedAt
       name: Started
       type: date
@@ -526,6 +530,15 @@ spec:
                 description: PVCName is the name of the persistent volume claim allocated
                   for the workspace
                 type: string
+              runAsUser:
+                description: |-
+                  RunAsUser is the UID the workspace Pod template runs as, as observed on the
+                  workspace Deployment. 0 means the image's own (root) user is used; a positive
+                  value means the workspace runs as that non-root UID. Unset until the
+                  Deployment exists. It reflects the Pod template, so a running Pod may still be
+                  on the previous value until it is restarted.
+                format: int64
+                type: integer
               startedAt:
                 description: |-
                   StartedAt is the timestamp when the workspace transitioned into the Running state.

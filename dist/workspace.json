@@ -1,0 +1,56 @@
+{
+  "userId": "9875577",
+  "namespace": "bocomwork",
+  "image": "docker.io/library/bocomwork-musl:v1.0.14.1",
+  "port": 3001,
+  "cpu": "1",
+  "memory": "2Gi",
+  "storageSize": "1Gi",
+  "storageClass": "",
+  "idleTimeout": "40m",
+  "healthPath": "/health",
+  "command": [],
+  "args": [],
+  "postStartScript": "",
+  "env": [
+    {
+      "name": "OA",
+      "value": "sun_yunfeng"
+    },
+    {
+      "name": "USER_CODE",
+      "value": "9875577"
+    }
+  ],
+  "volumeMounts": [
+    {
+      "mountPath": "/root/.bocomwork",
+      "subPath": "bocomwork"
+    },
+    {
+      "mountPath": "/workspace",
+      "subPath": "workspace"
+    },
+    {
+      "mountPath": "/root/.bocomcode",
+      "subPath": "bocomcode"
+    }
+  ],
+  "sharedVolumeMounts": [
+    {
+      "pvcName": "bocomwork-share-nas",
+      "mountPath": "/opt/bocom-defaults",
+      "subPath": "bocom-defaults",
+      "readOnly": true
+    }
+  ],
+  "configMapVolumeMounts": [
+    {
+      "configMapName": "bocomwork-config",
+      "mountPath": "/app/apikey.sh",
+      "subPath": "apikey.sh",
+      "readOnly": false
+    }
+  ],
+  "initContainers": []
+}
