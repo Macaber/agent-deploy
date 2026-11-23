@@ -29,10 +29,17 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -41,6 +48,7 @@ import (
 
 	aiv1alpha1 "github.com/example/workspace-operator/api/v1alpha1"
 	"github.com/example/workspace-operator/internal/controller"
+	"github.com/example/workspace-operator/internal/egress"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -192,8 +200,20 @@ func main() {
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "fcd9fd4d.example.com",
+		Cache:                  newCacheOptions(),
+		Client: client.Options{
+			// Cluster-scoped, rarely read lookups: serve from the API server
+			// instead of holding a cluster-wide informer (PV count grows with
+			// the number of workspaces).
+			Cache: &client.CacheOptions{DisableFor: []client.Object{
+				&corev1.PersistentVolume{}, &storagev1.StorageClass{},
+				// Read (and occasionally mutated) once per reconcile; the full
+				// object is needed, so skip the informer.
+				&corev1.PersistentVolumeClaim{},
+			}},
+		},
+		LeaderElection:   enableLeaderElection,
+		LeaderElectionID: "fcd9fd4d.example.com",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -214,6 +234,7 @@ func main() {
 	if err := (&controller.WorkspaceReconciler{
 		Client:                      mgr.GetClient(),
 		Scheme:                      mgr.GetScheme(),
+		APIReader:                   mgr.GetAPIReader(),
 		Recorder:                    mgr.GetEventRecorderFor("workspace-controller"),
 		GlobalAllowedNamespaces:     globalAllowedNamespaces,
 		MaxConcurrentReconciles:     maxConcurrentReconciles,
@@ -258,4 +279,49 @@ func parseNamespaceRuleJSON(raw string) ([]aiv1alpha1.WorkspaceNetworkPolicyName
 		}
 	}
 	return rules, nil
+}
+
+// stripCachedObject drops fields the controller never reads before an object
+// is stored in the informer cache. managedFields is typically 30-50% of an
+// object's size.
+func stripCachedObject(obj interface{}) (interface{}, error) {
+	if m, ok := obj.(metav1.Object); ok {
+		m.SetManagedFields(nil)
+	}
+	return obj, nil
+}
+
+// newCacheOptions bounds informer memory: only objects created by this
+// operator (label app=workspace) are cached for Pod/Deployment, and ConfigMaps are limited to the egress namespace. Reads of the egress
+// proxy objects (which lack the label) must go through APIReader.
+func newCacheOptions() cache.Options {
+	wsOnly := cache.ByObject{Label: labels.SelectorFromSet(labels.Set{"app": "workspace"})}
+	return cache.Options{
+		DefaultTransform: stripCachedObject,
+		ByObject: map[client.Object]cache.ByObject{
+			&corev1.Pod{}: wsOnly,
+			// Deployment keeps status (drives Workspace phase and self-healing)
+			// and template labels (egress migration checks) but not the pod spec.
+			&appsv1.Deployment{}: {
+				Label:     wsOnly.Label,
+				Transform: stripDeploymentForCache,
+			},
+			&corev1.ConfigMap{}: {
+				Namespaces: map[string]cache.Config{egress.Namespace(): {}},
+			},
+		},
+	}
+}
+
+// stripDeploymentForCache removes the pod template spec (the bulk of a
+// Deployment) from the cached copy, keeping what cache readers use: status,
+// replicas and template labels. Anything that mutates a Deployment must read it
+// through the APIReader instead of the cache.
+func stripDeploymentForCache(obj interface{}) (interface{}, error) {
+	if d, ok := obj.(*appsv1.Deployment); ok {
+		d.SetManagedFields(nil)
+		d.Annotations = nil
+		d.Spec.Template.Spec = corev1.PodSpec{}
+	}
+	return obj, nil
 }

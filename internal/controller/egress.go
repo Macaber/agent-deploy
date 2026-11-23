@@ -171,7 +171,7 @@ func (r *WorkspaceReconciler) mapEgressConfig(ctx context.Context, obj client.Ob
 // equivalent to an empty successfully-loaded replica set.
 func (r *WorkspaceReconciler) requireLoadedProxy(ctx context.Context, revision string) error {
 	d := &apps.Deployment{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: egress.Namespace(), Name: "workspace-egress"}, d); err != nil {
+	if err := r.uncachedReader().Get(ctx, client.ObjectKey{Namespace: egress.Namespace(), Name: "workspace-egress"}, d); err != nil {
 		return fmt.Errorf("proxy is not ready for migration: %w", err)
 	}
 	desired := int32(1)
@@ -182,7 +182,7 @@ func (r *WorkspaceReconciler) requireLoadedProxy(ctx context.Context, revision s
 		return fmt.Errorf("proxy deployment has not converged")
 	}
 	pods := &core.PodList{}
-	if err := r.List(ctx, pods, client.InNamespace(egress.Namespace()), client.MatchingLabels{"app.kubernetes.io/name": "workspace-egress"}); err != nil {
+	if err := r.uncachedReader().List(ctx, pods, client.InNamespace(egress.Namespace()), client.MatchingLabels{"app.kubernetes.io/name": "workspace-egress"}); err != nil {
 		return err
 	}
 	active := int32(0)

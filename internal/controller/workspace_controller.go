@@ -91,8 +91,12 @@ const (
 // WorkspaceReconciler reconciles a Workspace object
 type WorkspaceReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	// APIReader reads straight from the API server (no cache). Used for objects
+	// outside the filtered informer cache, e.g. the egress proxy Deployment/Pods.
+	// Falls back to Client when nil (tests).
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Recorder  record.EventRecorder
 	// GlobalAllowedNamespaces holds controller-wide NetworkPolicy egress exceptions that
 	// are applied to EVERY Workspace on top of spec.networkPolicy.allowedNamespaces
 	// (e.g. letting all workspaces export OTLP to a shared collector). Populated from
@@ -887,7 +891,10 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	log := logf.FromContext(ctx)
 	deployName := ws.Name + "-deploy"
 	deploy := &appsv1.Deployment{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: deployName}, deploy)
+	// Uncached: the informer copy of a Deployment has its pod template spec
+	// stripped (see stripDeploymentForCache), and this object is mutated and
+	// written back below, so it must be the full object.
+	err := r.uncachedReader().Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: deployName}, deploy)
 
 	// Operator always owns Deployment.spec.replicas (Stopped / IdleTimeout / default 1).
 	desiredReplicas := computeDesiredReplicas(ws, log)
@@ -1424,7 +1431,9 @@ func computeDesiredReplicas(ws *aiv1alpha1.Workspace, log interface {
 func (r *WorkspaceReconciler) reconcileService(ctx context.Context, ws *aiv1alpha1.Workspace) (string, error) {
 	svcName := ws.Name + "-svc"
 	svc := &corev1.Service{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: svcName}, svc)
+	// Uncached: Services are not watched, so a cached Get would start a full
+	// cluster-wide informer just for this lookup.
+	err := r.uncachedReader().Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: svcName}, svc)
 
 	// Protocol must match the API-server default ("TCP") so the Task 1.2 diff converges.
 	ports := []corev1.ServicePort{
@@ -1490,7 +1499,8 @@ func (r *WorkspaceReconciler) reconcileService(ctx context.Context, ws *aiv1alph
 func (r *WorkspaceReconciler) reconcileIngress(ctx context.Context, ws *aiv1alpha1.Workspace, svcName string) (string, error) {
 	ingressName := ws.Name + "-ingress"
 	ingress := &networkingv1.Ingress{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: ingressName}, ingress)
+	// Uncached for the same reason as Services (no informer for Ingress).
+	err := r.uncachedReader().Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: ingressName}, ingress)
 
 	host := getWorkspaceHost(ws.Name)
 	pathType := networkingv1.PathTypePrefix
@@ -2010,8 +2020,9 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&aiv1alpha1.Workspace{}, builder.WithPredicates(workspacePredicate())).
 		Owns(&appsv1.Deployment{}, builder.WithPredicates(deploymentPredicate())).
-		Owns(&corev1.Service{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Owns(&networkingv1.Ingress{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		// Service/Ingress are intentionally NOT watched: nothing edits them in
+		// production, and they are created/repaired on demand (uncached Get) on
+		// each Workspace reconcile, so no informer is kept for them.
 		// The shared namespace-level NetworkPolicy template is not owned by any single
 		// Workspace, so a mapped watch repairs it across all Workspaces of the
 		// namespace whenever it drifts or is deleted (Task 2.1).
@@ -2394,4 +2405,11 @@ func buildPodLabels(ws *aiv1alpha1.Workspace) map[string]string {
 	}
 	labels[managedByLabelKey] = managedByLabelValue
 	return labels
+}
+
+func (r *WorkspaceReconciler) uncachedReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
