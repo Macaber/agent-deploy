@@ -81,6 +81,7 @@ spec:
         - /manager
         args:
           - --leader-elect
+          - --default-run-as-user=0
           - --health-probe-bind-address=:8081
         image: controller:latest
         name: manager

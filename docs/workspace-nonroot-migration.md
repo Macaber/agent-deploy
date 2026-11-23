@@ -25,8 +25,8 @@
 
 不再依赖逐个打注解。**operator 带全局默认 UID**（启动参数 `--default-run-as-user=10001`），对每个 workspace 的 Pod 模板：
 
-> **当前提交的代码默认仍是 root**：参数缺省为 `0`（关闭），`config/manager/manager.yaml` 里**没有**该参数，所以只发布新代码不会有任何行为变化。
-> **切换为非 root 的开关就是 §2 第 3 步给 operator 加这个参数**；去掉（或设 0）即全局回退。
+> **当前提交的配置默认仍是 root**：`config/manager/manager.yaml` 和 `deploy/install.yaml` 里是 `--default-run-as-user=0`，只发布新代码不会有任何行为变化。
+> **切换为非 root 的开关就是 §2 第 3 步把这个值从 `0` 改成 `10001`**；改回 `0` 即全局回退。
 
 
 | 条件 | 结果 |
@@ -79,13 +79,15 @@ kubectl -n $NS get events --field-selector reason=RunAsUserSkipped
 1. **镜像**（`agent-work` 的 `Dockerfile.musl/glibc` + `dist/Dockerfile` 二次构建，见 §4），并让**所有** workspace 先用上新镜像。
    *旧镜像没有 10001 属主的 `/root`、`/app`，如果旧镜像 + 已重建 PV → 非 root 会启动失败。operator 不检查镜像，这一步靠流程保证。*
 2. **StorageClass** 追加 uid/gid（§5）。之后新建 workspace 的 PV 才带 uid。
-3. **operator 发新版本**（此时仍是 root，无行为变化），再**打开开关**：
+3. **operator 发新版本**（`--default-run-as-user=0`，仍是 root，无行为变化），再**打开开关：把 `0` 改成 `10001`**：
    ```bash
-   # 方式 A：直接编辑 config/manager/manager.yaml，在 args 里加一行后 make deploy
-   #           - --default-run-as-user=10001
-   # 方式 B：线上直接 patch
+   # 方式 A：改 deploy/install.yaml 中 manager 容器 args 的这一行，然后 kubectl apply -f deploy/install.yaml
+   #           - --default-run-as-user=0      →      - --default-run-as-user=10001
+   #   同时把 config/manager/manager.yaml 里同一行也改成 10001，否则下次 make build-installer 会改回 0
+   # 方式 B：线上直接 patch（args 下标需先确认；本仓库 manager 容器里该参数是第 4 个，即 /args/3）
+   kubectl -n agent-deploy-system get deploy agent-deploy-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}'
    kubectl -n agent-deploy-system patch deploy agent-deploy-controller-manager --type json \
-     -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--default-run-as-user=10001"}]'
+     -p '[{"op":"replace","path":"/spec/template/spec/containers/0/args/3","value":"--default-run-as-user=10001"}]'
    kubectl -n agent-deploy-system rollout status deploy/agent-deploy-controller-manager
    ```
    （方式 B 的容器下标 `0` 需先确认是 manager 容器。）2 副本滚动，期间旧 leader 不认识新策略，但没有任何 Pod 模板被改动，无影响。

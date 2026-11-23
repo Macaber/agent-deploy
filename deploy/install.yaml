@@ -29,6 +29,10 @@ spec:
     - jsonPath: .spec.owner
       name: Owner
       type: string
+    - description: 0 = root (legacy), >0 = non-root UID
+      jsonPath: .status.runAsUser
+      name: RunAs
+      type: integer
     - jsonPath: .status.startedAt
       name: Started
       type: date
@@ -534,6 +538,15 @@ spec:
                 description: PVCName is the name of the persistent volume claim allocated
                   for the workspace
                 type: string
+              runAsUser:
+                description: |-
+                  RunAsUser is the UID the workspace Pod template runs as, as observed on the
+                  workspace Deployment. 0 means the image's own (root) user is used; a positive
+                  value means the workspace runs as that non-root UID. Unset until the
+                  Deployment exists. It reflects the Pod template, so a running Pod may still be
+                  on the previous value until it is restarted.
+                format: int64
+                type: integer
               startedAt:
                 description: |-
                   StartedAt is the timestamp when the workspace transitioned into the Running state.
@@ -881,11 +894,16 @@ metadata:
   name: agent-deploy-controller-manager
   namespace: agent-deploy-system
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app.kubernetes.io/name: agent-deploy
       control-plane: controller-manager
+  strategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate
   template:
     metadata:
       annotations:
@@ -894,20 +912,31 @@ spec:
         app.kubernetes.io/name: agent-deploy
         control-plane: controller-manager
     spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: agent-deploy
+                control-plane: controller-manager
+            topologyKey: kubernetes.io/hostname
       containers:
       - args:
         - --metrics-bind-address=:8080
         - --metrics-secure=false
         - --leader-elect
+        - --default-run-as-user=0
         - --health-probe-bind-address=:8081
         command:
         - /manager
         env:
+        - name: GOMEMLIMIT
+          value: 800MiB
         - name: WORKSPACE_DOMAIN
           value: bocomcode
         - name: NETPOL_ALLOWED_NAMESPACES
           value: '[{"namespace":"monitoring","podSelector":{"app.kubernetes.io/name":"otel-collector"},"ports":[4318]}]'
-        image: workspace-operator:v1.0.44
+        image: workspace-operator:v1.0.45
         livenessProbe:
           httpGet:
             path: /healthz
@@ -930,11 +959,11 @@ spec:
           periodSeconds: 10
         resources:
           limits:
-            cpu: 500m
-            memory: 128Mi
+            cpu: "2"
+            memory: 1Gi
           requests:
-            cpu: 10m
-            memory: 64Mi
+            cpu: 200m
+            memory: 512Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
