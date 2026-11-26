@@ -1,4 +1,5 @@
-# NOTE (2026-11-18): image tag refreshed to v1.0.41 (includes batch-restart feature);
+# NOTE (2026-11-26): image tag refreshed to v1.0.42 (batch-restart feature + frontend
+# optimization 3d74be8; no Go code change since v1.0.41);
 # batch-restart RBAC appended at the end of this file.
 # Snapshot fields may still drift vs live cluster state — run kubectl diff and
 # reconcile before any full upgrade apply; see docs/egress-production-runbook.md.
@@ -73,7 +74,7 @@ spec:
             app: api-server
       containers:
       - name: api-server
-        image: api-server:v1.0.41 # 建议根据实际私有镜像仓库重命名，如 myharbor.local/library/api-server:v1.0.41
+        image: api-server:v1.0.42 # 建议根据实际私有镜像仓库重命名，如 myharbor.local/library/api-server:v1.0.42
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 3000

@@ -931,11 +931,17 @@ spec:
         - /manager
         env:
         - name: GOMEMLIMIT
-          value: 800MiB
+          value: 3200MiB
         - name: WORKSPACE_DOMAIN
           value: bocomcode
         - name: NETPOL_ALLOWED_NAMESPACES
           value: '[{"namespace":"monitoring","podSelector":{"app.kubernetes.io/name":"otel-collector"},"ports":[4318]}]'
+        - name: EGRESS_ENABLED
+          value: "true"
+        - name: EGRESS_CONFIG_NAMESPACE
+          value: agent-deploy-system
+        - name: EGRESS_PROTECTED_CIDRS
+          value: __CLUSTER_PROTECTED_CIDRS__
         image: workspace-operator:v1.0.45
         livenessProbe:
           httpGet:
@@ -960,10 +966,10 @@ spec:
         resources:
           limits:
             cpu: "2"
-            memory: 1Gi
+            memory: 4Gi
           requests:
             cpu: 200m
-            memory: 512Mi
+            memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
