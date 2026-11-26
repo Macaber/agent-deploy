@@ -119,7 +119,7 @@ spec:
         # Make the Go GC aware of the container limit (~80%) so it collects
         # before the cgroup OOM-killer fires during cold-start List bursts.
         - name: GOMEMLIMIT
-          value: "800MiB"
+          value: "3200MiB"
         - name: WORKSPACE_DOMAIN
           value: "bocomcode"
         # Controller-wide NetworkPolicy egress exceptions applied to EVERY workspace.
@@ -129,13 +129,30 @@ spec:
         # NOTE: keep podSelector in sync with the collector Service's spec.selector.
         - name: NETPOL_ALLOWED_NAMESPACES
           value: '[{"namespace":"monitoring","podSelector":{"app.kubernetes.io/name":"otel-collector"},"ports":[4318]}]'
+        # Unified egress management (see docs/egress-production-runbook.md).
+        # EGRESS_ENABLED MUST mirror the live cluster value whenever this file
+        # is generated/applied: mismatched value silently flips takeover at
+        # apply time (no warning). True requires proxy + initial config in
+        # place (runbook step 5/6 done in a prior rollout).
+        - name: EGRESS_ENABLED
+          value: "true"
+        # Namespace holding workspace-egress-config/history/boundary ConfigMaps
+        # shared by operator, api-server and the proxy sync container.
+        - name: EGRESS_CONFIG_NAMESPACE
+          value: "agent-deploy-system"
+        # Infrastructure inventory (Pod/Service/node CIDRs, comma-separated),
+        # identical per cluster to workspace-egress-boundary's value. PLACEHOLDER:
+        # after `make build-installer`, sed-replace per cluster with the exact
+        # value from egress-install.<cluster>.yaml before applying.
+        - name: EGRESS_PROTECTED_CIDRS
+          value: "__CLUSTER_PROTECTED_CIDRS__"
         resources:
           limits:
             cpu: "2"
-            memory: 1Gi
+            memory: 4Gi
           requests:
             cpu: 200m
-            memory: 512Mi
+            memory: 2Gi
         volumeMounts: []
       volumes: []
       serviceAccountName: controller-manager
