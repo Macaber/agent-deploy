@@ -17,7 +17,6 @@ import (
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 func unifiedEgressEnabled() bool { return os.Getenv("EGRESS_ENABLED") == "true" }
@@ -151,21 +150,6 @@ func proxyEnvironment(env []core.EnvVar) []core.EnvVar {
 	return out
 }
 
-func (r *WorkspaceReconciler) mapEgressConfig(ctx context.Context, obj client.Object) []reconcile.Request {
-	if !unifiedEgressEnabled() || obj.GetNamespace() != egress.Namespace() || obj.GetName() != egress.ConfigMapName {
-		return nil
-	}
-	list := &ai.WorkspaceList{}
-	if err := r.List(ctx, list); err != nil {
-		return nil
-	}
-	out := make([]reconcile.Request, 0, len(list.Items))
-	for _, ws := range list.Items {
-		out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&ws)})
-	}
-	return out
-}
-
 // New/waking Pods cannot switch to proxy-only egress until all desired proxy
 // replicas have acknowledged the exact revision. A missing deployment is not
 // equivalent to an empty successfully-loaded replica set.
@@ -203,15 +187,23 @@ func (r *WorkspaceReconciler) requireLoadedProxy(ctx context.Context, revision s
 
 // cleanupUnusedEgressPolicies waits for all old Pods (including terminating
 // Pods) and active Deployment templates before removing a mode-specific policy.
+// A namespace whose cleanup has converged is marked done in memory and skipped
+// afterwards, so the namespace-wide scans no longer run on every reconcile.
+// The marker is keyed by namespace AND target mode: switching modes invalidates
+// it, so the newly-retired policy is still cleaned up.
 func (r *WorkspaceReconciler) cleanupUnusedEgressPolicies(ctx context.Context, namespace string, target egress.Mode) error {
-	pods := &core.PodList{}
-	if err := r.List(ctx, pods, client.InNamespace(namespace)); err != nil {
-		return err
+	cleanupKey := namespace + "/" + string(target)
+	if _, done := r.migrationCleanupDone.Load(cleanupKey); done {
+		return nil
 	}
+	// The migration label sits in the Deployment pod template, not on the
+	// object itself, so this list cannot be pushed down as a label selector;
+	// it only runs until the namespace converges (once per process).
 	deployments := &apps.DeploymentList{}
 	if err := r.List(ctx, deployments, client.InNamespace(namespace)); err != nil {
 		return err
 	}
+	complete := true
 	for _, item := range []struct {
 		mode        egress.Mode
 		label, name string
@@ -222,21 +214,24 @@ func (r *WorkspaceReconciler) cleanupUnusedEgressPolicies(ctx context.Context, n
 		if target == item.mode {
 			continue
 		}
-		used := false
-		for _, p := range pods.Items {
-			if p.Labels[egress.MigrationLabel] == item.label {
-				used = true
-			}
+		// Pods carry the migration label themselves, so the check selects by
+		// label instead of copying every Pod of the namespace.
+		legacyPods := &core.PodList{}
+		if err := r.List(ctx, legacyPods, client.InNamespace(namespace), client.MatchingLabels{egress.MigrationLabel: item.label}); err != nil {
+			return err
 		}
+		used := len(legacyPods.Items) > 0
 		for _, d := range deployments.Items {
 			if d.Spec.Replicas != nil && *d.Spec.Replicas == 0 {
 				continue
 			}
 			if d.Spec.Template.Labels[egress.MigrationLabel] == item.label {
 				used = true
+				break
 			}
 		}
 		if used {
+			complete = false
 			continue
 		}
 		policy := &net.NetworkPolicy{}
@@ -253,6 +248,9 @@ func (r *WorkspaceReconciler) cleanupUnusedEgressPolicies(ctx context.Context, n
 		if err := r.Delete(ctx, policy); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
+	}
+	if complete {
+		r.migrationCleanupDone.Store(cleanupKey, struct{}{})
 	}
 	return nil
 }

@@ -11,6 +11,7 @@ import (
 	apps "k8s.io/api/apps/v1"
 	core "k8s.io/api/core/v1"
 	net "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -185,6 +186,96 @@ func TestModePolicyCleanupWaitsForTerminatingPods(t *testing.T) {
 	}
 	if len(list.Items) != 0 {
 		t.Fatal("unused allow-all policy remained")
+	}
+}
+
+func TestMigrationCleanupConvergedNamespaceSkipsRescan(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = core.AddToScheme(scheme)
+	_ = apps.AddToScheme(scheme)
+	_ = net.AddToScheme(scheme)
+	policy := &net.NetworkPolicy{ObjectMeta: meta.ObjectMeta{Name: "workspace-egress-unrestricted", Namespace: "work"}, Spec: net.NetworkPolicySpec{PodSelector: meta.LabelSelector{MatchLabels: map[string]string{egress.MigrationLabel: "unrestricted-v1"}}}}
+	pod := &core.Pod{ObjectMeta: meta.ObjectMeta{Name: "old", Namespace: "work", Labels: map[string]string{egress.MigrationLabel: "unrestricted-v1"}}}
+	k := fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy, pod).Build()
+	r := &WorkspaceReconciler{Client: k}
+	if err := r.cleanupUnusedEgressPolicies(context.Background(), "work", egress.ModeAllowlist); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Get(context.Background(), client.ObjectKeyFromObject(policy), &net.NetworkPolicy{}); err != nil {
+		t.Fatal("removed policy while a legacy Pod still used it", err)
+	}
+	if _, done := r.migrationCleanupDone.Load("work/" + string(egress.ModeAllowlist)); done {
+		t.Fatal("namespace marked done while a legacy Pod still exists")
+	}
+	if err := k.Delete(context.Background(), pod); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.cleanupUnusedEgressPolicies(context.Background(), "work", egress.ModeAllowlist); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Get(context.Background(), client.ObjectKeyFromObject(policy), &net.NetworkPolicy{}); !apierrors.IsNotFound(err) {
+		t.Fatal("converged namespace did not drop its legacy policy", err)
+	}
+	// Reintroduced legacy objects must be ignored after convergence: the marker
+	// exists precisely so the hot path never rescans the namespace.
+	recreated := policy.DeepCopy()
+	recreated.ResourceVersion = ""
+	if err := k.Create(context.Background(), recreated); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.cleanupUnusedEgressPolicies(context.Background(), "work", egress.ModeAllowlist); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Get(context.Background(), client.ObjectKeyFromObject(policy), &net.NetworkPolicy{}); err != nil {
+		t.Fatal("converged namespace was rescanned", err)
+	}
+}
+
+func TestMigrationCleanupIgnoresPodsOfOtherLabels(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = core.AddToScheme(scheme)
+	_ = apps.AddToScheme(scheme)
+	_ = net.AddToScheme(scheme)
+	policy := &net.NetworkPolicy{ObjectMeta: meta.ObjectMeta{Name: "workspace-egress-unrestricted", Namespace: "work"}, Spec: net.NetworkPolicySpec{PodSelector: meta.LabelSelector{MatchLabels: map[string]string{egress.MigrationLabel: "unrestricted-v1"}}}}
+	pod := &core.Pod{ObjectMeta: meta.ObjectMeta{Name: "current", Namespace: "work", Labels: map[string]string{egress.MigrationLabel: egress.MigrationVersion, "app": "workspace"}}}
+	k := fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy, pod).Build()
+	r := &WorkspaceReconciler{Client: k}
+	if err := r.cleanupUnusedEgressPolicies(context.Background(), "work", egress.ModeAllowlist); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Get(context.Background(), client.ObjectKeyFromObject(policy), &net.NetworkPolicy{}); !apierrors.IsNotFound(err) {
+		t.Fatal("Pod carrying the current migration label blocked legacy policy cleanup", err)
+	}
+	if _, done := r.migrationCleanupDone.Load("work/" + string(egress.ModeAllowlist)); !done {
+		t.Fatal("namespace without any legacy Pod was not marked done")
+	}
+}
+
+func TestMigrationCleanupRescansAfterModeSwitch(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = core.AddToScheme(scheme)
+	_ = apps.AddToScheme(scheme)
+	_ = net.AddToScheme(scheme)
+	// The strict allowlist policy is active for target=allowlist...
+	strict := &net.NetworkPolicy{ObjectMeta: meta.ObjectMeta{Name: "workspace-egress-v1", Namespace: "work"}, Spec: net.NetworkPolicySpec{PodSelector: meta.LabelSelector{MatchLabels: map[string]string{egress.MigrationLabel: egress.MigrationVersion}}}}
+	k := fake.NewClientBuilder().WithScheme(scheme).WithObjects(strict).Build()
+	r := &WorkspaceReconciler{Client: k}
+	if err := r.cleanupUnusedEgressPolicies(context.Background(), "work", egress.ModeAllowlist); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Get(context.Background(), client.ObjectKeyFromObject(strict), &net.NetworkPolicy{}); err != nil {
+		t.Fatal("active policy for the current mode was disturbed", err)
+	}
+	// ...but once the mode switches to unrestricted it is retired cleanup
+	// target: the per-mode marker must not keep skipping the rescan.
+	if err := r.cleanupUnusedEgressPolicies(context.Background(), "work", egress.ModeUnrestricted); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Get(context.Background(), client.ObjectKeyFromObject(strict), &net.NetworkPolicy{}); !apierrors.IsNotFound(err) {
+		t.Fatal("retired policy of the previous mode survived the mode switch", err)
+	}
+	if _, done := r.migrationCleanupDone.Load("work/" + string(egress.ModeUnrestricted)); !done {
+		t.Fatal("namespace was not marked done for the new mode")
 	}
 }
 
