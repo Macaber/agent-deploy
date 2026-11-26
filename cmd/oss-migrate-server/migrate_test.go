@@ -477,3 +477,65 @@ func TestReadLogTSV(t *testing.T) {
 		t.Errorf("row mismatch: %+v", rows[0])
 	}
 }
+
+func TestScopeRestriction(t *testing.T) {
+	bin, fakeRoot := makeFakeOSSUtil(t)
+	t.Setenv("FAKE_OSS_ROOT", fakeRoot)
+
+	cfg := MigrateConfig{
+		SourceBucket: "oss://euvduatc-oss",
+		SourcePrefix: "workspaces",
+		TargetBucket: "oss://euvduatc-oss",
+		TargetPrefix: "workspaces",
+		OSSUtilPath:  bin,
+		LogFile:      filepath.Join(t.TempDir(), "test.log"),
+	}
+	mig, err := NewMigrator(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Valid scope
+	if err := mig.ValidateScope("oss://euvduatc-oss/workspaces/ws-123", false); err != nil {
+		t.Errorf("expected valid scope to pass, got %v", err)
+	}
+
+	// 2. Other directory outside workspaces
+	if err := mig.ValidateScope("oss://euvduatc-oss/system/secrets", false); err == nil {
+		t.Errorf("expected error for directory outside workspaces")
+	}
+
+	// 3. Other bucket
+	if err := mig.ValidateScope("oss://other-bucket/workspaces/ws-123", true); err == nil {
+		t.Errorf("expected error for unauthorized bucket")
+	}
+
+	// 4. Path traversal
+	if err := mig.ValidateScope("oss://euvduatc-oss/workspaces/../system", false); err == nil {
+		t.Errorf("expected error for path traversal ..")
+	}
+
+	// 5. Operating on root workspaces dir itself
+	if err := mig.ValidateScope("oss://euvduatc-oss/workspaces", false); err == nil {
+		t.Errorf("expected error when operating on root workspaces directory directly")
+	}
+
+	// 6. ListOSSWorkspaces outside workspaces
+	if _, err := mig.ListOSSWorkspaces(context.Background(), "oss://euvduatc-oss", "system", "", 50); err == nil {
+		t.Errorf("expected error when listing non-workspaces prefix")
+	}
+
+	// 7. ProbeRemote outside workspaces
+	if _, err := mig.ProbeRemote(context.Background(), "oss://euvduatc-oss/finance/data"); err == nil {
+		t.Errorf("expected error when probing outside workspaces")
+	}
+
+	// 8. MigrateOne fails when out of scope
+	res := mig.MigrateOne(context.Background(), MigrationItem{
+		Source:      "oss://euvduatc-oss/system/config",
+		Destination: "oss://euvduatc-oss/workspaces/ws-target",
+	})
+	if res.Status != "FAIL" {
+		t.Errorf("expected FAIL for out-of-scope source, got %s", res.Status)
+	}
+}

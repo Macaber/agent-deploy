@@ -118,6 +118,62 @@ func NewMigrator(cfg MigrateConfig) (*Migrator, error) {
 	return &Migrator{cfg: cfg}, nil
 }
 
+// ValidateScope verifies that an OSS URI is strictly within the allowed workspace directory scope.
+// It ensures that only paths under oss://<bucket>/workspaces/ws-xxxx can be accessed or migrated,
+// preventing access to or operations on any other directory.
+func (m *Migrator) ValidateScope(uri string, isTarget bool) error {
+	uri = normalizeOSSUri(uri)
+	if uri == "" {
+		return fmt.Errorf("OSS 路径不能为空")
+	}
+
+	// 1. Path traversal prevention
+	cleanURI := strings.ReplaceAll(uri, "\\", "/")
+	for _, seg := range strings.Split(cleanURI, "/") {
+		if seg == ".." {
+			return fmt.Errorf("非法路径：禁止包含相对路径符号 (..)")
+		}
+	}
+
+	// 2. Expected base prefix
+	bucket := m.cfg.SourceBucket
+	prefix := m.cfg.SourcePrefix
+	if isTarget {
+		bucket = m.cfg.TargetBucket
+		prefix = m.cfg.TargetPrefix
+	}
+
+	allowedBase := fmt.Sprintf("%s/%s", strings.TrimRight(bucket, "/"), strings.Trim(prefix, "/"))
+
+	// Must start with allowedBase + "/"
+	if !strings.HasPrefix(uri, allowedBase+"/") {
+		return fmt.Errorf("操作被禁止：仅允许访问和操作 %s/ 目录下的工作空间数据，禁止操作其他目录 (%s)", allowedBase, uri)
+	}
+
+	// Must specify a concrete sub-workspace, cannot operate on the base workspaces directory itself
+	sub := strings.TrimPrefix(uri, allowedBase+"/")
+	sub = strings.Trim(sub, "/")
+	if sub == "" {
+		return fmt.Errorf("操作被拒绝：不能直接对整个 %s 根目录执行迁移，请指定具体的 ws-xxxx 工作空间", allowedBase)
+	}
+
+	return nil
+}
+
+// ValidateProbeScope checks if an OSS URI is permitted for probe / inspection.
+// It allows probing paths within either the source workspace prefix or target workspace prefix.
+func (m *Migrator) ValidateProbeScope(uri string) error {
+	errSrc := m.ValidateScope(uri, false)
+	if errSrc == nil {
+		return nil
+	}
+	errDst := m.ValidateScope(uri, true)
+	if errDst == nil {
+		return nil
+	}
+	return errSrc
+}
+
 type remoteStateResult int
 
 const (
@@ -159,6 +215,20 @@ func (m *Migrator) MigrateOne(ctx context.Context, item MigrationItem) MigrateRe
 	}
 	if src == dst {
 		return finish("FAIL", "source and destination OSS URIs cannot be identical")
+	}
+
+	// Strict directory scope check: only allow operations within the designated workspaces directory
+	if err := m.ValidateScope(src, false); err != nil {
+		return finish("FAIL", err.Error())
+	}
+	if err := m.ValidateScope(dst, true); err != nil {
+		return finish("FAIL", err.Error())
+	}
+
+	for _, d := range item.Dirs {
+		if strings.Contains(d, "..") {
+			return finish("FAIL", fmt.Sprintf("非法待迁移子目录: %q 禁止包含 ..", d))
+		}
 	}
 
 	// 1. Check Source Existence & Objects
@@ -344,6 +414,10 @@ func (m *Migrator) cpDirectory(ctx context.Context, src, dst string, force bool,
 func (m *Migrator) ProbeRemote(ctx context.Context, uri string) (RemoteCheckResult, error) {
 	uri = normalizeOSSUri(uri)
 	res := RemoteCheckResult{URI: uri}
+	if err := m.ValidateProbeScope(uri); err != nil {
+		res.Error = err.Error()
+		return res, err
+	}
 	state, err := m.remoteState(ctx, uri+"/")
 	if err != nil {
 		res.Error = err.Error()
@@ -370,6 +444,17 @@ func (m *Migrator) ListOSSWorkspaces(ctx context.Context, bucket, prefix, search
 	prefix = strings.Trim(prefix, "/")
 	if limit <= 0 || limit > 1000 {
 		limit = 100
+	}
+
+	// Strict directory scope check: only allowed source or target bucket & prefix are permitted
+	isSourceScope := (bucket == m.cfg.SourceBucket && prefix == m.cfg.SourcePrefix)
+	isTargetScope := (bucket == m.cfg.TargetBucket && prefix == m.cfg.TargetPrefix)
+	if !isSourceScope && !isTargetScope {
+		return nil, fmt.Errorf("操作被禁止：仅允许检索受控的工作空间目录 (%s/%s)，禁止访问其他目录", m.cfg.SourceBucket, m.cfg.SourcePrefix)
+	}
+
+	if strings.Contains(search, "..") {
+		return nil, fmt.Errorf("非法搜索参数：禁止包含 .. 相对路径")
 	}
 
 	search = strings.TrimSpace(search)

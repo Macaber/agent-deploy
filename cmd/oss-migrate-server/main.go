@@ -123,6 +123,13 @@ func runCLI(src, dst string, force, dryRun bool, dirs, excludes string) {
 		log.Fatalf("failed to create migrator: %v", err)
 	}
 
+	if err := mig.ValidateScope(src, false); err != nil {
+		log.Fatalf("源路径受限: %v", err)
+	}
+	if err := mig.ValidateScope(dst, true); err != nil {
+		log.Fatalf("目的路径受限: %v", err)
+	}
+
 	fmt.Printf("[INFO] Starting OSS to OSS migration\n")
 	fmt.Printf("       Source     : %s\n", src)
 	fmt.Printf("       Destination: %s\n", dst)
@@ -306,6 +313,18 @@ func (s *server) handleRun(w http.ResponseWriter, r *http.Request) {
 	if len(req.Tasks) == 0 {
 		writeErr(w, http.StatusBadRequest, "tasks array is empty")
 		return
+	}
+
+	// Validate all tasks against allowed directory scope upfront before launching
+	for i, item := range req.Tasks {
+		if err := s.mig.ValidateScope(item.Source, false); err != nil {
+			writeErr(w, http.StatusForbidden, fmt.Sprintf("第 %d 项源路径受限: %v", i+1, err))
+			return
+		}
+		if err := s.mig.ValidateScope(item.Destination, true); err != nil {
+			writeErr(w, http.StatusForbidden, fmt.Sprintf("第 %d 项目的路径受限: %v", i+1, err))
+			return
+		}
 	}
 
 	t := s.tasks.create("migrate")

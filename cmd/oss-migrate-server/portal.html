@@ -298,21 +298,24 @@
     </div>
   </header>
 
-  <!-- Scope Configuration Bar -->
-  <div class="scope-bar">
+  <!-- Scope Configuration Bar (Locked for security boundary) -->
+  <div class="scope-bar" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
     <div style="display:flex; flex-wrap:wrap; gap:16px; align-items:center;">
-      <div class="scope-group">
-        <span class="scope-label">源 OSS 路径:</span>
-        <input type="text" id="sourceBucket" class="scope-input" value="oss://euvduatc-oss" title="源 Bucket" />
+      <div class="scope-group" title="安全受控目录：系统严格限制仅允许访问与操作 workspaces/ 目录，禁止越权操作其他目录">
+        <span style="font-size:14px;">🔒</span>
+        <span class="scope-label">受控源目录:</span>
+        <input type="text" id="sourceBucket" class="scope-input" value="oss://euvduatc-oss" readonly title="源 Bucket (安全锁定)" style="opacity:0.85; cursor:not-allowed;" />
         <span style="color:var(--line-strong);">/</span>
-        <input type="text" id="sourcePrefix" class="scope-input" style="width:130px;" value="workspaces" title="源 Prefix" />
+        <input type="text" id="sourcePrefix" class="scope-input" style="width:120px; opacity:0.85; cursor:not-allowed;" value="workspaces" readonly title="源 Prefix (安全锁定)" />
       </div>
-      <div class="scope-group">
-        <span class="scope-label">目标 OSS 路径:</span>
-        <input type="text" id="targetBucket" class="scope-input" value="oss://euvduatc-oss" title="目标 Bucket" />
+      <div class="scope-group" title="安全受控目录：系统严格限制仅允许访问与操作 workspaces/ 目录，禁止越权操作其他目录">
+        <span style="font-size:14px;">🔒</span>
+        <span class="scope-label">受控目标目录:</span>
+        <input type="text" id="targetBucket" class="scope-input" value="oss://euvduatc-oss" readonly title="目标 Bucket (安全锁定)" style="opacity:0.85; cursor:not-allowed;" />
         <span style="color:var(--line-strong);">/</span>
-        <input type="text" id="targetPrefix" class="scope-input" style="width:130px;" value="workspaces" title="目标 Prefix" />
+        <input type="text" id="targetPrefix" class="scope-input" style="width:120px; opacity:0.85; cursor:not-allowed;" value="workspaces" readonly title="目标 Prefix (安全锁定)" />
       </div>
+      <span class="tag tag-ok" style="font-size:11.5px;">✓ 目录隔离保护生效中 (仅限 workspaces/*)</span>
     </div>
     <button class="btn-secondary" onclick="refreshAllLists()">🔄 刷新目录列表 (oss ls)</button>
   </div>
@@ -779,38 +782,95 @@ oss://euvduatc-oss/workspaces/ws-9743616 -> oss://euvduatc-oss/workspaces/ws-974
 
   function resolveFullSourceUri(val) {
     val = val.trim();
-    if (!val) return '';
-    if (val.startsWith('oss://')) return val.replace(/\/+$/, '');
+    if (!val) return { uri: '' };
     const b = document.getElementById('sourceBucket').value.trim().replace(/\/+$/, '');
     const p = document.getElementById('sourcePrefix').value.trim().replace(/\/+$/, '');
-    if (p) return `${b}/${p}/${val}`;
-    return `${b}/${val}`;
+    const allowedPrefix = `${b}/${p}/`;
+
+    if (val.startsWith('oss://')) {
+      const clean = val.replace(/\/+$/, '');
+      if (!clean.startsWith(allowedPrefix)) {
+        return { error: `目录受限：仅允许访问 ${allowedPrefix} 目录下的工作空间，禁止操作其他目录` };
+      }
+      if (clean === allowedPrefix.slice(0, -1) || clean === allowedPrefix) {
+        return { error: `请指定具体的 ws-xxxx 工作空间，不能直接操作整个 ${p} 根目录` };
+      }
+      if (clean.includes('..')) {
+        return { error: '非法路径：禁止包含 .. 相对路径' };
+      }
+      return { uri: clean };
+    }
+    const cleanVal = val.replace(/^\/+/, '').replace(/\/+$/, '');
+    if (cleanVal.includes('..') || cleanVal.includes('/')) {
+      return { error: '工作空间名称不合法，禁止包含 / 或 ..' };
+    }
+    return { uri: `${b}/${p}/${cleanVal}` };
   }
 
   function resolveFullDestUri(val) {
     val = val.trim();
-    if (!val) return '';
-    if (val.startsWith('oss://')) return val.replace(/\/+$/, '');
+    if (!val) return { uri: '' };
     const b = document.getElementById('targetBucket').value.trim().replace(/\/+$/, '');
     const p = document.getElementById('targetPrefix').value.trim().replace(/\/+$/, '');
-    if (p) return `${b}/${p}/${val}`;
-    return `${b}/${val}`;
+    const allowedPrefix = `${b}/${p}/`;
+
+    if (val.startsWith('oss://')) {
+      const clean = val.replace(/\/+$/, '');
+      if (!clean.startsWith(allowedPrefix)) {
+        return { error: `目录受限：仅允许访问 ${allowedPrefix} 目录下的工作空间，禁止操作其他目录` };
+      }
+      if (clean === allowedPrefix.slice(0, -1) || clean === allowedPrefix) {
+        return { error: `请指定具体的 ws-xxxx 工作空间，不能直接操作整个 ${p} 根目录` };
+      }
+      if (clean.includes('..')) {
+        return { error: '非法路径：禁止包含 .. 相对路径' };
+      }
+      return { uri: clean };
+    }
+    const cleanVal = val.replace(/^\/+/, '').replace(/\/+$/, '');
+    if (cleanVal.includes('..') || cleanVal.includes('/')) {
+      return { error: '工作空间名称不合法，禁止包含 / 或 ..' };
+    }
+    return { uri: `${b}/${p}/${cleanVal}` };
   }
 
   function onSourceInputChange() {
     const raw = document.getElementById('sourceInput').value.trim();
-    const full = resolveFullSourceUri(raw);
-    document.getElementById('resolvedSourceUri').textContent = full || '-';
-    renderSourceList(sourceEntries);
-    updateSubmitSummary();
-
+    const res = resolveFullSourceUri(raw);
+    const box = document.getElementById('sourceProbeBox');
+    const text = document.getElementById('sourceProbeText');
+    const icon = document.getElementById('sourceProbeIcon');
     const tag = document.getElementById('sourceStatusTag');
-    if (!full) {
-      document.getElementById('sourceProbeBox').style.display = 'none';
+
+    if (!raw) {
+      document.getElementById('resolvedSourceUri').textContent = '-';
+      box.style.display = 'none';
       if (tag) tag.style.display = 'none';
       sourceExists = null;
+      updateSubmitSummary();
       return;
     }
+
+    if (res.error) {
+      document.getElementById('resolvedSourceUri').innerHTML = `<span style="color:var(--err); font-weight:600;">🚫 ${res.error}</span>`;
+      box.style.display = 'flex';
+      box.className = 'probe-card error';
+      icon.textContent = '🚫';
+      text.innerHTML = `<strong>目录访问受限</strong>：${res.error}`;
+      if (tag) {
+        tag.style.display = 'inline-block';
+        tag.className = 'tag tag-fail';
+        tag.textContent = '越权阻止';
+      }
+      sourceExists = false;
+      updateSubmitSummary();
+      return;
+    }
+
+    const full = res.uri;
+    document.getElementById('resolvedSourceUri').textContent = full;
+    renderSourceList(sourceEntries);
+    updateSubmitSummary();
 
     if (sourceProbeTimer) clearTimeout(sourceProbeTimer);
     sourceProbeTimer = setTimeout(() => probeSource(full), 300);
@@ -906,18 +966,42 @@ oss://euvduatc-oss/workspaces/ws-9743616 -> oss://euvduatc-oss/workspaces/ws-974
 
   function onDestInputChange() {
     const raw = document.getElementById('destInput').value.trim();
-    const full = resolveFullDestUri(raw);
-    document.getElementById('resolvedDestUri').textContent = full || '-';
-    updateSubmitSummary();
-
+    const res = resolveFullDestUri(raw);
+    const box = document.getElementById('destProbeBox');
+    const text = document.getElementById('destProbeText');
+    const icon = document.getElementById('destProbeIcon');
     const tag = document.getElementById('destStatusTag');
-    if (!full) {
-      document.getElementById('destProbeBox').style.display = 'none';
+
+    if (!raw) {
+      document.getElementById('resolvedDestUri').textContent = '-';
+      box.style.display = 'none';
       if (tag) tag.style.display = 'none';
       destExists = null;
       destObjectCount = 0;
+      updateSubmitSummary();
       return;
     }
+
+    if (res.error) {
+      document.getElementById('resolvedDestUri').innerHTML = `<span style="color:var(--err); font-weight:600;">🚫 ${res.error}</span>`;
+      box.style.display = 'flex';
+      box.className = 'probe-card error';
+      icon.textContent = '🚫';
+      text.innerHTML = `<strong>目录访问受限</strong>：${res.error}`;
+      if (tag) {
+        tag.style.display = 'inline-block';
+        tag.className = 'tag tag-fail';
+        tag.textContent = '越权阻止';
+      }
+      destExists = null;
+      destObjectCount = 0;
+      updateSubmitSummary();
+      return;
+    }
+
+    const full = res.uri;
+    document.getElementById('resolvedDestUri').textContent = full;
+    updateSubmitSummary();
 
     // Debounce probe
     if (probeTimer) clearTimeout(probeTimer);
@@ -1008,9 +1092,17 @@ oss://euvduatc-oss/workspaces/ws-9743616 -> oss://euvduatc-oss/workspaces/ws-974
     const rawDst = document.getElementById('destInput').value.trim();
     const dirs = getSelectedSubdirs();
 
+    const srcRes = resolveFullSourceUri(rawSrc);
+    const dstRes = resolveFullDestUri(rawDst);
+
     if (!rawSrc) {
       btn.disabled = true;
       summary.textContent = '(请先填写源工作空间)';
+      return;
+    }
+    if (srcRes.error) {
+      btn.disabled = true;
+      summary.textContent = '(源端目录受限，请修改为 workspaces/ 下的工作空间)';
       return;
     }
     if (sourceExists === false) {
@@ -1021,6 +1113,11 @@ oss://euvduatc-oss/workspaces/ws-9743616 -> oss://euvduatc-oss/workspaces/ws-974
     if (!rawDst) {
       btn.disabled = true;
       summary.textContent = '(请先填写目的工作空间)';
+      return;
+    }
+    if (dstRes.error) {
+      btn.disabled = true;
+      summary.textContent = '(目的目录受限，请修改为 workspaces/ 下的工作空间)';
       return;
     }
     if (dirs.length === 0) {
@@ -1049,9 +1146,20 @@ oss://euvduatc-oss/workspaces/ws-9743616 -> oss://euvduatc-oss/workspaces/ws-974
   async function submitStudioMigration() {
     const rawSrc = document.getElementById('sourceInput').value.trim();
     const rawDst = document.getElementById('destInput').value.trim();
-    const fullSrc = resolveFullSourceUri(rawSrc);
-    const fullDst = resolveFullDestUri(rawDst);
+    const srcRes = resolveFullSourceUri(rawSrc);
+    const dstRes = resolveFullDestUri(rawDst);
     const dirs = getSelectedSubdirs();
+
+    if (srcRes.error) {
+      alert(`源端路径受限：${srcRes.error}`);
+      return;
+    }
+    if (dstRes.error) {
+      alert(`目的路径受限：${dstRes.error}`);
+      return;
+    }
+    const fullSrc = srcRes.uri;
+    const fullDst = dstRes.uri;
 
     if (!fullSrc || !fullDst) {
       alert('请检查源和目的工作空间路径');
@@ -1107,6 +1215,9 @@ oss://euvduatc-oss/workspaces/ws-9743616 -> oss://euvduatc-oss/workspaces/ws-974
     const bDst = document.getElementById('targetBucket').value.trim().replace(/\/+$/, '');
     const pDst = document.getElementById('targetPrefix').value.trim().replace(/\/+$/, '');
 
+    const allowedSrcPrefix = `${bSrc}/${pSrc}/`;
+    const allowedDstPrefix = `${bDst}/${pDst}/`;
+
     const force = document.getElementById('batchForce').checked;
     const dryRun = document.getElementById('batchDryRun').checked;
 
@@ -1119,8 +1230,17 @@ oss://euvduatc-oss/workspaces/ws-9743616 -> oss://euvduatc-oss/workspaces/ws-974
       if (parts.length < 2) continue;
       let s = parts[0];
       let d = parts[1];
-      if (!s.startsWith('oss://')) s = `${bSrc}/${pSrc}/${s}`;
-      if (!d.startsWith('oss://')) d = `${bDst}/${pDst}/${d}`;
+      if (!s.startsWith('oss://')) s = `${bSrc}/${pSrc}/${s.replace(/^\/+/, '')}`;
+      if (!d.startsWith('oss://')) d = `${bDst}/${pDst}/${d.replace(/^\/+/, '')}`;
+
+      if (!s.startsWith(allowedSrcPrefix) || s.includes('..') || s === allowedSrcPrefix.slice(0, -1)) {
+        alert(`第 ${tasks.length + 1} 行源路径越权或非法：仅允许操作 ${allowedSrcPrefix} 下的具体工作空间 (${s})`);
+        return;
+      }
+      if (!d.startsWith(allowedDstPrefix) || d.includes('..') || d === allowedDstPrefix.slice(0, -1)) {
+        alert(`第 ${tasks.length + 1} 项目的路径越权或非法：仅允许操作 ${allowedDstPrefix} 下的具体工作空间 (${d})`);
+        return;
+      }
       tasks.push({source: s, destination: d, force: force, dryRun: dryRun});
     }
 
