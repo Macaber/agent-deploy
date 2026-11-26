@@ -1,0 +1,45 @@
+# Build the oss-migrate-server binary & fetch ossutil
+FROM golang:1.26-alpine AS builder
+ARG TARGETOS
+ARG TARGETARCH
+ARG OSSUTIL_VERSION=1.7.19
+
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Build the oss-migrate-server package with symbol stripping (-s -w drops DWARF debug info).
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -buildvcs=false -ldflags="-s -w" -a -o oss-migrate-server ./cmd/oss-migrate-server
+
+# Download & unpack ossutil in the builder stage to avoid installing curl/unzip in runtime
+RUN apk add --no-cache curl unzip \
+ && arch="${TARGETARCH:-$(apk --print-arch 2>/dev/null || uname -m)}" \
+ && case "$arch" in \
+      amd64|x86_64) oss_arch=amd64 ;; \
+      arm64|aarch64) oss_arch=arm64 ;; \
+      386|i386)     oss_arch=386 ;; \
+      arm|armv7l)   oss_arch=arm ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "https://gosspublic.alicdn.com/ossutil/${OSSUTIL_VERSION}/ossutil-v${OSSUTIL_VERSION}-linux-${oss_arch}.zip" -o /tmp/ossutil.zip \
+ && unzip -o /tmp/ossutil.zip -d /tmp/ossutil \
+ && install -m 0755 "$(find /tmp/ossutil -type f -name ossutil | head -n1)" /workspace/ossutil
+
+# -------------------------------------------------------------
+# Runtime: minimal Alpine, static ossutil + oss-migrate-server
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates bash
+
+COPY --from=builder /workspace/ossutil /usr/local/bin/ossutil
+COPY --from=builder /workspace/oss-migrate-server /usr/local/bin/oss-migrate-server
+
+# ossutil config is generated from AK/SK env at startup
+COPY hack/oss-migrate-entrypoint.sh /usr/local/bin/oss-migrate-entrypoint.sh
+RUN chmod +x /usr/local/bin/oss-migrate-entrypoint.sh
+
+RUN mkdir -p /var/log/oss-migrate-server
+EXPOSE 3000
+ENTRYPOINT ["/usr/local/bin/oss-migrate-entrypoint.sh"]

@@ -20,6 +20,9 @@
 !bin/egress-guard-linux-amd64
 !bin/egress-sync-linux-amd64
 !cmd/migrate-server/portal.html
+!cmd/oss-migrate-server/portal.html
+!cmd/oss-migrate-server/auth-ui.html
 
-# migrate-server entrypoint script (copied into the image).
+# entrypoint scripts (copied into the images).
 !hack/migrate-entrypoint.sh
+!hack/oss-migrate-entrypoint.sh

@@ -137,6 +137,13 @@ MIGRATE_PLATFORM ?= linux/amd64
 docker-build-migrate-server: ## Build the migrate-server image (DaemonSet; embeds portal.html, bundles ossutil).
 	$(CONTAINER_TOOL) build --platform $(MIGRATE_PLATFORM) -f Dockerfile.migrate-server -t $(MIGRATE_IMG) .
 
+OSS_MIGRATE_IMG ?= oss-migrate-server:latest
+OSS_MIGRATE_PLATFORM ?= linux/amd64
+
+.PHONY: docker-build-oss-migrate-server
+docker-build-oss-migrate-server: ## Build the oss-migrate-server image (Deployment; OSS to OSS data migration, embeds portal.html, bundles ossutil).
+	$(CONTAINER_TOOL) build --platform $(OSS_MIGRATE_PLATFORM) -f Dockerfile.oss-migrate-server -t $(OSS_MIGRATE_IMG) .
+
 ##@ Build & save images (docker build --platform + docker save to deploy/)
 
 # Shared knobs for the convenience targets below.
@@ -170,6 +177,13 @@ migrate-server: ## Build migrate-server:<VERSION> (linux/amd64) and save to depl
 	@mkdir -p $(IMAGE_DIR)
 	$(CONTAINER_TOOL) save -o $(IMAGE_DIR)/migrate-server.tar migrate-server:$(VERSION)
 	@echo ">> built migrate-server:$(VERSION) -> $(IMAGE_DIR)/migrate-server.tar"
+
+.PHONY: oss-migrate-server
+oss-migrate-server: ## Build oss-migrate-server:<VERSION> (linux/amd64) and save to deploy/oss-migrate-server.tar
+	$(CONTAINER_TOOL) build --platform $(PLATFORM) -f Dockerfile.oss-migrate-server -t oss-migrate-server:$(VERSION) .
+	@mkdir -p $(IMAGE_DIR)
+	$(CONTAINER_TOOL) save -o $(IMAGE_DIR)/oss-migrate-server.tar oss-migrate-server:$(VERSION)
+	@echo ">> built oss-migrate-server:$(VERSION) -> $(IMAGE_DIR)/oss-migrate-server.tar"
 
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.

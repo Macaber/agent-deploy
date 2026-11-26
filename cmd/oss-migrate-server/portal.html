@@ -1,0 +1,1282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OSS → OSS 数据迁移控制台</title>
+<style>
+  :root {
+    --bg:#0b0f17;
+    --panel:#111827;
+    --panel2:#161f30;
+    --panel3:#1b2537;
+    --line:#233047;
+    --line-strong:#2f3f5c;
+
+    --fg:#e8edf6;
+    --fg-dim:#c2cce0;
+    --muted:#8494ad;
+    --faint:#5d6b84;
+
+    --accent:#10b981;
+    --accent-strong:#059669;
+    --accent-ink:#052e16;
+    --ok:#10b981;
+    --ok-bg:rgba(16,185,129,.12);
+    --warn:#f59e0b;
+    --warn-bg:rgba(245,158,11,.12);
+    --err:#ef4444;
+    --err-bg:rgba(239,68,68,.12);
+    --info:#3b82f6;
+    --info-bg:rgba(59,130,246,.12);
+    --skip:#9ca3af;
+    --skip-bg:rgba(156,163,175,.12);
+
+    --r-sm:6px; --r:10px; --r-lg:14px; --r-pill:999px;
+    --shadow:0 1px 2px rgba(0,0,0,.35), 0 8px 24px -12px rgba(0,0,0,.6);
+    --shadow-lg:0 12px 40px -16px rgba(0,0,0,.7);
+    --ring:0 0 0 2px var(--bg), 0 0 0 4px rgba(16,185,129,.55);
+    --ease:cubic-bezier(.22,.61,.36,1);
+
+    --fs-xs:11.5px; --fs-sm:12.5px; --fs:13.5px; --fs-md:15px;
+    --lh:1.55;
+  }
+  * { box-sizing:border-box; }
+  html,body { height:100%; }
+  body {
+    margin:0; color:var(--fg); line-height:var(--lh);
+    font:var(--fs)/var(--lh) -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    background:
+      radial-gradient(1200px 600px at 100% -10%, rgba(16,185,129,.08), transparent 60%),
+      radial-gradient(900px 500px at -10% 110%, rgba(59,130,246,.06), transparent 55%),
+      var(--bg);
+    background-attachment:fixed;
+    -webkit-font-smoothing:antialiased;
+  }
+  .app-layout {
+    max-width:1420px; margin:0 auto; padding:20px 24px 60px;
+  }
+
+  /* Header */
+  header {
+    display:flex; justify-content:space-between; align-items:center;
+    padding-bottom:18px; border-bottom:1px solid var(--line); margin-bottom:18px;
+  }
+  .brand { display:flex; align-items:center; gap:12px; }
+  .logo {
+    width:40px; height:40px; border-radius:10px; display:grid; place-items:center;
+    font-size:20px; font-weight:800; color:var(--accent-ink);
+    background:linear-gradient(135deg, #34d399, #10b981);
+    box-shadow:0 6px 16px -6px rgba(16,185,129,.7);
+  }
+  .brand h1 { margin:0; font-size:17.5px; font-weight:700; letter-spacing:.3px; }
+  .brand .desc { font-size:12px; color:var(--muted); margin-top:2px; }
+  .header-actions { display:flex; align-items:center; gap:12px; }
+
+  .badge {
+    display:inline-flex; align-items:center; gap:5px;
+    font-size:12px; padding:3px 9px; border-radius:var(--r-pill);
+    background:var(--panel2); border:1px solid var(--line); color:var(--fg-dim);
+  }
+  .badge-dot { width:6px; height:6px; border-radius:50%; background:var(--accent); }
+  .btn-logout {
+    padding:6px 12px; border-radius:var(--r-sm); border:1px solid var(--line);
+    background:var(--panel2); color:var(--muted); font-size:12px; cursor:pointer;
+  }
+  .btn-logout:hover { color:var(--fg); border-color:var(--line-strong); }
+
+  /* Scope Bar (Top paths) */
+  .scope-bar {
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
+    padding:12px 16px; margin-bottom:18px; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:14px;
+  }
+  .scope-group { display:flex; align-items:center; gap:8px; font-size:12.5px; }
+  .scope-label { font-weight:600; color:var(--muted); white-space:nowrap; }
+  .scope-input {
+    background:var(--panel2); border:1px solid var(--line); border-radius:var(--r-sm);
+    color:var(--fg); padding:5px 9px; font-size:12.5px; font-family:monospace; width:220px;
+  }
+  .scope-input:focus { outline:none; border-color:var(--accent); }
+
+  /* Navigation Tabs */
+  .tabs {
+    display:flex; gap:8px; border-bottom:1px solid var(--line); margin-bottom:18px;
+  }
+  .tab-btn {
+    padding:9px 16px; background:none; border:none; border-bottom:2px solid transparent;
+    color:var(--muted); font-size:13.5px; font-weight:600; cursor:pointer;
+    transition:all .18s var(--ease);
+  }
+  .tab-btn:hover { color:var(--fg); }
+  .tab-btn.active { color:var(--accent); border-bottom-color:var(--accent); }
+
+  /* 2-Column Studio Layout */
+  .studio-grid {
+    display:grid; grid-template-columns:480px 1fr; gap:20px; align-items:start;
+  }
+  @media (max-width:980px) {
+    .studio-grid { grid-template-columns:1fr; }
+  }
+
+  .card {
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
+    padding:20px; margin-bottom:20px; box-shadow:var(--shadow);
+  }
+  .card-title {
+    font-size:14.5px; font-weight:700; margin:0 0 14px; display:flex; align-items:center; justify-content:space-between;
+  }
+  .card-sub { font-size:12px; color:var(--muted); font-weight:normal; }
+
+  /* Inputs & select */
+  .input-text, .select-text {
+    width:100%; padding:9px 12px; background:var(--panel2); border:1px solid var(--line);
+    border-radius:var(--r-sm); color:var(--fg); font-size:13.5px; font-family:monospace;
+    transition:border-color .15s;
+  }
+  .input-text:focus, .select-text:focus {
+    outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(16,185,129,.15);
+  }
+  .field-label { display:block; font-size:12px; font-weight:600; color:var(--muted); margin-bottom:6px; }
+
+  /* Search & source list */
+  .search-input-wrap { position:relative; margin-bottom:10px; }
+  .search-input {
+    width:100%; padding:8px 12px 8px 30px; background:var(--panel2); border:1px solid var(--line);
+    border-radius:var(--r-sm); color:var(--fg); font-size:12.5px;
+  }
+  .search-input:focus { outline:none; border-color:var(--accent); }
+  .search-icon { position:absolute; left:10px; top:8px; color:var(--muted); font-size:13px; }
+
+  .source-list-box {
+    max-height:420px; overflow-y:auto; border:1px solid var(--line); border-radius:var(--r-sm);
+    background:var(--panel2);
+  }
+  .source-item {
+    display:flex; justify-content:space-between; align-items:center;
+    padding:9px 13px; border-bottom:1px solid var(--line); cursor:pointer;
+    transition:background .15s;
+  }
+  .source-item:last-child { border-bottom:none; }
+  .source-item:hover { background:var(--panel3); }
+  .source-item.selected {
+    background:rgba(16,185,129,.14); border-left:3px solid var(--accent);
+  }
+  .source-item-name { font-weight:600; font-size:13px; color:var(--fg); font-family:monospace; }
+  .source-item-uri { font-size:11.5px; color:var(--muted); font-family:monospace; margin-top:2px; }
+
+  /* Quick Pills */
+  .quick-pills { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; align-items:center; }
+  .pill-title { font-size:11.5px; color:var(--muted); margin-right:4px; }
+  .pill-btn {
+    background:var(--panel3); border:1px solid var(--line); color:var(--fg-dim);
+    padding:3px 9px; border-radius:var(--r-sm); font-size:12px; cursor:pointer; font-family:monospace;
+    transition:all .12s;
+  }
+  .pill-btn:hover { border-color:var(--accent); color:var(--accent); }
+
+  /* Subdirs Box (Select which subdirectories to migrate) */
+  .subdirs-box {
+    background:var(--panel2); border:1px solid var(--line); border-radius:var(--r-sm);
+    padding:12px 14px; margin-bottom:16px;
+  }
+  .subdirs-title {
+    font-size:12px; font-weight:700; color:var(--muted); margin-bottom:10px; display:flex; align-items:center; justify-content:space-between;
+  }
+  .subdirs-grid {
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px;
+  }
+  .subdir-chip {
+    display:flex; align-items:center; gap:8px; padding:8px 12px;
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--r-sm); cursor:pointer;
+    user-select:none; transition:border-color .15s;
+  }
+  .subdir-chip:hover { border-color:var(--line-strong); }
+  .subdir-chip input[type="checkbox"] { accent-color:var(--accent); width:15px; height:15px; cursor:pointer; }
+  .subdir-chip code { font-weight:700; color:var(--fg); }
+  .subdir-chip span { font-size:11px; color:var(--muted); }
+
+  /* Real-time Probe Card */
+  .probe-card {
+    border-radius:var(--r-sm); padding:12px 14px; margin:14px 0;
+    font-size:12.5px; display:flex; gap:10px; align-items:flex-start; line-height:1.5;
+  }
+  .probe-card.exists {
+    background:var(--warn-bg); border:1px solid rgba(245,158,11,.4); color:#fcd34d;
+  }
+  .probe-card.empty {
+    background:var(--ok-bg); border:1px solid rgba(16,185,129,.4); color:#6ee7b7;
+  }
+  .probe-card.error {
+    background:var(--err-bg); border:1px solid rgba(239,68,68,.4); color:#fca5a5;
+  }
+  .probe-card.checking {
+    background:var(--panel); border:1px solid var(--line); color:var(--muted);
+  }
+
+  /* Options Row */
+  .options-box {
+    background:var(--panel2); border:1px solid var(--line); border-radius:var(--r-sm);
+    padding:12px 14px; margin-bottom:16px; display:flex; flex-wrap:wrap; gap:18px; align-items:center;
+  }
+  .check-label {
+    display:inline-flex; align-items:center; gap:7px; font-size:13px; color:var(--fg-dim); cursor:pointer; user-select:none;
+  }
+  .check-label input[type="checkbox"] {
+    accent-color:var(--accent); width:15px; height:15px; cursor:pointer;
+  }
+
+  /* Primary Button */
+  .btn-submit-large {
+    width:100%; padding:13px; background:linear-gradient(135deg, #10b981, #059669);
+    border:1px solid #059669; border-radius:var(--r-sm); color:#fff;
+    font-size:15px; font-weight:700; cursor:pointer; box-shadow:0 6px 18px -4px rgba(16,185,129,.5);
+    display:flex; justify-content:center; align-items:center; gap:10px;
+    transition:transform .1s, opacity .15s;
+  }
+  .btn-submit-large:hover { opacity:.94; transform:translateY(-1px); }
+  .btn-submit-large:active { transform:translateY(0); }
+  .btn-submit-large:disabled { opacity:.4; cursor:not-allowed; transform:none; }
+
+  .btn-secondary {
+    padding:6px 12px; background:var(--panel2); border:1px solid var(--line);
+    border-radius:var(--r-sm); color:var(--fg-dim); font-size:12px; font-weight:600; cursor:pointer;
+  }
+  .btn-secondary:hover { border-color:var(--line-strong); color:var(--fg); }
+
+  /* Progress Card */
+  .progress-card { border-left:4px solid var(--accent); }
+  .progress-bar-bg {
+    width:100%; height:7px; background:var(--panel2); border-radius:var(--r-pill); overflow:hidden; margin:10px 0;
+  }
+  .progress-bar-fill {
+    height:100%; background:linear-gradient(90deg, #10b981, #34d399); width:0%; transition:width .3s;
+  }
+  .details-box {
+    margin-top:12px; background:var(--panel2); border:1px solid var(--line); border-radius:var(--r-sm);
+    padding:10px 12px; font-family:monospace; font-size:11.5px; line-height:1.5; color:var(--fg-dim);
+    max-height:180px; overflow-y:auto; white-space:pre-wrap;
+  }
+
+  /* Tables */
+  .table-wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th {
+    text-align:left; padding:9px 12px; background:var(--panel2); color:var(--muted);
+    font-size:11.5px; font-weight:600; text-transform:uppercase; letter-spacing:.4px;
+    border-bottom:1px solid var(--line);
+  }
+  td { padding:10px 12px; border-bottom:1px solid var(--line); color:var(--fg-dim); vertical-align:middle; }
+  tr:last-child td { border-bottom:none; }
+  tr:hover td { background:rgba(255,255,255,.015); }
+
+  .tag { display:inline-block; padding:2px 7px; border-radius:var(--r-pill); font-size:11px; font-weight:700; }
+  .tag-ok { background:var(--ok-bg); color:var(--ok); border:1px solid rgba(16,185,129,.3); }
+  .tag-skip { background:var(--skip-bg); color:var(--skip); border:1px solid rgba(156,163,175,.3); }
+  .tag-fail { background:var(--err-bg); color:var(--err); border:1px solid rgba(239,68,68,.3); }
+
+  .empty-tip { padding:32px 16px; text-align:center; color:var(--muted); font-size:13px; }
+  .code-badge { font-family:monospace; background:var(--panel); padding:2px 6px; border-radius:4px; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="app-layout">
+  <!-- Header -->
+  <header>
+    <div class="brand">
+      <div class="logo">⇄</div>
+      <div>
+        <h1>OSS → OSS 数据迁移控制台</h1>
+        <div class="desc">高效支持十万级 OSS 工作空间检索 · 跨名称任意迁移 · 支持勾选仅迁移部分子目录 · 存在跳过 / 强制覆盖</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="badge">
+        <span class="badge-dot"></span>
+        <span id="serviceEndpoint">OSS: 连接中</span>
+      </div>
+      <button class="btn-logout" id="logoutBtn" style="display:none;" onclick="logout()">退出登录</button>
+    </div>
+  </header>
+
+  <!-- Scope Configuration Bar -->
+  <div class="scope-bar">
+    <div style="display:flex; flex-wrap:wrap; gap:16px; align-items:center;">
+      <div class="scope-group">
+        <span class="scope-label">源 OSS 路径:</span>
+        <input type="text" id="sourceBucket" class="scope-input" value="oss://euvduatc-oss" title="源 Bucket" />
+        <span style="color:var(--line-strong);">/</span>
+        <input type="text" id="sourcePrefix" class="scope-input" style="width:130px;" value="workspaces" title="源 Prefix" />
+      </div>
+      <div class="scope-group">
+        <span class="scope-label">目标 OSS 路径:</span>
+        <input type="text" id="targetBucket" class="scope-input" value="oss://euvduatc-oss" title="目标 Bucket" />
+        <span style="color:var(--line-strong);">/</span>
+        <input type="text" id="targetPrefix" class="scope-input" style="width:130px;" value="workspaces" title="目标 Prefix" />
+      </div>
+    </div>
+    <button class="btn-secondary" onclick="refreshAllLists()">🔄 刷新目录列表 (oss ls)</button>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('studio')">可视化工作台 (点选+输入)</button>
+    <button class="tab-btn" onclick="switchTab('batch')">批量文本映射</button>
+    <button class="tab-btn" onclick="switchTab('logs')">审计日志</button>
+  </div>
+
+  <!-- Tab 1: Studio (Main interactive mode) -->
+  <div id="tab-studio" class="tab-content">
+    <div class="studio-grid">
+      <!-- Left Column: Source Selection & Exploration -->
+      <div class="card" style="margin-bottom:0;">
+        <div class="card-title">
+          <span>1. 指定源工作空间 (Source)</span>
+          <span id="sourceCountBadge" class="badge">已载入 0 项</span>
+        </div>
+
+        <!-- Direct Source Input Box -->
+        <div style="margin-bottom:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <label class="field-label" for="sourceInput" style="margin:0;">
+              直接输入源端 ws-xxxx 名称或完整 OSS 路径:
+            </label>
+            <span id="sourceStatusTag" class="tag" style="display:none;"></span>
+          </div>
+          <input type="text" id="sourceInput" class="input-text" placeholder="例如 ws-974361 或 ws-9743616" oninput="onSourceInputChange()" />
+          <div class="quick-pills">
+            <span class="pill-title">常见快捷:</span>
+            <button class="pill-btn" onclick="setSourceName('ws-974361')">ws-974361</button>
+            <button class="pill-btn" onclick="setSourceName('ws-9743616')">ws-9743616</button>
+            <button class="pill-btn" onclick="setSourceName('ws-219372')">ws-219372</button>
+          </div>
+
+          <!-- Real-time Source Probe Result Card -->
+          <div id="sourceProbeBox" class="probe-card checking" style="display:none; margin-top:10px;">
+            <span id="sourceProbeIcon">⏳</span>
+            <div id="sourceProbeText">正在探测源端状态...</div>
+          </div>
+        </div>
+
+        <div style="margin:16px 0 8px; border-top:1px dashed var(--line); padding-top:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <span class="field-label" style="margin:0;">或从 OSS 目录中点选工作空间 (ws-xxxx):</span>
+            <span style="font-size:11px; color:var(--muted);">十万级无压力检索</span>
+          </div>
+          <!-- Search Box with Server-side OSS Prefix Filter -->
+          <div class="search-input-wrap">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="sourceSearchInput" class="search-input" placeholder="输入搜索词 (例如 974361 或 ws-974)..." oninput="onSearchQueryChange()" />
+          </div>
+          <div id="sourceListBox" class="source-list-box">
+            <div class="empty-tip">正在查询 OSS 源端目录...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Destination configuration & actions -->
+      <div class="card" style="margin-bottom:0;">
+        <div class="card-title">
+          <span>2. 指定目的工作空间与同步策略</span>
+        </div>
+
+        <!-- Destination Input & Select Section -->
+        <div class="dest-section" style="background:var(--panel2); border:1px solid var(--line); border-radius:var(--r); padding:16px; margin-bottom:16px;">
+          <!-- Direct Input -->
+          <div style="margin-bottom:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <label class="field-label" for="destInput" style="margin:0;">
+                目的工作空间 (支持全新空间或已有空间，如 ws-219372):
+              </label>
+              <span id="destStatusTag" class="tag" style="display:none;"></span>
+            </div>
+            <input type="text" id="destInput" class="input-text" placeholder="例如 ws-219372 或 ws-974361-guwnb" oninput="onDestInputChange()" />
+            <div class="quick-pills">
+              <span class="pill-title">快速填充:</span>
+              <button class="pill-btn" onclick="setDestName('ws-219372')">ws-219372</button>
+              <button class="pill-btn" onclick="setDestName('ws-974361-guwnb')">ws-974361-guwnb</button>
+              <button class="pill-btn" onclick="setDestSuffix('-guwnb')">+ 后缀 -guwnb</button>
+              <button class="pill-btn" onclick="setDestSuffix('-bak')">+ 后缀 -bak</button>
+              <button class="pill-btn" onclick="setDestSame()">与源同名</button>
+            </div>
+          </div>
+
+          <!-- Select from Target Existing Workspaces -->
+          <div style="margin-top:14px; border-top:1px dashed var(--line); padding-top:12px;">
+            <label class="field-label" for="destSelect">
+              也可以从目标端已有目录中选中 (通过 oss ls 发现):
+            </label>
+            <select id="destSelect" class="select-text" onchange="onDestSelectChange()">
+              <option value="">-- 点击选择目标端已有工作空间 --</option>
+            </select>
+          </div>
+
+          <!-- Resolved URIs Summary -->
+          <div style="margin-top:12px; padding:8px 10px; background:var(--panel); border-radius:var(--r-sm); font-size:12px;">
+            <div style="color:var(--muted); margin-bottom:4px;">源端完整 URI: <code id="resolvedSourceUri" class="code-badge">-</code></div>
+            <div style="color:var(--muted);">目标完整 URI: <code id="resolvedDestUri" class="code-badge">-</code></div>
+          </div>
+
+          <!-- Real-time Probe Result Card -->
+          <div id="destProbeBox" class="probe-card checking" style="display:none;">
+            <span id="destProbeIcon">⏳</span>
+            <div id="destProbeText">正在探测目标路径状态...</div>
+          </div>
+        </div>
+
+        <!-- Subdirectories Selection (Selective Migration) -->
+        <div class="subdirs-box">
+          <div class="subdirs-title">
+            <span>3. 迁移内容选择 (支持仅迁移部分子目录)</span>
+            <label class="check-label" style="font-size:12px;">
+              <input type="checkbox" id="dirSelectAll" onchange="onToggleAllSubdirs(this.checked)" /> 全选 / 全量 (*)
+            </label>
+          </div>
+          <div class="subdirs-grid">
+            <label class="subdir-chip" title="用户代码、个人项目文件与工作区内容">
+              <input type="checkbox" id="dirWorkspace" checked onchange="updateSubdirsSelection()" />
+              <div>
+                <code>workspace</code>
+                <div>代码工程与用户数据</div>
+              </div>
+            </label>
+            <label class="subdir-chip" title="平台服务端配置、环境与技能状态">
+              <input type="checkbox" id="dirBocomwork" checked onchange="updateSubdirsSelection()" />
+              <div>
+                <code>bocomwork</code>
+                <div>服务配置与状态</div>
+              </div>
+            </label>
+            <label class="subdir-chip" title="插件与代码环境扩展数据">
+              <input type="checkbox" id="dirBocomcode" checked onchange="updateSubdirsSelection()" />
+              <div>
+                <code>bocomcode</code>
+                <div>插件与代码扩展</div>
+              </div>
+            </label>
+          </div>
+          <div id="subdirsNotice" style="font-size:11.5px; color:var(--accent); margin-top:8px;">
+            当前将同步：workspace, bocomwork, bocomcode（完整同步，保留内置 skills 与所有数据）
+          </div>
+        </div>
+
+        <!-- Migration Strategy Options -->
+        <div class="options-box">
+          <label class="check-label" title="若目标 OSS 路径已包含对象，则自动跳过，绝不覆盖已有数据">
+            <input type="checkbox" id="optSkipExisting" checked onchange="handleOptChange('skip')" />
+            <strong>存在就跳过</strong> (Skip If Exists)
+          </label>
+          <label class="check-label" title="强制覆盖目标端已有数据 (ossutil cp -f)">
+            <input type="checkbox" id="optForce" onchange="handleOptChange('force')" />
+            <span style="color:var(--warn); font-weight:600;">强制覆盖 (Force Overwrite)</span>
+          </label>
+          <label class="check-label" title="仅模拟探测，不执行实际上传">
+            <input type="checkbox" id="optDryRun" onchange="updateSubmitSummary()" />
+            <span>演练模式 (Dry-Run)</span>
+          </label>
+        </div>
+
+        <!-- Advanced parameters (collapsed) -->
+        <details style="margin-bottom:18px;">
+          <summary>高级排除规则 (Excludes)</summary>
+          <div style="margin-top:10px;">
+            <label class="field-label">排除分支规则 (逗号分隔，默认留空不排除任何内容):</label>
+            <input type="text" id="optExcludes" class="input-text" style="font-size:12px;" value="" placeholder="默认留空表示全量完整迁移；若需排除可填写如 temp, logs 等" />
+          </div>
+        </details>
+
+        <!-- Submit Button -->
+        <button id="startStudioBtn" class="btn-submit-large" onclick="submitStudioMigration()" disabled>
+          <span>🚀 开始迁移</span>
+          <span id="submitSummaryText" style="font-size:12.5px; opacity:.85;">(请先填写源与目的工作空间)</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 2: Batch Mapping -->
+  <div id="tab-batch" class="tab-content" style="display:none;">
+    <div class="card">
+      <div class="card-title">批量文本映射迁移</div>
+      <p style="font-size:12.5px; color:var(--muted); margin-top:0;">
+        每行一条映射，格式为 <code>源路径 -> 目标路径</code>，或者简写为 <code>源ID -> 目标ID</code>（自动补齐前缀）。
+      </p>
+      <textarea id="batchInput" class="input-text" style="height:140px; font-family:monospace; line-height:1.5; margin-bottom:14px;" placeholder="ws-974361 -> ws-219372
+oss://euvduatc-oss/workspaces/ws-9743616 -> oss://euvduatc-oss/workspaces/ws-974361-guwnb"></textarea>
+      <div class="options-box">
+        <label class="check-label">
+          <input type="checkbox" id="batchSkipExisting" checked onchange="handleBatchOptChange('skip')" />
+          <strong>存在就跳过</strong>
+        </label>
+        <label class="check-label">
+          <input type="checkbox" id="batchForce" onchange="handleBatchOptChange('force')" />
+          <span style="color:var(--warn); font-weight:600;">强制覆盖</span>
+        </label>
+        <label class="check-label">
+          <input type="checkbox" id="batchDryRun" />
+          <span>演练模式 (Dry-Run)</span>
+        </label>
+      </div>
+      <button class="btn-secondary" style="padding:9px 18px; font-size:13.5px;" onclick="submitBatchMigration()">启动批量任务</button>
+    </div>
+  </div>
+
+  <!-- Tab 3: Logs -->
+  <div id="tab-logs" class="tab-content" style="display:none;">
+    <div class="card">
+      <div class="card-title">
+        <span>历史迁移审计日志 (TSV)</span>
+        <button class="btn-secondary" onclick="loadLogs()">刷新日志</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>状态</th>
+              <th>源端路径</th>
+              <th>目标端路径</th>
+              <th>子目录</th>
+              <th>对象数</th>
+              <th>耗时</th>
+              <th>备注说明</th>
+            </tr>
+          </thead>
+          <tbody id="logTableBody">
+            <tr><td colspan="8" class="empty-tip">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Active Task Progress Card -->
+  <div id="activeTaskCard" class="card progress-card" style="display:none; margin-top:20px;">
+    <div class="card-title">
+      <span id="taskStatusTitle">迁移任务执行中...</span>
+      <span id="taskRunningItem" class="badge"></span>
+    </div>
+    <div class="progress-bar-bg">
+      <div id="taskProgressBar" class="progress-bar-fill"></div>
+    </div>
+    <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-bottom:12px;">
+      <span id="taskStats">已处理: 0 / 0</span>
+      <span id="taskTime">耗时: 0s</span>
+    </div>
+
+    <!-- Items table -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>源端 (Source)</th>
+            <th>目标端 (Destination)</th>
+            <th>状态</th>
+            <th>目标对象数</th>
+            <th>耗时</th>
+            <th>详细说明</th>
+          </tr>
+        </thead>
+        <tbody id="taskItemsBody"></tbody>
+      </table>
+    </div>
+
+    <div id="taskLiveLogs" class="details-box" style="display:none;"></div>
+  </div>
+</div>
+
+<script>
+  let sourceEntries = [];
+  let targetEntries = [];
+  let probeTimer = null;
+  let sourceProbeTimer = null;
+  let sourceExists = null;
+  let destExists = null;
+  let destObjectCount = 0;
+  let searchDebounceTimer = null;
+  let activeTaskId = null;
+  let pollTimer = null;
+  let taskStartTime = null;
+
+  function switchTab(name) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+    const map = {'studio':0, 'batch':1, 'logs':2};
+    document.querySelectorAll('.tab-btn')[map[name]].classList.add('active');
+    document.getElementById('tab-' + name).style.display = 'block';
+    if (name === 'logs') loadLogs();
+  }
+
+  function handleOptChange(which) {
+    const skip = document.getElementById('optSkipExisting');
+    const force = document.getElementById('optForce');
+    if (which === 'force' && force.checked) {
+      skip.checked = false;
+    } else if (which === 'skip' && skip.checked) {
+      force.checked = false;
+    }
+    updateSubmitSummary();
+  }
+
+  function handleBatchOptChange(which) {
+    const skip = document.getElementById('batchSkipExisting');
+    const force = document.getElementById('batchForce');
+    if (which === 'force' && force.checked) {
+      skip.checked = false;
+    } else if (which === 'skip' && skip.checked) {
+      force.checked = false;
+    }
+  }
+
+  // Subdirectories selection logic
+  function onToggleAllSubdirs(checked) {
+    document.getElementById('dirWorkspace').checked = checked;
+    document.getElementById('dirBocomwork').checked = checked;
+    document.getElementById('dirBocomcode').checked = checked;
+    updateSubdirsSelection();
+  }
+
+  function getSelectedSubdirs() {
+    const all = document.getElementById('dirSelectAll').checked;
+    if (all) return ['*'];
+    const list = [];
+    if (document.getElementById('dirWorkspace').checked) list.push('workspace');
+    if (document.getElementById('dirBocomwork').checked) list.push('bocomwork');
+    if (document.getElementById('dirBocomcode').checked) list.push('bocomcode');
+    return list;
+  }
+
+  function updateSubdirsSelection() {
+    const dirs = getSelectedSubdirs();
+    const notice = document.getElementById('subdirsNotice');
+    if (dirs.length === 0) {
+      notice.style.color = 'var(--err)';
+      notice.textContent = '⚠ 请至少勾选一个待迁移的子目录';
+    } else if (dirs.includes('*')) {
+      notice.style.color = 'var(--accent)';
+      notice.textContent = '当前将同步：全量前缀下的所有对象与子目录 (*)';
+    } else {
+      notice.style.color = 'var(--accent)';
+      notice.textContent = `当前将同步部分子目录：${dirs.join(', ')}`;
+    }
+    updateSubmitSummary();
+  }
+
+  // Refresh lists
+  async function refreshAllLists() {
+    const q = document.getElementById('sourceSearchInput').value.trim();
+    await Promise.all([loadSourceList(q), loadTargetList()]);
+  }
+
+  // API helper with 401 auto-redirect
+  async function apiFetch(url, options) {
+    const res = await fetch(url, options);
+    if (res.status === 401) {
+      location.href = 'login';
+      throw new Error('未授权或登录已过期，正在跳转登录...');
+    }
+    return res;
+  }
+
+  // Server-side filtered source listing (supports 100k+ scale)
+  async function loadSourceList(searchQuery = '') {
+    const bucket = document.getElementById('sourceBucket').value.trim();
+    const prefix = document.getElementById('sourcePrefix').value.trim();
+    const box = document.getElementById('sourceListBox');
+    box.innerHTML = '<div class="empty-tip">正在执行 oss ls 查询...</div>';
+
+    try {
+      let url = `api/oss/list?bucket=${encodeURIComponent(bucket)}&prefix=${encodeURIComponent(prefix)}&limit=60`;
+      if (searchQuery) url += `&search=${encodeURIComponent(searchQuery)}`;
+      const res = await apiFetch(url);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '获取源列表失败');
+
+      sourceEntries = data.entries || [];
+      document.getElementById('sourceCountBadge').textContent = `已载入 ${sourceEntries.length} 项`;
+      renderSourceList(sourceEntries);
+    } catch (e) {
+      box.innerHTML = `<div class="empty-tip" style="color:var(--err)">查询出错: ${e.message}</div>`;
+    }
+  }
+
+  // Target list for destination dropdown
+  async function loadTargetList() {
+    const bucket = document.getElementById('targetBucket').value.trim();
+    const prefix = document.getElementById('targetPrefix').value.trim();
+    const select = document.getElementById('destSelect');
+
+    try {
+      const res = await apiFetch(`api/oss/list?bucket=${encodeURIComponent(bucket)}&prefix=${encodeURIComponent(prefix)}&limit=100`);
+      const data = await res.json();
+      if (!res.ok) return;
+
+      targetEntries = data.entries || [];
+      select.innerHTML = '<option value="">-- 点击选择目标端已有的工作空间 --</option>';
+      targetEntries.forEach(e => {
+        const name = e.name || e.Name || '';
+        if (!name) return;
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = `${name} [目标端已存在]`;
+        select.appendChild(opt);
+      });
+    } catch (e) {
+      console.warn('加载目标列表失败', e);
+    }
+  }
+
+  function renderSourceList(list) {
+    const box = document.getElementById('sourceListBox');
+    if (!list || list.length === 0) {
+      box.innerHTML = '<div class="empty-tip">未发现匹配的 ws-xxxx 工作空间 (可尝试在上侧搜索框输入关键词)</div>';
+      return;
+    }
+    const curSrc = document.getElementById('sourceInput').value.trim();
+    box.innerHTML = list.map(item => {
+      const name = item.name || item.Name || '';
+      if (!name) return '';
+      const isSelected = curSrc === name || curSrc.endsWith('/' + name);
+      return `
+        <div class="source-item ${isSelected ? 'selected' : ''}" onclick="selectSourceByName('${name}')">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:14px;">📁</span>
+            <span class="source-item-name" style="font-family:monospace; font-weight:600; font-size:13.5px; color:var(--text);">${name}</span>
+          </div>
+          <span style="font-size:11.5px; color:var(--accent); font-weight:500;">选择 ➔</span>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function onSearchQueryChange() {
+    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(() => {
+      const q = document.getElementById('sourceSearchInput').value.trim();
+      loadSourceList(q);
+    }, 350);
+  }
+
+  function selectSourceByName(name) {
+    setSourceName(name);
+  }
+
+  function setSourceName(name) {
+    document.getElementById('sourceInput').value = name;
+    onSourceInputChange();
+    renderSourceList(sourceEntries);
+
+    // Smart destination auto-fill
+    const destInput = document.getElementById('destInput');
+    if (!destInput.value || destInput.value.startsWith('ws-')) {
+      if (name === 'ws-974361' || name === 'ws-9743616') {
+        destInput.value = 'ws-219372'; // User's requested example
+      } else {
+        destInput.value = name + '-guwnb';
+      }
+      onDestInputChange();
+    }
+  }
+
+  function resolveFullSourceUri(val) {
+    val = val.trim();
+    if (!val) return '';
+    if (val.startsWith('oss://')) return val.replace(/\/+$/, '');
+    const b = document.getElementById('sourceBucket').value.trim().replace(/\/+$/, '');
+    const p = document.getElementById('sourcePrefix').value.trim().replace(/\/+$/, '');
+    if (p) return `${b}/${p}/${val}`;
+    return `${b}/${val}`;
+  }
+
+  function resolveFullDestUri(val) {
+    val = val.trim();
+    if (!val) return '';
+    if (val.startsWith('oss://')) return val.replace(/\/+$/, '');
+    const b = document.getElementById('targetBucket').value.trim().replace(/\/+$/, '');
+    const p = document.getElementById('targetPrefix').value.trim().replace(/\/+$/, '');
+    if (p) return `${b}/${p}/${val}`;
+    return `${b}/${val}`;
+  }
+
+  function onSourceInputChange() {
+    const raw = document.getElementById('sourceInput').value.trim();
+    const full = resolveFullSourceUri(raw);
+    document.getElementById('resolvedSourceUri').textContent = full || '-';
+    renderSourceList(sourceEntries);
+    updateSubmitSummary();
+
+    const tag = document.getElementById('sourceStatusTag');
+    if (!full) {
+      document.getElementById('sourceProbeBox').style.display = 'none';
+      if (tag) tag.style.display = 'none';
+      sourceExists = null;
+      return;
+    }
+
+    if (sourceProbeTimer) clearTimeout(sourceProbeTimer);
+    sourceProbeTimer = setTimeout(() => probeSource(full), 300);
+  }
+
+  async function probeSource(fullUri) {
+    const box = document.getElementById('sourceProbeBox');
+    const text = document.getElementById('sourceProbeText');
+    const icon = document.getElementById('sourceProbeIcon');
+    const tag = document.getElementById('sourceStatusTag');
+
+    box.style.display = 'flex';
+    box.className = 'probe-card checking';
+    icon.textContent = '⏳';
+    text.textContent = `正在探测源端状态: ${fullUri} ...`;
+
+    try {
+      const res = await apiFetch('api/migrate/remote-check', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({uris: [fullUri]})
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '探测失败');
+
+      const item = data.results && data.results[0];
+      if (item && item.exists && item.objectCount > 0) {
+        box.className = 'probe-card empty';
+        icon.textContent = '✓';
+        text.innerHTML = `<strong>源端已确认存在</strong> (发现 ${item.objectCount} 个对象，可正常迁移)。`;
+        sourceExists = true;
+        if (tag) {
+          tag.style.display = 'inline-block';
+          tag.className = 'tag tag-ok';
+          tag.textContent = `源端存在 (${item.objectCount}个对象)`;
+        }
+      } else {
+        box.className = 'probe-card error';
+        icon.textContent = '✕';
+        text.innerHTML = `<strong>源端不存在或无对象数据</strong> (对象数: 0)。请检查源工作空间名称！`;
+        sourceExists = false;
+        if (tag) {
+          tag.style.display = 'inline-block';
+          tag.className = 'tag tag-fail';
+          tag.textContent = '源端不存在';
+        }
+      }
+    } catch (e) {
+      box.className = 'probe-card error';
+      icon.textContent = '✕';
+      text.textContent = `探测源端异常: ${e.message}`;
+      sourceExists = false;
+      if (tag) {
+        tag.style.display = 'inline-block';
+        tag.className = 'tag tag-fail';
+        tag.textContent = '探测失败';
+      }
+    }
+    updateSubmitSummary();
+  }
+
+  function setDestName(name) {
+    document.getElementById('destInput').value = name;
+    document.getElementById('destSelect').value = '';
+    onDestInputChange();
+  }
+
+  function setDestSuffix(suffix) {
+    const rawSrc = document.getElementById('sourceInput').value.trim();
+    if (!rawSrc) return;
+    const base = rawSrc.split('/').pop();
+    document.getElementById('destInput').value = base + suffix;
+    document.getElementById('destSelect').value = '';
+    onDestInputChange();
+  }
+
+  function setDestSame() {
+    const rawSrc = document.getElementById('sourceInput').value.trim();
+    if (!rawSrc) return;
+    const base = rawSrc.split('/').pop();
+    document.getElementById('destInput').value = base;
+    document.getElementById('destSelect').value = '';
+    onDestInputChange();
+  }
+
+  function onDestSelectChange() {
+    const val = document.getElementById('destSelect').value;
+    if (val) {
+      document.getElementById('destInput').value = val;
+      onDestInputChange();
+    }
+  }
+
+  function onDestInputChange() {
+    const raw = document.getElementById('destInput').value.trim();
+    const full = resolveFullDestUri(raw);
+    document.getElementById('resolvedDestUri').textContent = full || '-';
+    updateSubmitSummary();
+
+    const tag = document.getElementById('destStatusTag');
+    if (!full) {
+      document.getElementById('destProbeBox').style.display = 'none';
+      if (tag) tag.style.display = 'none';
+      destExists = null;
+      destObjectCount = 0;
+      return;
+    }
+
+    // Debounce probe
+    if (probeTimer) clearTimeout(probeTimer);
+    probeTimer = setTimeout(() => probeDestination(full), 300);
+  }
+
+  async function probeDestination(fullUri) {
+    const box = document.getElementById('destProbeBox');
+    const text = document.getElementById('destProbeText');
+    const icon = document.getElementById('destProbeIcon');
+    const tag = document.getElementById('destStatusTag');
+
+    box.style.display = 'flex';
+    box.className = 'probe-card checking';
+    icon.textContent = '⏳';
+    text.textContent = `正在探测目标状态: ${fullUri} ...`;
+
+    try {
+      const res = await apiFetch('api/migrate/remote-check', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({uris: [fullUri]})
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '探测失败');
+
+      const item = data.results && data.results[0];
+      if (item && item.exists && item.objectCount > 0) {
+        destExists = true;
+        destObjectCount = item.objectCount;
+        box.className = 'probe-card exists';
+        icon.textContent = '⚠️';
+        text.innerHTML = `
+          <div>
+            <div style="font-weight:700; color:#d97706; margin-bottom:4px;">
+              【目标工作空间已存在】远端发现已有 ${item.objectCount} 个对象
+            </div>
+            <div style="font-size:12px; color:var(--text-secondary); line-height:1.6;">
+              • <strong>支持【存在就跳过】（默认）</strong>：系统已启用目标数据保护，点击迁移将自动保护跳过，不破坏目标已有数据。<br/>
+              • <strong>支持【强制覆盖（Force）】</strong>：若需覆盖目标端已有数据，请勾选下方的【强制覆盖】。
+            </div>
+          </div>
+        `;
+        if (tag) {
+          tag.style.display = 'inline-block';
+          tag.className = 'tag tag-skip';
+          tag.textContent = `目标已存在 (${item.objectCount}个对象)`;
+        }
+      } else {
+        destExists = false;
+        destObjectCount = 0;
+        box.className = 'probe-card empty';
+        icon.textContent = '✅';
+        text.innerHTML = `
+          <div>
+            <div style="font-weight:700; color:#16a34a; margin-bottom:4px;">
+              【目标工作空间不存在 / 全新】远端尚无数据
+            </div>
+            <div style="font-size:12px; color:var(--text-secondary); line-height:1.6;">
+              • <strong>支持全新空间迁移</strong>：目标路径干净，点击迁移将自动在目标 OSS 创建该工作空间目录并写入数据。
+            </div>
+          </div>
+        `;
+        if (tag) {
+          tag.style.display = 'inline-block';
+          tag.className = 'tag tag-ok';
+          tag.textContent = '目标不存在 (全新空间)';
+        }
+      }
+    } catch (e) {
+      destExists = null;
+      box.className = 'probe-card error';
+      icon.textContent = '✕';
+      text.textContent = `探测目标端异常: ${e.message}`;
+      if (tag) {
+        tag.style.display = 'inline-block';
+        tag.className = 'tag tag-fail';
+        tag.textContent = '探测失败';
+      }
+    }
+    updateSubmitSummary();
+  }
+
+  function updateSubmitSummary() {
+    const btn = document.getElementById('startStudioBtn');
+    const summary = document.getElementById('submitSummaryText');
+    const rawSrc = document.getElementById('sourceInput').value.trim();
+    const rawDst = document.getElementById('destInput').value.trim();
+    const dirs = getSelectedSubdirs();
+
+    if (!rawSrc) {
+      btn.disabled = true;
+      summary.textContent = '(请先填写源工作空间)';
+      return;
+    }
+    if (sourceExists === false) {
+      btn.disabled = true;
+      summary.textContent = '(源端工作空间不存在或无数据)';
+      return;
+    }
+    if (!rawDst) {
+      btn.disabled = true;
+      summary.textContent = '(请先填写目的工作空间)';
+      return;
+    }
+    if (dirs.length === 0) {
+      btn.disabled = true;
+      summary.textContent = '(请至少勾选一个子目录)';
+      return;
+    }
+
+    btn.disabled = false;
+    const force = document.getElementById('optForce').checked;
+    const dryRun = document.getElementById('optDryRun').checked;
+
+    let targetDesc = '';
+    if (destExists === true) {
+      targetDesc = force ? ' [目标: 已存在 ➔ 策略: 强制覆盖]' : ' [目标: 已存在 ➔ 策略: 存在就跳过]';
+    } else if (destExists === false) {
+      targetDesc = ' [目标: 不存在 ➔ 策略: 写入全新空间]';
+    }
+    if (dryRun) targetDesc += ' (演练)';
+
+    const srcName = rawSrc.split('/').pop();
+    const dstName = rawDst.split('/').pop();
+    summary.textContent = `${srcName} ➔ ${dstName}${targetDesc} [${dirs.join('/')}]`;
+  }
+
+  async function submitStudioMigration() {
+    const rawSrc = document.getElementById('sourceInput').value.trim();
+    const rawDst = document.getElementById('destInput').value.trim();
+    const fullSrc = resolveFullSourceUri(rawSrc);
+    const fullDst = resolveFullDestUri(rawDst);
+    const dirs = getSelectedSubdirs();
+
+    if (!fullSrc || !fullDst) {
+      alert('请检查源和目的工作空间路径');
+      return;
+    }
+    if (sourceExists === false) {
+      alert('源端工作空间不存在或无数据，无法启动迁移！请检查源端路径。');
+      return;
+    }
+    if (dirs.length === 0) {
+      alert('请至少勾选一个待迁移的子目录');
+      return;
+    }
+
+    const force = document.getElementById('optForce').checked;
+    const dryRun = document.getElementById('optDryRun').checked;
+    const excludes = document.getElementById('optExcludes').value.split(',').map(s=>s.trim()).filter(Boolean);
+
+    // 目标已存在且未开启 force：二次明确提示
+    if (destExists === true && !force && !dryRun) {
+      const ok = confirm(
+        `【重要提示】目标空间 [${rawDst}] 已存在已有数据（${destObjectCount} 个对象）！\n\n` +
+        `当前生效策略为【存在就跳过】（迁移将保护跳过，不会覆盖远端已有数据）。\n\n` +
+        `是否以此策略继续提交？\n（若需覆盖已有数据，请点击“取消”，并在下方勾选“强制覆盖”后再试）`
+      );
+      if (!ok) return;
+    }
+
+    const payload = {
+      tasks: [{
+        source: fullSrc,
+        destination: fullDst,
+        force: force,
+        dryRun: dryRun,
+        dirs: dirs.includes('*') ? [] : dirs,
+        excludes: excludes
+      }],
+      force: force,
+      dryRun: dryRun
+    };
+
+    startMigration(payload);
+  }
+
+  async function submitBatchMigration() {
+    const raw = document.getElementById('batchInput').value.trim();
+    if (!raw) {
+      alert('请输入映射内容');
+      return;
+    }
+    const bSrc = document.getElementById('sourceBucket').value.trim().replace(/\/+$/, '');
+    const pSrc = document.getElementById('sourcePrefix').value.trim().replace(/\/+$/, '');
+    const bDst = document.getElementById('targetBucket').value.trim().replace(/\/+$/, '');
+    const pDst = document.getElementById('targetPrefix').value.trim().replace(/\/+$/, '');
+
+    const force = document.getElementById('batchForce').checked;
+    const dryRun = document.getElementById('batchDryRun').checked;
+
+    const lines = raw.split('\n');
+    const tasks = [];
+    for (let l of lines) {
+      l = l.trim();
+      if (!l || l.startsWith('#')) continue;
+      const parts = l.split('->').map(s=>s.trim());
+      if (parts.length < 2) continue;
+      let s = parts[0];
+      let d = parts[1];
+      if (!s.startsWith('oss://')) s = `${bSrc}/${pSrc}/${s}`;
+      if (!d.startsWith('oss://')) d = `${bDst}/${pDst}/${d}`;
+      tasks.push({source: s, destination: d, force: force, dryRun: dryRun});
+    }
+
+    if (tasks.length === 0) {
+      alert('未能解析出有效的映射行');
+      return;
+    }
+    startMigration({tasks, force, dryRun});
+  }
+
+  async function startMigration(payload) {
+    const card = document.getElementById('activeTaskCard');
+    card.style.display = 'block';
+    card.scrollIntoView({behavior: 'smooth'});
+
+    document.getElementById('taskStatusTitle').textContent = '启动任务中...';
+    document.getElementById('taskItemsBody').innerHTML = '';
+    document.getElementById('taskProgressBar').style.width = '0%';
+    document.getElementById('taskStats').textContent = `已处理: 0 / ${payload.tasks.length}`;
+
+    try {
+      const res = await apiFetch('api/migrate/run', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '启动任务失败');
+
+      activeTaskId = data.taskId;
+      taskStartTime = Date.now();
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(pollTaskStatus, 1000);
+      pollTaskStatus();
+    } catch (e) {
+      alert('启动迁移失败: ' + e.message);
+      document.getElementById('taskStatusTitle').textContent = '启动失败';
+    }
+  }
+
+  async function pollTaskStatus() {
+    if (!activeTaskId) return;
+    try {
+      const res = await apiFetch(`api/tasks/${activeTaskId}`);
+      const t = await res.json();
+      if (!res.ok) return;
+
+      const isRunning = t.status === 'running';
+      document.getElementById('taskStatusTitle').textContent = isRunning ? '迁移进行中...' : (t.error ? '迁移结束 (含错误)' : '迁移已完成');
+      document.getElementById('taskRunningItem').textContent = t.running ? `正在处理: ${t.running}` : (isRunning ? '处理中' : '完成');
+
+      const done = t.items ? t.items.length : 0;
+      const total = done + (isRunning ? 1 : 0);
+      const pct = total > 0 ? Math.min(100, Math.round((done / Math.max(total, 1)) * 100)) : (isRunning ? 20 : 100);
+      document.getElementById('taskProgressBar').style.width = pct + '%';
+      document.getElementById('taskStats').textContent = `已完成: ${done} 项`;
+
+      const sec = Math.round((Date.now() - taskStartTime) / 1000);
+      document.getElementById('taskTime').textContent = `耗时: ${sec}s`;
+
+      if (t.items) {
+        document.getElementById('taskItemsBody').innerHTML = t.items.map(it => {
+          let tagClass = 'tag-ok';
+          if (it.status === 'SKIP') tagClass = 'tag-skip';
+          if (it.status === 'FAIL') tagClass = 'tag-fail';
+          return `
+            <tr>
+              <td><code>${it.source}</code></td>
+              <td><code>${it.destination}</code></td>
+              <td><span class="tag ${tagClass}">${it.status}</span></td>
+              <td>${it.targetObjects || 0}</td>
+              <td>${it.elapsed || '-'}</td>
+              <td>${it.note || '-'}</td>
+            </tr>
+          `;
+        }).join('');
+      }
+
+      if (t.logs && t.logs.length > 0) {
+        const box = document.getElementById('taskLiveLogs');
+        box.style.display = 'block';
+        box.textContent = t.logs.join('\n');
+        box.scrollTop = box.scrollHeight;
+      }
+
+      if (!isRunning) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        loadTargetList();
+      }
+    } catch (e) {
+      console.warn('轮询失败', e);
+    }
+  }
+
+  async function loadLogs() {
+    const tbody = document.getElementById('logTableBody');
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-tip">加载日志中...</td></tr>';
+    try {
+      const res = await apiFetch('api/logs');
+      const data = await res.json();
+      const rows = data.rows || [];
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-tip">暂无审计日志</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map(r => {
+        let tagClass = 'tag-ok';
+        if (r.status === 'SKIP') tagClass = 'tag-skip';
+        if (r.status === 'FAIL') tagClass = 'tag-fail';
+        return `
+          <tr>
+            <td>${r.timestamp}</td>
+            <td><span class="tag ${tagClass}">${r.status}</span></td>
+            <td><code>${r.source}</code></td>
+            <td><code>${r.destination}</code></td>
+            <td>${r.dirs || '-'}</td>
+            <td>${r.files || '-'}</td>
+            <td>${r.elapsed}</td>
+            <td>${r.note}</td>
+          </tr>
+        `;
+      }).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="8" class="empty-tip" style="color:var(--err)">加载日志出错: ${e.message}</td></tr>`;
+    }
+  }
+
+  async function initApp() {
+    try {
+      const res = await apiFetch('api/status');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.endpoint) {
+          document.getElementById('serviceEndpoint').textContent = `OSS: ${data.endpoint}`;
+        }
+        if (data.sourceBucket) document.getElementById('sourceBucket').value = data.sourceBucket;
+        if (data.sourcePrefix) document.getElementById('sourcePrefix').value = data.sourcePrefix;
+        if (data.targetBucket) document.getElementById('targetBucket').value = data.targetBucket;
+        if (data.targetPrefix) document.getElementById('targetPrefix').value = data.targetPrefix;
+        if (data.authEnabled) document.getElementById('logoutBtn').style.display = 'inline-block';
+      }
+    } catch (e) {}
+
+    // Initial prefill
+    setSourceName('ws-974361');
+    setDestName('ws-219372');
+    refreshAllLists();
+  }
+
+  async function logout() {
+    await fetch('logout', {method: 'POST'});
+    location.href = 'login';
+  }
+
+  initApp();
+</script>
+</body>
+</html>
