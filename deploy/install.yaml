@@ -931,7 +931,7 @@ spec:
         - /manager
         env:
         - name: GOMEMLIMIT
-          value: 800MiB
+          value: 3200MiB
         - name: WORKSPACE_DOMAIN
           value: bocomcode
         - name: NETPOL_ALLOWED_NAMESPACES
@@ -960,10 +960,10 @@ spec:
         resources:
           limits:
             cpu: "2"
-            memory: 1Gi
+            memory: 4Gi
           requests:
-            cpu: 200m
-            memory: 512Mi
+            cpu: 500m
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
