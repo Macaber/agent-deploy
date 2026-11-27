@@ -52,9 +52,6 @@ spec:
       labels:
         app.kubernetes.io/name: workspace-egress
     spec:
-      # Initial UAT test: images are imported on this node; both replicas run here.
-      nodeSelector:
-        kubernetes.io/hostname: bocomworkuat2
       serviceAccountName: workspace-egress
       automountServiceAccountToken: false
       securityContext:
