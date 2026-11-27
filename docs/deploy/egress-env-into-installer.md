@@ -31,7 +31,7 @@ kubectl -n agent-deploy-system get deployment agent-deploy-controller-manager -o
 **② 在 env 段的 `NETPOL_ALLOWED_NAMESPACES` 块之后、`resources:` 之前插入**（`<ENABLED>` 用 ① 查到的值替换）：
 
 ```yaml
-        # Unified egress management (see docs/egress-production-runbook.md).
+        # Unified egress management (see docs/deploy/egress-production-runbook.md).
         # EGRESS_ENABLED MUST mirror the live cluster value whenever this file
         # is generated/applied: mismatched value silently flips takeover at
         # apply time (no warning). True requires proxy + initial config in
@@ -71,7 +71,7 @@ grep "__CLUSTER" install.yaml    # 应无输出
 
 若两集群的 egress-install 文件也更新过节点清单（扩容等），以最新版为准；若那时已重拼，逐字对照 boundary 值即可。
 
-## 步骤 4：同步更新投产手册（docs/egress-production-runbook.md）
+## 步骤 4：同步更新投产手册（docs/deploy/egress-production-runbook.md）
 
 1. **步骤 3.5 的 diff 门禁**：预期从"只允许镜像行"扩为"镜像行 + EGRESS_ENABLED / EGRESS_CONFIG_NAMESPACE / EGRESS_PROTECTED_CIDRS 三行**新增**（文件本次新加，预期内）"，其余行仍一票否决；并在门禁前加 ⓪ 填占位符（同步骤 3）。
 2. **交付物清单** install.yaml 行：注明"含占位符，apply 前按 3.5 ⓪ 填；EGRESS_ENABLED 已按生成时线上值对齐"。

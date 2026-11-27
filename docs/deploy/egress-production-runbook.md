@@ -2,7 +2,7 @@
 
 > 更新：2026-11-16。**本手册完全替代 2026-11-12 版**，是 11-20 投产的唯一执行依据。Harbor 入库路线已删除（现场无仓库，走 tar + ctr 导入）。
 > 写给执行人自己看：每一步都说明**干什么、怎么算成功、失败了查哪里**。概念看不懂翻第 3 节速查表。
-> 原理与设计细节见 [network_flow_pod_to_external.md](network_flow_pod_to_external.md)（出站架构评审文档），本手册只保留执行所需的最小原理。
+> 原理与设计细节见 [network_flow_pod_to_external.md](../network_flow_pod_to_external.md)（出站架构评审文档），本手册只保留执行所需的最小原理。
 
 ## 0. 本次投产的范围
 
@@ -18,7 +18,7 @@
 **不做的事**：
 
 - 不启用白名单。legacy 模式下不注入代理、不修改现有 NetworkPolicy，所有 Workspace 保持原有网络行为。
-- 不重新安装 OSS/Ingress/DNS/Kata/存储，不重跑 [offline_deployment_guide.md](offline_deployment_guide.md) 步骤 1-8。
+- 不重新安装 OSS/Ingress/DNS/Kata/存储，不重跑 [offline_deployment_guide.md](../offline_deployment_guide.md) 步骤 1-8。
 - 不覆盖原 install.yaml / API 全量 YAML——已有 Operator/API 用 `kubectl set image` 换镜像升级。
 - 不点页面上的模式切换按钮。白名单启用（allowlist）是后续单独的变更窗口，见第 8 节。
 
@@ -109,7 +109,7 @@ Pod workspace-egress（2 副本，nodeSelector 指定节点，agent-deploy-syste
 | api-server-deploy.yaml（镜像行改 v1.0.41） | deploy/api-server-deploy.yaml | **步骤 3.5** 升级用，门禁同上 |
 | ai.example.com_workspaces.yaml | config/crd/bases/ | 与线上 CRD 比对，有合理差异才 apply |
 | egress-production-inspect.sh | deploy/ | 只读体检脚本 |
-| 本手册 | docs/egress-production-runbook.md | 执行与排障依据 |
+| 本手册 | docs/deploy/egress-production-runbook.md | 执行与排障依据 |
 | SHA256SUMS | 发布目录生成 | 传输完整性校验，改任何文件后重新生成 |
 
 ⚠️ deploy/production-egress/ 下另有 `egress-proxy.production.yaml` 和 `egress-boundary.production.yaml` 两个旧分文件，内容已全部合并进 egress-install.production.yaml，**本次不使用**（文件头已加 SUPERSEDED 标记，防拿错）。
