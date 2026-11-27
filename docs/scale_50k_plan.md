@@ -1,6 +1,7 @@
 # 5万+ 存量 & 2,000~5,000 并发在线 Workspace 系统改造执行方案
 
 > **适用读者**：项目负责人及后续负责具体编码实施的 AI 智能体（Agent）。  
+> **当前代码基线**：`workspace-operator:v1.0.45`（`2C / 4Gi`, `GOMEMLIMIT=3200MiB`, `EGRESS_ENABLED=true` 已写入 [install.yaml](../deploy/install.yaml) 作为现网默认路径，且已合入 `feature-egress-broadcast-pacing`）+ `api-server:v1.0.42`。  
 > **目标规模**：集群存量 `50,000+` Workspace（约 `45,000~48,000` 处于 `Sleeping` / `Stopped` 状态），同时在线 `2,000~5,000` 个 `Running` Workspace，早高峰瞬时并发创建 / 唤醒请求 `500~1,000` 次。
 
 ---
@@ -19,7 +20,7 @@
 | **Controller 冷启动直连 APIServer 点读风暴** | [cmd/main.go](../cmd/main.go#L213-L218) 禁用 SC/PV/PVC 缓存；每次 Reconcile 对休眠对象也发约 5 次 uncached Get/List | 控制器重启/切主时，50,000 实例全量入队 = **250,000+ 次 APIServer 直连请求**；按 300 QPS 限流需排队 **14 分钟以上**，期间创建/唤醒大面积 504 |
 | **API-Server 内存、带宽与同步阻塞** | [cmd/api-server/main.go](../cmd/api-server/main.go#L707-L914) 同步 30s 轮询 + 探活未 drain Body 导致无法复用 TCP；[workspace_cache.go](../cmd/api-server/workspace_cache.go#L178-L235) 全量重建并 `Marshal` `allJSON`；[batch_restart.go](../cmd/api-server/batch_restart.go#L33) 硬上限 5,000 | 5 万条 `allJSON` 约 **12~15 MB**，500ms 频繁重建制造每秒数十 MB GC 垃圾；前端每 30s 拉全量；早高峰并发唤醒堆积长连接与 `TIME_WAIT`；`batch-restart` 截断 5,000 且超 ConfigMap `1MiB` 限制直接失败 |
 | **OSS + ossfs 1.0 存储与 Pod 翻倍** | [workspace_controller.go](../internal/controller/workspace_controller.go#L585-L689) 单 OSS Bucket + 每卷 1 个伴生 FUSE Pod；[L2503-L2515](../internal/controller/workspace_controller.go#L2503-L2515) ReadinessProbe 2s 周期 | 2,000~5,000 在线 = **4,000~10,000 运行中 Pod**；单 OSS Bucket 极易触发 `503 SlowDown`；50,000 静默 PV + 50,000 PVC = 100,000 存储对象永久滞留 etcd |
-| **Unified Egress（若启用 `EGRESS_ENABLED=true`）** | [egress.go](../internal/controller/egress.go#L154-L258) 每次 Reconcile 两次全命名空间 DeepCopy List、每次必发 `RememberConfiguration` Create、配置变更全员入队；[egress_status.go](../cmd/api-server/egress_status.go#L80-L138) 每 5s 直连 APIServer 全量拉 3 张表；Envoy 仅 2 副本 × 512Mi | 30 并发下瞬间呈 $O(N^2)$ 打爆控制器与 API-Server 内存；2 副本 512Mi Envoy 单点且无法承载 5,000 在线代理流量 |
+| **Unified Egress（`EGRESS_ENABLED=true` 已为现网默认路径）** | 已合入 `broadcastPacer`（[egress_broadcast.go](../internal/controller/egress_broadcast.go)）与 `migrationCleanupDone` + Pod 标签筛选（[egress.go](../internal/controller/egress.go#L194-L256)）；但仍存在：每次活跃调谐必发 `RememberConfiguration` `POST Create`（连 `legacy` 模式也触发）；未收敛期无并发互斥导致 30 并发深拷贝 `DeploymentList`；`egressConfigBroadcastHandler` / `netpolBroadcastHandler` 仍把 5 万全量（含休眠态）分批广播；`requireLoadedProxy` 无缓存直连 APIServer；[egress_status.go](../cmd/api-server/egress_status.go#L80-L138) 每 5s 直连全量拉 3 张表；Envoy 仅单节点 2 副本 × `512Mi` | 冷启动或模式切换时出现并发大列表拷贝、无意义 `Create` 写放大与 5 万级广播队列积压；打开出站页每 5s 打爆 APIServer；2 副本 `512Mi` Envoy 单点且无法承载 2,000~5,000 在线代理流量 |
 
 ### 2. 改造前后 K8s 资源对象规模对比（50,000 存量 + 5,000 在线）
 
@@ -52,9 +53,10 @@
   1. **恢复 `StorageClass` 缓存**：从 [cmd/main.go](../cmd/main.go#L213-L218) 的 `DisableFor` 中移除 `&storagev1.StorageClass{}`（集群级仅数个对象，内存忽略不计），彻底消灭每轮 50,000 次直连 `StorageClass` Get/List。
   2. **裁剪 `Pod` Informer 缓存对象**：在 `newCacheOptions()` 中为 `&corev1.Pod{}` 增加 `Transform: stripPodForCache`，仅保留 `ObjectMeta`（清除 `ManagedFields` 与非必要大 Annotations）、`Status.Phase`、`Status.PodIP`、`Status.StartTime`、`DeletionTimestamp` 和标签，剥离 `Spec` 与冗长 `ContainerStatuses`。
   3. **休眠 / 停止态（`desiredReplicas == 0`）稳态短路**：在 `reconcile` 中，若目标应为 `0` 副本，且缓存中的 Deployment 已是 `0` 副本（或已删除）、`ws.Status.Phase` 已收敛为 `WorkspaceSleeping` / `WorkspaceStopped`、且 `ws.Status.PVCName != ""`（以及非禁用模式下 `Endpoint` 已存在），**直接短路跳过 `reconcilePVC` / `reconcileService` / `reconcileIngress`**，做到 **0 次 APIServer 直连调用**。
-  4. **Deployment `spec-hash` 缓存比对免直连读**：
+  4. **Deployment `spec-hash` 缓存比对免直连读（注意与 `EGRESS_ENABLED=true` 解耦）**：
      - 生成期望 PodSpec/DeploymentSpec 时计算确定性 SHA-256 存入 Deployment annotation `ai.example.com/spec-hash`；
      - 在 `stripDeploymentForCache` 中保留 `d.Annotations["ai.example.com/spec-hash"]`；
+     - 当前 `reconcileDeployment` 会在 diff 前先调用 `readOrInitializeEgress` → `prepareEgressConfig`（[workspace_controller.go](../internal/controller/workspace_controller.go#L945-L954)），从而无条件触发 `egress.RememberConfiguration` 的 `POST Create` 写请求；需将其改为只读取本地缓存的 Egress 有效模式并纳入 `spec-hash` 计算（全局策略 upsert 与 `RememberConfiguration` 迁出或缓存化，见任务包 E）；
      - `reconcileDeployment` 优先读**缓存中**的 Deployment，若 `Replicas == desiredReplicas`、`Generation` 正常且 `spec-hash` 匹配，直接返回无需调用 `r.uncachedReader().Get`；仅在 hash 不一致或副本数需变更时才回源拉取完整 Deployment 更新。
   5. **消除 `resolveRunAsUser` 重复 PVC Get**：将 `reconcilePVC` 内已读到的 `*corev1.PersistentVolumeClaim` 直接返回或传入 `reconcileDeployment -> resolveRunAsUser -> volumeBlocksRunAsUser`，避免同一轮 Reconcile 重复查询同一 PVC。
   6. **修复 `maybeDeleteSharedNetworkPolicy` 批量删除 $O(D \times N)$ 扫描**：删除路径禁止在每次删除时全量 DeepCopy 50,000 个 Workspace；改为优先检查本地 `workspacePhases` 计数，或 `r.List(ctx, wsList, client.InNamespace(namespace), client.Limit(2))`（需确认 `controller-runtime` 缓存 List 或结合内存索引判空）。
@@ -65,7 +67,7 @@
      - `IdleTimeout` 的 `nextRequeue` 增加 `0~30s` 基于 `ws.Name` 哈希的确定性抖动（jitter），防止早高峰群体启动后同时到期引发集中缩容惊群。
 - **注意事项**：
   - 修改 `stripDeploymentForCache` 后务必验证 `d.Annotations` 只保留白名单 key（如 `ai.example.com/spec-hash`），防止引入大体积 `kubectl.kubernetes.io/last-applied-configuration` 导致内存反弹。
-  - `spec-hash` 必须覆盖所有影响 Pod 模板的字段（含 `DefaultRunAsUser`、Egress 模式开关、Env、VolumeMounts、Probes、SecurityContext）。
+  - `spec-hash` 必须覆盖所有影响 Pod 模板的字段（含 `DefaultRunAsUser`、Egress 模式结果、Env、VolumeMounts、Probes、SecurityContext），并保证 `EGRESS_ENABLED=true` 下稳态活跃调谐同样满足 APIServer **0 写请求 / 0 uncached 读**。
 - **验收标准**：
   - `make manifests generate fmt vet && make test` 全部通过；
   - 新增单测覆盖：`spec-hash` 一致时 zero uncached Get、休眠稳态零外部读取、`resolveRunAsUser` 不重复 Get PVC、`IdleTimeout` jitter 有界。
@@ -175,27 +177,31 @@
 
 ---
 
-### 任务包 E（P0/P1 · 可立即独立并行，启用 Unified Egress 前必做）：Unified Egress 去 O(N²) 风暴与代理扩容
+### 任务包 E（P0 · 现网默认开启，可立即独立并行）：Unified Egress 剩余放大点消除与代理扩容
 
-- **目标与边界**：彻底消除开启 `EGRESS_ENABLED=true` 时的 $O(N^2)$ 内存拷贝、全员 5 万入队风暴与 `/api/egress/status` 打爆 APIServer 的隐患，并将 Envoy 代理数据面升级至可承载 2,000~5,000 在线水平扩展架构。
+- **目标与边界**：现网 `install.yaml` 已默认开启 `EGRESS_ENABLED=true`。本任务包旨在消除现有实现中残留的并发大列表拷贝、无意义 `Create` 写放大、5 万级广播入队与 `/api/egress/status` 打爆 APIServer 的隐患，并将 Envoy 代理数据面升级至可承载 2,000~5,000 在线的水平扩展架构。
 - **涉及文件与核心符号**：
-  - [internal/controller/egress.go](../internal/controller/egress.go) (`cleanupUnusedEgressPolicies`, `prepareEgressConfig`, `mapEgressConfig`, `requireLoadedProxy`, `readOrInitializeEgress`)
-  - [internal/controller/workspace_controller.go](../internal/controller/workspace_controller.go) (`sharedNetpolPredicate`, `mapNetworkPolicyToWorkspaces`, `reconcileNetworkPolicy`)
+  - [internal/controller/egress.go](../internal/controller/egress.go) (`cleanupUnusedEgressPolicies`, `prepareEgressConfig`, `requireLoadedProxy`, `readOrInitializeEgress`)
+  - [internal/controller/egress_broadcast.go](../internal/controller/egress_broadcast.go) (`broadcastPacer`, `egressConfigBroadcastHandler`, `netpolBroadcastHandler`)
+  - [internal/controller/workspace_controller.go](../internal/controller/workspace_controller.go) (`sharedNetpolPredicate`, `reconcileNetworkPolicy`, `migrationCleanupDone`)
   - [internal/egress/store.go](../internal/egress/store.go) (`RememberConfiguration`)
   - [internal/egress/envoy.go](../internal/egress/envoy.go) (`Bootstrap`)
   - [cmd/api-server/egress_status.go](../cmd/api-server/egress_status.go) (`egressStatusHandler`, `observeEgressMigration`)
   - [deploy/production-egress/egress-install.production.yaml](../deploy/production-egress/egress-install.production.yaml)
+- **当前主干进度对照**：
+  - ✅ **已合入（`feature-egress-broadcast-pacing`）**：`broadcastPacer` 分批限速入队（500/批、间隔 2s）；`cleanupUnusedEgressPolicies` 稳态 `migrationCleanupDone` 缓存跳过 + Pod 扫描改为按 `migration` 标签精准筛选。
+  - ❌ **5 万规模下仍需本任务包完成**：`RememberConfiguration` 每次调谐写请求、未收敛期 30 并发深拷贝 `DeploymentList`、同模式/休眠态无效广播、`requireLoadedProxy` 无缓存直连、`egress_status.go` 直连全量 List、Envoy 单节点 2×512Mi 容量不足。
 - **详细实现设计**：
-  1. **命名空间级 Egress 策略管理从单 Workspace Reconcile 剥离**：
-     - 抽出独立的 `EgressPolicyReconciler`（低并发，按 Namespace 维度调谐），统一负责 `ensureSharedNetworkPolicy`、`upsertEgressPolicy`（`workspace-egress-v1` / `workspace-egress-unrestricted` / `workspace-shared-ingress`）和 `cleanupUnusedEgressPolicies`；
-     - 单个 `WorkspaceReconciler` 只读取本地缓存的当前 Egress 模式，决定 Pod 模板标签和代理环境变量，**绝不在 30 并发的 Workspace Worker 里全命名空间 List Pod/Deployment**。
+  1. **命名空间级 Egress 策略管理从单 Workspace Reconcile 剥离（补齐并发互斥）**：
+     - 抽出独立的 `EgressPolicyReconciler`（低并发，按 Namespace 维度调谐），统一负责 `ensureSharedNetworkPolicy`、`upsertEgressPolicy`（`workspace-egress-v1` / `workspace-egress-unrestricted` / `workspace-shared-ingress`）和 `cleanupUnusedEgressPolicies`（即使保留在原位置也必须补齐 per-namespace singleflight/互斥，防止冷启动/模式切换未收敛期 30 个 Worker 同时穿过 `migrationCleanupDone` 深拷贝 50,000 个 Deployment）；
+     - 单个 `WorkspaceReconciler` 只读取本地缓存的当前 Egress 模式，决定 Pod 模板标签和代理环境变量，**绝不在 30 并发的 Workspace Worker 里全命名空间 List Deployment**。
   2. **消除无条件写操作与直连点读**：
-     - `egress.RememberConfiguration` 先通过缓存读取 `HistoryConfigMapName` 是否存在，存在则直接返回 `nil`（杜绝每次 Reconcile 发 `POST Create`）；
-     - `requireLoadedProxy` 为代理就绪校验增加进程内 `2~5s` TTL 缓存，或用局部 Informer Watch `egress.Namespace()` 下的 `workspace-egress` Pod/Deployment。
-  3. **阻止 50,000 全员入队风暴**：
-     - `mapEgressConfig` 维护上一次已生效的 `Mode`：仅增删 `IPs`/`Domains`/`Services` 白名单（同模式变更）时，只唤醒 `EgressPolicyReconciler` 更新命名空间级 NetworkPolicy，**入队 0 个 Workspace**（Envoy 由 `egress-sync` 热加载 `routes.json`）；
-     - 仅当发生跨模式切换（如 `legacy <-> allowlist <-> unrestricted`）时才需要滚动重建活跃 Workspace，且必须通过分批限流队列（如每秒放行 50~100 个活跃 Workspace，跳过 Sleeping/Stopped）避免瞬间 50,000 入队；
-     - `mapNetworkPolicyToWorkspaces` 即使在 Unified Egress 开启时，也只入队 `EgressPolicyReconciler` 或单个代表 Workspace。
+     - `egress.RememberConfiguration`（[store.go](../internal/egress/store.go#L93-L100)）先通过本地缓存读取 `HistoryConfigMapName` 是否存在，存在则直接返回 `nil`（杜绝 `legacy` / `allowlist` / `unrestricted` 每次活跃调谐都向 APIServer 发 `POST Create`）；
+     - `requireLoadedProxy`（[egress.go](../internal/controller/egress.go#L156-L186)）为代理就绪校验增加进程内 `2~5s` TTL 缓存，或用局部 Informer Watch `egress.Namespace()` 下的 `workspace-egress` Pod/Deployment，避免每次活跃调谐走 `uncachedReader()`。
+  3. **精准过滤 [egress_broadcast.go](../internal/controller/egress_broadcast.go) 广播范围，避免 5 万级无效调谐**：
+     - `egressConfigBroadcastHandler` 维护上一次已生效的 `Mode`：仅增删 `IPs`/`Domains`/`Services` 白名单（同模式变更）时，只唤醒 `EgressPolicyReconciler` 更新命名空间级 NetworkPolicy，**入队 0 个 Workspace**（Envoy 由 `egress-sync` 热加载 `routes.json`）；
+     - 仅当发生跨模式切换（如 `legacy <-> allowlist <-> unrestricted`）时才需要滚动重建活跃 Workspace，且**跳过 `Sleeping/Stopped` 实例**（休眠态被唤醒时自然按最新配置创建），再通过 `broadcastPacer` 分批限流（避免向 workqueue 挂 50,000 个无意义定时器）；
+     - `netpolBroadcastHandler` 在 `EGRESS_ENABLED=true` 时也不再把全命名空间 50,000 个 Workspace 全部入队，改为唤醒独立 `EgressPolicyReconciler` 或单个代表 Workspace（同非统一出站路径）。
   4. **彻底重构 `/api/egress/status`（[egress_status.go](../cmd/api-server/egress_status.go)）**：
      - 禁止 HTTP 请求路径直连 APIServer 全量 List；
      - 在 `api-server` 后台起异步聚合协程（每 `10s` 更新一次内存快照），复用 `workspaceCache` + 轻量裁剪的 `Deployment`/`Pod` Informer，将 `Workspace × Deployment` 嵌套循环改为 `map[string]DeploymentSummary` 的 $O(1)$ 查找，只保留前 N 条（如 100 条）`pendingWorkspaces` 样本供前端展示。
@@ -205,6 +211,7 @@
      - [envoy.go](../internal/egress/envoy.go#L59) 的 `max_hosts` 从 `1024` 提升至 `8192`~`16384`，并确保 `egress-sync` 上报注解和探针频率在多副本下可控。
 - **验收标准**：
   - 同模式下增删 100 条域名/IP 白名单，Workspace Reconcile 触发数 = `0`；
+  - `legacy` / `allowlist` 稳态下活跃 Workspace 调谐对 `HistoryConfigMapName` 的 `Create` 调用 = `0`；
   - `10` 个前端页面并发轮询 `/api/egress/status`，对 K8s APIServer 产生的 List 请求 = `0`；
   - `go test ./internal/egress/... ./internal/controller/... ./cmd/api-server/...` 全过。
 - **前置依赖**：无。
@@ -259,7 +266,7 @@
        2. 稳态 50,000 实例运行 30 分钟，Operator 对 APIServer 的 Write QPS = `0`，Read QPS `< 5`；
        3. 模拟 500 并发早高峰唤醒：异步接口 P99 `< 100ms`，探活无端口/连接耗尽，Gateway/Ingress 零掉线；
        4. 模拟 50,000 目标 `batch-restart` 启动、推进 1,000 个目标、中断停止，ConfigMap 大小及任务状态均正常。
-- **前置依赖**：任务包 A、B、C、D、E（若开启 Egress）完成后进行全链路合流压测。
+- **前置依赖**：任务包 A、B、C、D、E 完成后进行全链路合流压测。
 
 ---
 
@@ -301,7 +308,7 @@ flowchart LR
 | :--- | :--- | :--- | :--- |
 | **第 1 波（同时派 4 个）** | Agent-1：任务包 A | `cmd/main.go`、`internal/controller/workspace_controller.go`（非 Ingress/Egress 部分）、`internal/controller/metrics.go` | 低 |
 | **第 1 波（同时派 4 个）** | Agent-2：任务包 D | `cmd/api-server/`（除 `egress_status.go`）、`web/portal/`、`deploy/api-server-deploy.yaml` | 低 |
-| **第 1 波（同时派 4 个）** | Agent-3：任务包 E | `internal/controller/egress.go`、`internal/egress/`、`cmd/api-server/egress_status.go`、`deploy/production-egress/` | 中（涉及部分 `workspace_controller.go` hook 点，与 Agent-1 约定接口即可） |
+| **第 1 波（同时派 4 个）** | Agent-3：任务包 E | `internal/controller/egress.go`、`internal/controller/egress_broadcast.go`、`internal/egress/`、`cmd/api-server/egress_status.go`、`deploy/production-egress/` | 中（涉及部分 `workspace_controller.go` hook 点，与 Agent-1 约定接口即可） |
 | **第 1 波（同时派 4 个）** | Agent-4：任务包 B（原型） | 新增统一网关目录或 Ingress 配置、`deploy/ingress-deploy.yaml` | 中 |
 | **第 2 波（核心重构）** | Agent-5：任务包 B 收口 + C | `internal/controller/workspace_controller.go`、`api/v1alpha1/`、`config/rbac/` | 高（核心生命周期变动，需做灰度开关兼容存量） |
 | **第 2 波（并行）** | Agent-6：任务包 F | `internal/controller/workspace_controller.go`（`reconcilePVC`）、`deploy/oss/`、`docs/storage_plan.md` | 中（需与运维确认存储选型） |
