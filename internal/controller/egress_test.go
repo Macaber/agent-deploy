@@ -74,7 +74,7 @@ func TestEgressConfigFailureDoesNotBlockStop(t *testing.T) {
 	k := fake.NewClientBuilder().WithScheme(scheme).WithObjects(d).Build()
 	r := &WorkspaceReconciler{Client: k}
 	ws := &ai.Workspace{ObjectMeta: meta.ObjectMeta{Name: "example", Namespace: "work"}, Spec: ai.WorkspaceSpec{Stopped: true}}
-	_, replicas, err := r.reconcileDeployment(context.Background(), ws, "")
+	_, replicas, err := r.reconcileDeployment(context.Background(), ws, "", nil)
 	if err != nil || replicas != 0 {
 		t.Fatalf("stop failed: %d %v", replicas, err)
 	}

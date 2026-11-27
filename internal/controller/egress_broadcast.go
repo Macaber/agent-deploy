@@ -10,11 +10,11 @@ import (
 
 	ai "github.com/example/workspace-operator/api/v1alpha1"
 	"github.com/example/workspace-operator/internal/egress"
+	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"k8s.io/client-go/util/workqueue"
 )
 
 // Broadcast pacing for shared-object watches (the egress ConfigMap and the
@@ -119,10 +119,18 @@ func egressConfigBroadcastHandler(r *WorkspaceReconciler) handler.EventHandler {
 		pacer.pace(q, workspaceRequests(list.Items))
 	}
 	return handler.Funcs{
-		CreateFunc:  func(ctx context.Context, e event.TypedCreateEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) { handle(ctx, e.Object, q) },
-		UpdateFunc:  func(ctx context.Context, e event.TypedUpdateEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) { handle(ctx, e.ObjectNew, q) },
-		DeleteFunc:  func(ctx context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) { handle(ctx, e.Object, q) },
-		GenericFunc: func(ctx context.Context, e event.TypedGenericEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) { handle(ctx, e.Object, q) },
+		CreateFunc: func(ctx context.Context, e event.TypedCreateEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			handle(ctx, e.Object, q)
+		},
+		UpdateFunc: func(ctx context.Context, e event.TypedUpdateEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			handle(ctx, e.ObjectNew, q)
+		},
+		DeleteFunc: func(ctx context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			handle(ctx, e.Object, q)
+		},
+		GenericFunc: func(ctx context.Context, e event.TypedGenericEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			handle(ctx, e.Object, q)
+		},
 	}
 }
 
@@ -163,9 +171,17 @@ func netpolBroadcastHandler(r *WorkspaceReconciler) handler.EventHandler {
 		pacer.pace(q, reqs)
 	}
 	return handler.Funcs{
-		CreateFunc:  func(ctx context.Context, e event.TypedCreateEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) { handle(ctx, e.Object, q) },
-		UpdateFunc:  func(ctx context.Context, e event.TypedUpdateEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) { handle(ctx, e.ObjectNew, q) },
-		DeleteFunc:  func(ctx context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) { handle(ctx, e.Object, q) },
-		GenericFunc: func(ctx context.Context, e event.TypedGenericEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) { handle(ctx, e.Object, q) },
+		CreateFunc: func(ctx context.Context, e event.TypedCreateEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			handle(ctx, e.Object, q)
+		},
+		UpdateFunc: func(ctx context.Context, e event.TypedUpdateEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			handle(ctx, e.ObjectNew, q)
+		},
+		DeleteFunc: func(ctx context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			handle(ctx, e.Object, q)
+		},
+		GenericFunc: func(ctx context.Context, e event.TypedGenericEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			handle(ctx, e.Object, q)
+		},
 	}
 }

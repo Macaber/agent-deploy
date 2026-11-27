@@ -33,7 +33,7 @@ const phaseLabelUnknown = "Unknown"
 // defaultActiveInstancesSyncInterval is how often the workspace_active_instances
 // gauge is rebuilt from a cluster-wide Workspace list when the reconciler runs
 // as a manager Runnable. Per-reconcile updates keep it fresh in between.
-const defaultActiveInstancesSyncInterval = time.Minute
+const defaultActiveInstancesSyncInterval = 15 * time.Minute
 
 var (
 	// workspaceReconcileDuration observes the wall time of each full Workspace
@@ -144,6 +144,9 @@ var workspacePhases = newWorkspacePhaseTracker()
 type workspacePhaseTracker struct {
 	mu     sync.Mutex
 	phases map[types.NamespacedName]aiv1alpha1.WorkspacePhase
+	// byNamespace tracks how many Workspaces are known in each namespace so
+	// maybeDeleteSharedNetworkPolicy can short-circuit in O(1) during bulk deletes.
+	byNamespace map[string]int
 	// running is the number of entries currently in Phase Running. Kept as a
 	// counter so per-reconcile updates stay O(1) instead of recounting the map.
 	running int
@@ -158,8 +161,9 @@ type workspacePhaseTracker struct {
 
 func newWorkspacePhaseTracker() *workspacePhaseTracker {
 	return &workspacePhaseTracker{
-		phases: make(map[types.NamespacedName]aiv1alpha1.WorkspacePhase),
-		now:    time.Now,
+		phases:      make(map[types.NamespacedName]aiv1alpha1.WorkspacePhase),
+		byNamespace: make(map[string]int),
+		now:         time.Now,
 	}
 }
 
@@ -177,6 +181,9 @@ func (t *workspacePhaseTracker) clock() time.Time {
 func (t *workspacePhaseTracker) set(key types.NamespacedName, phase aiv1alpha1.WorkspacePhase) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.byNamespace == nil {
+		t.byNamespace = make(map[string]int)
+	}
 	if previous, ok := t.phases[key]; ok {
 		if previous == phase {
 			return
@@ -187,6 +194,7 @@ func (t *workspacePhaseTracker) set(key types.NamespacedName, phase aiv1alpha1.W
 		}
 	} else {
 		workspaceTotalInstances.Inc()
+		t.byNamespace[key.Namespace]++
 	}
 	t.phases[key] = phase
 	workspaceActiveInstances.WithLabelValues(phaseMetricLabel(phase)).Inc()
@@ -205,12 +213,33 @@ func (t *workspacePhaseTracker) unset(key types.NamespacedName) {
 		return
 	}
 	delete(t.phases, key)
+	if t.byNamespace != nil {
+		if remaining := t.byNamespace[key.Namespace] - 1; remaining <= 0 {
+			delete(t.byNamespace, key.Namespace)
+		} else {
+			t.byNamespace[key.Namespace] = remaining
+		}
+	}
 	workspaceTotalInstances.Dec()
 	workspaceActiveInstances.WithLabelValues(phaseMetricLabel(previous)).Dec()
 	if previous == aiv1alpha1.WorkspaceRunning {
 		t.running--
 	}
 	t.publishDerivedLocked()
+}
+
+// countInNamespaceExcluding returns the number of tracked Workspaces in namespace
+// excluding the given key (even if it has not been removed yet).
+func (t *workspacePhaseTracker) countInNamespaceExcluding(namespace string, exclude types.NamespacedName) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	n := t.byNamespace[namespace]
+	if exclude.Namespace == namespace {
+		if _, ok := t.phases[exclude]; ok && n > 0 {
+			n--
+		}
+	}
+	return n
 }
 
 // len returns the number of tracked Workspaces (used by tests).
@@ -227,10 +256,13 @@ func (t *workspacePhaseTracker) resetAll(phases map[types.NamespacedName]aiv1alp
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.phases = phases
+	byNS := make(map[string]int)
 	counts := make(map[string]int, len(phases))
-	for _, phase := range phases {
+	for key, phase := range phases {
 		counts[phaseMetricLabel(phase)]++
+		byNS[key.Namespace]++
 	}
+	t.byNamespace = byNS
 	for _, phase := range allWorkspaceMetricPhases {
 		workspaceActiveInstances.WithLabelValues(string(phase)).Set(float64(counts[string(phase)]))
 	}

@@ -31,7 +31,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -105,7 +104,7 @@ func main() {
 	var activeInstancesSyncInterval time.Duration
 	flag.DurationVar(&activeInstancesSyncInterval, "active-instances-sync-interval", 0,
 		"How often to rebuild the workspace_active_instances gauge from a cluster-wide Workspace list; "+
-			"0 uses the built-in default of 1m.")
+			"0 uses the built-in default of 15m.")
 	var netpolAllowedNamespaces string
 	flag.StringVar(&netpolAllowedNamespaces, "netpol-allowed-namespaces", os.Getenv("NETPOL_ALLOWED_NAMESPACES"),
 		"Controller-wide NetworkPolicy egress exceptions applied to EVERY Workspace, as a JSON array of "+
@@ -206,19 +205,9 @@ func main() {
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		Cache:                  newCacheOptions(),
-		Client: client.Options{
-			// Cluster-scoped, rarely read lookups: serve from the API server
-			// instead of holding a cluster-wide informer (PV count grows with
-			// the number of workspaces).
-			Cache: &client.CacheOptions{DisableFor: []client.Object{
-				&corev1.PersistentVolume{}, &storagev1.StorageClass{},
-				// Read (and occasionally mutated) once per reconcile; the full
-				// object is needed, so skip the informer.
-				&corev1.PersistentVolumeClaim{},
-			}},
-		},
-		LeaderElection:   enableLeaderElection,
-		LeaderElectionID: "fcd9fd4d.example.com",
+		Client:                 newClientOptions(),
+		LeaderElection:         enableLeaderElection,
+		LeaderElectionID:       "fcd9fd4d.example.com",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -297,17 +286,36 @@ func stripCachedObject(obj interface{}) (interface{}, error) {
 	return obj, nil
 }
 
+// newClientOptions disables informer caches for cluster-growing PV/PVC objects
+// while keeping StorageClass cached (cluster-scoped and tiny) to avoid direct
+// StorageClass lookups on every reconcile.
+func newClientOptions() client.Options {
+	return client.Options{
+		Cache: &client.CacheOptions{DisableFor: []client.Object{
+			&corev1.PersistentVolume{},
+			// Read (and occasionally mutated) once per reconcile; the full
+			// object is needed, so skip the informer.
+			&corev1.PersistentVolumeClaim{},
+		}},
+	}
+}
+
 // newCacheOptions bounds informer memory: only objects created by this
-// operator (label app=workspace) are cached for Pod/Deployment, and ConfigMaps are limited to the egress namespace. Reads of the egress
-// proxy objects (which lack the label) must go through APIReader.
+// operator (label app=workspace) are cached for Pod/Deployment, and ConfigMaps
+// are limited to the egress namespace. Reads of the egress proxy objects (which
+// lack the label) must go through APIReader.
 func newCacheOptions() cache.Options {
 	wsOnly := cache.ByObject{Label: labels.SelectorFromSet(labels.Set{"app": "workspace"})}
 	return cache.Options{
 		DefaultTransform: stripCachedObject,
 		ByObject: map[client.Object]cache.ByObject{
-			&corev1.Pod{}: wsOnly,
-			// Deployment keeps status (drives Workspace phase and self-healing)
-			// and template labels (egress migration checks) but not the pod spec.
+			&corev1.Pod{}: {
+				Label:     wsOnly.Label,
+				Transform: stripPodForCache,
+			},
+			// Deployment keeps status (drives Workspace phase and self-healing),
+			// template labels (egress migration checks) and spec-hash annotation,
+			// but strips the pod template spec.
 			&appsv1.Deployment{}: {
 				Label:     wsOnly.Label,
 				Transform: stripDeploymentForCache,
@@ -319,14 +327,37 @@ func newCacheOptions() cache.Options {
 	}
 }
 
+// stripPodForCache removes the Pod spec and bulky status fields from the cached
+// copy, retaining ObjectMeta (without managedFields or annotations), labels,
+// DeletionTimestamp, and the minimal Status fields read by the controller.
+func stripPodForCache(obj any) (any, error) {
+	if p, ok := obj.(*corev1.Pod); ok {
+		p.SetManagedFields(nil)
+		p.Annotations = nil
+		p.Spec = corev1.PodSpec{}
+		p.Status = corev1.PodStatus{
+			Phase:     p.Status.Phase,
+			PodIP:     p.Status.PodIP,
+			StartTime: p.Status.StartTime,
+		}
+	}
+	return obj, nil
+}
+
 // stripDeploymentForCache removes the pod template spec (the bulk of a
 // Deployment) from the cached copy, keeping what cache readers use: status,
-// replicas and template labels. Anything that mutates a Deployment must read it
-// through the APIReader instead of the cache.
-func stripDeploymentForCache(obj interface{}) (interface{}, error) {
+// replicas, template labels, SecurityContext, and the spec-hash annotation.
+// Anything that mutates a Deployment must read it through APIReader.
+func stripDeploymentForCache(obj any) (any, error) {
 	if d, ok := obj.(*appsv1.Deployment); ok {
 		d.SetManagedFields(nil)
-		d.Annotations = nil
+		if specHash := d.Annotations[controller.DeploymentSpecHashAnnotation]; specHash != "" {
+			d.Annotations = map[string]string{
+				controller.DeploymentSpecHashAnnotation: specHash,
+			}
+		} else {
+			d.Annotations = nil
+		}
 		// Keep the Pod-level SecurityContext: Workspace status reports the observed
 		// runAsUser (migration progress) from it.
 		d.Spec.Template.Spec = corev1.PodSpec{SecurityContext: d.Spec.Template.Spec.SecurityContext}

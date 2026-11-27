@@ -61,28 +61,28 @@ func TestReconcilePVC_DefaultStorageClass_OSS(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	pvcName, err := r.reconcilePVC(ctx, ws)
+	pvc, err := r.reconcilePVC(ctx, ws)
 	if err != nil {
 		t.Fatalf("unexpected error from reconcilePVC: %v", err)
 	}
-	if pvcName != "ws-user1-pvc" {
-		t.Fatalf("expected pvcName ws-user1-pvc, got %s", pvcName)
+	if pvc == nil || pvc.Name != "ws-user1-pvc" {
+		t.Fatalf("expected pvcName ws-user1-pvc, got %v", pvc)
 	}
 
 	// Verify PVC was created with OSS settings (ReadWriteMany, bound to static PV)
-	pvc := &corev1.PersistentVolumeClaim{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "ws-user1-pvc"}, pvc); err != nil {
+	fetchedPVC := &corev1.PersistentVolumeClaim{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "ws-user1-pvc"}, fetchedPVC); err != nil {
 		t.Fatalf("failed to get created PVC: %v", err)
 	}
 
-	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "alicloud-oss" {
-		t.Errorf("expected StorageClassName 'alicloud-oss', got %v", pvc.Spec.StorageClassName)
+	if fetchedPVC.Spec.StorageClassName == nil || *fetchedPVC.Spec.StorageClassName != "alicloud-oss" {
+		t.Errorf("expected StorageClassName 'alicloud-oss', got %v", fetchedPVC.Spec.StorageClassName)
 	}
-	if pvc.Spec.VolumeName != "ws-user1-pv" {
-		t.Errorf("expected VolumeName 'ws-user1-pv', got %s", pvc.Spec.VolumeName)
+	if fetchedPVC.Spec.VolumeName != "ws-user1-pv" {
+		t.Errorf("expected VolumeName 'ws-user1-pv', got %s", fetchedPVC.Spec.VolumeName)
 	}
-	if len(pvc.Spec.AccessModes) == 0 || pvc.Spec.AccessModes[0] != corev1.ReadWriteMany {
-		t.Errorf("expected accessMode ReadWriteMany, got %v", pvc.Spec.AccessModes)
+	if len(fetchedPVC.Spec.AccessModes) == 0 || fetchedPVC.Spec.AccessModes[0] != corev1.ReadWriteMany {
+		t.Errorf("expected accessMode ReadWriteMany, got %v", fetchedPVC.Spec.AccessModes)
 	}
 
 	// Verify PV was created with matching parameters from default SC
@@ -150,25 +150,25 @@ func TestReconcilePVC_ExplicitStorageClass_OverridesDefault(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	pvcName, err := r.reconcilePVC(ctx, ws)
+	pvc, err := r.reconcilePVC(ctx, ws)
 	if err != nil {
 		t.Fatalf("unexpected error from reconcilePVC: %v", err)
 	}
 
-	pvc := &corev1.PersistentVolumeClaim{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: pvcName}, pvc); err != nil {
+	fetchedPVC := &corev1.PersistentVolumeClaim{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: pvc.Name}, fetchedPVC); err != nil {
 		t.Fatalf("failed to get created PVC: %v", err)
 	}
 
 	// Must use explicit storageClass "standard-nfs", NOT "alicloud-oss"
-	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "standard-nfs" {
-		t.Errorf("expected StorageClassName 'standard-nfs', got %v", pvc.Spec.StorageClassName)
+	if fetchedPVC.Spec.StorageClassName == nil || *fetchedPVC.Spec.StorageClassName != "standard-nfs" {
+		t.Errorf("expected StorageClassName 'standard-nfs', got %v", fetchedPVC.Spec.StorageClassName)
 	}
-	if pvc.Spec.VolumeName != "" {
-		t.Errorf("expected empty VolumeName for non-OSS dynamic PVC, got %s", pvc.Spec.VolumeName)
+	if fetchedPVC.Spec.VolumeName != "" {
+		t.Errorf("expected empty VolumeName for non-OSS dynamic PVC, got %s", fetchedPVC.Spec.VolumeName)
 	}
-	if len(pvc.Spec.AccessModes) == 0 || pvc.Spec.AccessModes[0] != corev1.ReadWriteOnce {
-		t.Errorf("expected accessMode ReadWriteOnce, got %v", pvc.Spec.AccessModes)
+	if len(fetchedPVC.Spec.AccessModes) == 0 || fetchedPVC.Spec.AccessModes[0] != corev1.ReadWriteOnce {
+		t.Errorf("expected accessMode ReadWriteOnce, got %v", fetchedPVC.Spec.AccessModes)
 	}
 }
 
@@ -215,20 +215,20 @@ func TestReconcilePVC_EnvDefaultStorageClass(t *testing.T) {
 	defer os.Unsetenv("DEFAULT_STORAGE_CLASS")
 
 	ctx := context.Background()
-	pvcName, err := r.reconcilePVC(ctx, ws)
+	pvc, err := r.reconcilePVC(ctx, ws)
 	if err != nil {
 		t.Fatalf("unexpected error from reconcilePVC: %v", err)
 	}
 
-	pvc := &corev1.PersistentVolumeClaim{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: pvcName}, pvc); err != nil {
+	fetchedPVC := &corev1.PersistentVolumeClaim{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: pvc.Name}, fetchedPVC); err != nil {
 		t.Fatalf("failed to get created PVC: %v", err)
 	}
 
-	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "env-oss" {
-		t.Errorf("expected StorageClassName 'env-oss', got %v", pvc.Spec.StorageClassName)
+	if fetchedPVC.Spec.StorageClassName == nil || *fetchedPVC.Spec.StorageClassName != "env-oss" {
+		t.Errorf("expected StorageClassName 'env-oss', got %v", fetchedPVC.Spec.StorageClassName)
 	}
-	if pvc.Spec.VolumeName != "ws-user3-pv" {
-		t.Errorf("expected VolumeName 'ws-user3-pv', got %s", pvc.Spec.VolumeName)
+	if fetchedPVC.Spec.VolumeName != "ws-user3-pv" {
+		t.Errorf("expected VolumeName 'ws-user3-pv', got %s", fetchedPVC.Spec.VolumeName)
 	}
 }

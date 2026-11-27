@@ -3,8 +3,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
-	"reflect"
 	"strings"
 	"time"
 
@@ -13,6 +13,7 @@ import (
 	apps "k8s.io/api/apps/v1"
 	core "k8s.io/api/core/v1"
 	net "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -34,6 +35,10 @@ func (r *WorkspaceReconciler) prepareUnifiedEgress(ctx context.Context, ws *ai.W
 
 // Use one configuration snapshot for both policies and the Pod template.
 func (r *WorkspaceReconciler) prepareEgressConfig(ctx context.Context, ws *ai.Workspace, c egress.Config) (bool, error) {
+	return r.ensureEgressPolicies(ctx, ws, c, true)
+}
+
+func (r *WorkspaceReconciler) ensureEgressPolicies(ctx context.Context, ws *ai.Workspace, c egress.Config, verifyProxyForMigration bool) (bool, error) {
 	if err := egress.RememberConfiguration(ctx, r.Client, egress.Namespace()); err != nil {
 		return false, err
 	}
@@ -64,28 +69,30 @@ func (r *WorkspaceReconciler) prepareEgressConfig(ctx context.Context, ws *ai.Wo
 	if err != nil {
 		return false, err
 	}
-	// Refuse migration if another policy would add egress allowances. Do not
-	// silently delete or rewrite administrator-owned/test policies.
-	candidate := buildPodLabels(ws)
-	candidate[egress.MigrationLabel] = egress.MigrationVersion
-	policies := &net.NetworkPolicyList{}
-	if err = r.List(ctx, policies, client.InNamespace(ws.Namespace)); err != nil {
-		return false, err
-	}
-	for _, p := range policies.Items {
-		if p.Name == sharedNetpolName || p.Name == desired.Name {
-			continue
+	if verifyProxyForMigration {
+		// Refuse migration if another policy would add egress allowances. Do not
+		// silently delete or rewrite administrator-owned/test policies.
+		candidate := buildPodLabels(ws)
+		candidate[egress.MigrationLabel] = egress.MigrationVersion
+		policies := &net.NetworkPolicyList{}
+		if err = r.List(ctx, policies, client.InNamespace(ws.Namespace)); err != nil {
+			return false, err
 		}
-		sel, e := meta.LabelSelectorAsSelector(&p.Spec.PodSelector)
-		if e != nil {
-			return false, e
+		for _, p := range policies.Items {
+			if p.Name == sharedNetpolName || p.Name == desired.Name {
+				continue
+			}
+			sel, e := meta.LabelSelectorAsSelector(&p.Spec.PodSelector)
+			if e != nil {
+				return false, e
+			}
+			if sel.Matches(labels.Set(candidate)) && len(p.Spec.Egress) > 0 {
+				return false, fmt.Errorf("migration blocked by additive egress policy %s/%s", p.Namespace, p.Name)
+			}
 		}
-		if sel.Matches(labels.Set(candidate)) && len(p.Spec.Egress) > 0 {
-			return false, fmt.Errorf("migration blocked by additive egress policy %s/%s", p.Namespace, p.Name)
+		if err := r.requireLoadedProxy(ctx, c.Revision()); err != nil {
+			return false, err
 		}
-	}
-	if err := r.requireLoadedProxy(ctx, c.Revision()); err != nil {
-		return false, err
 	}
 	// Preserve legacy ingress separately before excluding migrated Pods from
 	// the old combined ingress/egress policy. Disabled legacy Pods retain their
@@ -115,13 +122,15 @@ func (r *WorkspaceReconciler) upsertEgressPolicy(ctx context.Context, desired *n
 	// Merge patch preserves metadata belonging to other actors.
 	before := existing.DeepCopy()
 	existing.Spec = desired.Spec
-	if existing.Annotations == nil {
-		existing.Annotations = map[string]string{}
+	if len(desired.Annotations) > 0 {
+		if existing.Annotations == nil {
+			existing.Annotations = map[string]string{}
+		}
+		for k, v := range desired.Annotations {
+			existing.Annotations[k] = v
+		}
 	}
-	for k, v := range desired.Annotations {
-		existing.Annotations[k] = v
-	}
-	if reflect.DeepEqual(before.Spec, existing.Spec) && reflect.DeepEqual(before.Annotations, existing.Annotations) {
+	if equality.Semantic.DeepEqual(before.Spec, existing.Spec) && maps.Equal(before.Annotations, existing.Annotations) {
 		return nil
 	}
 	return r.Patch(ctx, existing, client.MergeFrom(before))

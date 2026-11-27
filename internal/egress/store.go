@@ -91,8 +91,16 @@ func Save(ctx context.Context, k client.Client, namespace, version string, c Con
 const HistoryConfigMapName = "workspace-egress-history"
 
 func RememberConfiguration(ctx context.Context, k client.Client, namespace string) error {
+	existing := &corev1.ConfigMap{}
+	err := k.Get(ctx, types.NamespacedName{Namespace: namespace, Name: HistoryConfigMapName}, existing)
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
 	marker := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: HistoryConfigMapName, Namespace: namespace}, Data: map[string]string{"initialized": "true"}}
-	err := k.Create(ctx, marker)
+	err = k.Create(ctx, marker)
 	if apierrors.IsAlreadyExists(err) {
 		return nil
 	}

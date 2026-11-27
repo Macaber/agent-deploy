@@ -2,14 +2,46 @@ package egress
 
 import (
 	"context"
+	"testing"
+
 	core "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"testing"
 )
+
+type countingStoreClient struct {
+	client.Client
+	creates int
+}
+
+func (c *countingStoreClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	c.creates++
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+func TestRememberConfigurationSkipsCreateWhenPresent(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = core.AddToScheme(scheme)
+	base := fake.NewClientBuilder().WithScheme(scheme).Build()
+	c := &countingStoreClient{Client: base}
+
+	ctx := context.Background()
+	if err := RememberConfiguration(ctx, c, "system"); err != nil {
+		t.Fatalf("first RememberConfiguration failed: %v", err)
+	}
+	if c.creates != 1 {
+		t.Fatalf("expected 1 Create on first call, got %d", c.creates)
+	}
+	if err := RememberConfiguration(ctx, c, "system"); err != nil {
+		t.Fatalf("second RememberConfiguration failed: %v", err)
+	}
+	if c.creates != 1 {
+		t.Fatalf("expected 0 additional Creates when marker exists, got total %d", c.creates)
+	}
+}
 
 func TestConfigurationDeletionIsNotFirstInstallation(t *testing.T) {
 	scheme := runtime.NewScheme()

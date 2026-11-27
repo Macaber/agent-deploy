@@ -18,8 +18,12 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"maps"
 	"os"
 	"reflect"
@@ -75,15 +79,21 @@ const (
 	managedByLabelKey   = "app.kubernetes.io/managed-by"
 	managedByLabelValue = "workspace-operator"
 
+	// DeploymentSpecHashAnnotation stores a deterministic SHA-256 digest of the
+	// desired Workspace Deployment labels, revision history, strategy, and pod
+	// template so steady-state reconciles can verify convergence from the stripped
+	// informer cache without an uncached API-server Get.
+	DeploymentSpecHashAnnotation = "ai.example.com/spec-hash"
+
 	// workspaceRevisionHistoryLimit bounds the number of old ReplicaSets a workspace
-	// Deployment keeps. The API-server default is 10, and with the Recreate strategy
-	// every Pod template change (image bump, env/volume/probe edit) leaves one more
-	// 0-replica ReplicaSet behind — up to 10 old ones per workspace, retained forever.
-	// At 5,000 workspaces that is up to 40,000 extra API objects (each carrying a full
-	// PodSpec copy) with no functional value: this platform never uses
-	// "kubectl rollout undo", and rolling back a Recreate Deployment is a restart either
-	// way. 2 keeps a cheap rollback margin (see docs/bare_pod_orchestration_evaluation.md).
-	workspaceRevisionHistoryLimit int32 = 2
+	// Deployment keeps. Under the Recreate strategy every Pod template change leaves
+	// a 0-replica ReplicaSet behind; 0 avoids retaining extra ReplicaSet objects
+	// across tens of thousands of Workspaces while keeping the active ReplicaSet.
+	workspaceRevisionHistoryLimit int32 = 0
+
+	// maxIdleTimeoutJitter spreads concurrent IdleTimeout expirations across a
+	// deterministic 0..30s window per Workspace to avoid thundering-herd scale-downs.
+	maxIdleTimeoutJitter = 30 * time.Second
 )
 
 // WorkspaceReconciler reconciles a Workspace object
@@ -109,7 +119,7 @@ type WorkspaceReconciler struct {
 	// Defaults to 30 if unset or <= 0.
 	MaxConcurrentReconciles int
 	// ActiveInstancesSyncInterval is how often the workspace_active_instances gauge
-	// is rebuilt from a cluster-wide Workspace list (Task 5.2). Defaults to 1 minute
+	// is rebuilt from a cluster-wide Workspace list (Task 5.2). Defaults to 15 minutes
 	// if unset or <= 0.
 	ActiveInstancesSyncInterval time.Duration
 	// backfillStartedAtOnce ensures historical Workspaces missing StartedAt are backfilled only once on startup.
@@ -309,14 +319,31 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
+	// Short-circuit steady-state Sleeping/Stopped Workspaces whose Deployment is
+	// already scaled to 0 (or deleted) and whose status fields are already
+	// converged, avoiding uncached PVC/Service/Ingress/Deployment reads.
+	shortCircuit, err := r.canShortCircuitIdleWorkspace(ctx, ws, log)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if shortCircuit {
+		if err := r.reconcileNetworkPolicy(ctx, ws); err != nil {
+			log.Error(err, "Failed to reconcile NetworkPolicy")
+			return ctrl.Result{}, err
+		}
+		workspacePhases.set(req.NamespacedName, ws.Status.Phase)
+		return ctrl.Result{}, nil
+	}
+
 	// 2. Reconcile children (PVC, Deployment, Service, Ingress)
-	pvcName, err := r.reconcilePVC(ctx, ws)
+	pvc, err := r.reconcilePVC(ctx, ws)
 	if err != nil {
 		log.Error(err, "Failed to reconcile PVC")
 		return ctrl.Result{}, err
 	}
+	pvcName := pvc.Name
 
-	deployName, reconciledReplicas, err := r.reconcileDeployment(ctx, ws, pvcName)
+	deployName, reconciledReplicas, err := r.reconcileDeployment(ctx, ws, pvcName, pvc)
 	if err != nil {
 		log.Error(err, "Failed to reconcile Deployment")
 		return ctrl.Result{}, err
@@ -357,10 +384,7 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 	deploy := &appsv1.Deployment{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: deployName}, deploy); err == nil {
 		// Migration progress: the UID the Pod template runs as (0 = image/root user).
-		observedUID := int64(0)
-		if sc := deploy.Spec.Template.Spec.SecurityContext; sc != nil && sc.RunAsUser != nil {
-			observedUID = *sc.RunAsUser
-		}
+		observedUID := observedDeploymentRunAsUser(deploy)
 		ws.Status.RunAsUser = &observedUID
 		if ws.Spec.Stopped {
 			ws.Status.Phase = aiv1alpha1.WorkspaceStopped
@@ -424,14 +448,7 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 		if ws.Spec.IdleTimeout != "" {
 			idleDuration, err := time.ParseDuration(ws.Spec.IdleTimeout)
 			if err == nil {
-				idleExpiry := ws.Status.LastActiveTime.Add(idleDuration)
-				remainingIdle := time.Until(idleExpiry)
-				if remainingIdle > 0 {
-					nextRequeue = remainingIdle
-				} else {
-					// Idle expired, trigger immediate reconcile to scale down
-					nextRequeue = 1 * time.Second
-				}
+				nextRequeue = computeIdleRequeue(ws.Name, ws.Status.LastActiveTime.Time, idleDuration, time.Now())
 			} else {
 				log.Error(err, "Failed to parse idleTimeout in requeue calculation", "value", ws.Spec.IdleTimeout)
 			}
@@ -481,6 +498,78 @@ func (r *WorkspaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 	workspacePhases.set(req.NamespacedName, ws.Status.Phase)
 
 	return ctrl.Result{RequeueAfter: nextRequeue}, nil
+}
+
+// observedDeploymentRunAsUser returns the Pod-level RunAsUser configured on
+// deploy, or 0 when the container uses the image default (root) user.
+func observedDeploymentRunAsUser(deploy *appsv1.Deployment) int64 {
+	if deploy != nil {
+		if sc := deploy.Spec.Template.Spec.SecurityContext; sc != nil && sc.RunAsUser != nil {
+			return *sc.RunAsUser
+		}
+	}
+	return 0
+}
+
+// canShortCircuitIdleWorkspace reports whether a Sleeping or Stopped Workspace
+// has already converged in cache (Deployment scaled to 0 or deleted, PVCName
+// and Endpoint populated, RunAsUser recorded, PodName cleared), allowing the
+// reconcile to skip uncached PVC/Service/Ingress/Deployment calls completely.
+func (r *WorkspaceReconciler) canShortCircuitIdleWorkspace(ctx context.Context, ws *aiv1alpha1.Workspace, log interface {
+	Error(err error, msg string, keysAndValues ...any)
+}) (bool, error) {
+	if computeDesiredReplicas(ws, log) != 0 {
+		return false, nil
+	}
+	expectedPhase := aiv1alpha1.WorkspaceSleeping
+	if ws.Spec.Stopped {
+		expectedPhase = aiv1alpha1.WorkspaceStopped
+	}
+	if ws.Status.Phase != expectedPhase ||
+		ws.Status.PodName != "" ||
+		ws.Status.PVCName == "" ||
+		ws.Status.Endpoint == "" {
+		return false, nil
+	}
+
+	cachedDeploy := &appsv1.Deployment{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: ws.Name + "-deploy"}, cachedDeploy)
+	if apierrors.IsNotFound(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !cachedDeploy.DeletionTimestamp.IsZero() {
+		return false, nil
+	}
+	if cachedDeploy.Spec.Replicas == nil || *cachedDeploy.Spec.Replicas != 0 {
+		return false, nil
+	}
+	if ws.Status.RunAsUser == nil || *ws.Status.RunAsUser != observedDeploymentRunAsUser(cachedDeploy) {
+		return false, nil
+	}
+	return true, nil
+}
+
+// idleTimeoutJitter returns a deterministic 0..30s jitter derived from wsName
+// so concurrent Workspace startups do not expire simultaneously.
+func idleTimeoutJitter(wsName string) time.Duration {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(wsName))
+	windowMs := uint32(maxIdleTimeoutJitter / time.Millisecond)
+	return time.Duration(h.Sum32()%windowMs) * time.Millisecond
+}
+
+// computeIdleRequeue computes the RequeueAfter duration for a Running Workspace
+// with IdleTimeout configured, adding bounded deterministic jitter.
+func computeIdleRequeue(wsName string, lastActiveTime time.Time, idleDuration time.Duration, now time.Time) time.Duration {
+	remainingIdle := lastActiveTime.Add(idleDuration).Sub(now)
+	jitter := idleTimeoutJitter(wsName)
+	if remainingIdle > 0 {
+		return remainingIdle + jitter
+	}
+	return time.Second + jitter
 }
 
 // computeStartedAt decides the StartedAt value to record for a Running workspace.
@@ -541,7 +630,7 @@ func (r *WorkspaceReconciler) getDefaultStorageClass(ctx context.Context) (*stor
 	return nil, ""
 }
 
-func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.Workspace) (string, error) {
+func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.Workspace) (*corev1.PersistentVolumeClaim, error) {
 	log := logf.FromContext(ctx)
 	pvcName := ws.Name + "-pvc"
 
@@ -585,7 +674,7 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 		if apierrors.IsNotFound(err) {
 			storageSize, err := apiresources.ParseQuantity(ws.Spec.Storage.Size)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 
 			if isOSS {
@@ -690,7 +779,7 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 					}
 					log.Info("Auto-provisioning OSS PersistentVolume for workspace", "pvName", pvName, "subPath", subPath)
 					if err := r.Create(ctx, pv); err != nil && !apierrors.IsAlreadyExists(err) {
-						return "", err
+						return nil, err
 					}
 				}
 
@@ -740,11 +829,11 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 
 			// 注意：不设置 ControllerReference / OwnerReference，以确保删除 Workspace 时不会由 K8s 垃圾回收（GC）级联删除 PVC
 			if err := r.Create(ctx, pvc); err != nil {
-				return "", err
+				return nil, err
 			}
-			return pvcName, nil
+			return pvc, nil
 		}
-		return "", err
+		return nil, err
 	}
 
 	// PVC already exists: 若存在旧版本设置的 Workspace OwnerReference，移除它以防止删除 Workspace 时 PVC 被级联删除
@@ -803,7 +892,7 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 		if r.Recorder != nil {
 			r.Recorder.Eventf(ws, corev1.EventTypeWarning, "InvalidStorageSize", "Failed to parse storage size %q: %v", ws.Spec.Storage.Size, err)
 		}
-		return pvc.Name, nil
+		return pvc, nil
 	}
 
 	currentReq, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
@@ -814,7 +903,7 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = desiredSize
 		log.Info("Setting storage request on existing PVC", "pvcName", pvcName, "size", desiredSize.String())
 		if err := r.Update(ctx, pvc); err != nil {
-			return "", err
+			return nil, err
 		}
 	} else {
 		cmp := desiredSize.Cmp(currentReq)
@@ -832,7 +921,7 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 				if r.Recorder != nil {
 					r.Recorder.Eventf(ws, corev1.EventTypeWarning, "VolumeExpansionFailed", "Failed to expand PVC %s from %s to %s: %v", pvcName, currentReq.String(), desiredSize.String(), err)
 				}
-				return pvc.Name, nil
+				return pvc, nil
 			}
 			if r.Recorder != nil {
 				r.Recorder.Eventf(ws, corev1.EventTypeNormal, "VolumeExpanded", "Expanded PVC %s from %s to %s", pvcName, currentReq.String(), desiredSize.String())
@@ -859,7 +948,7 @@ func (r *WorkspaceReconciler) reconcilePVC(ctx context.Context, ws *aiv1alpha1.W
 		}
 	}
 
-	return pvc.Name, nil
+	return pvc, nil
 }
 
 // buildResourceRequirements parses CPU and memory specifications and constructs
@@ -915,69 +1004,75 @@ func buildResourceRequirements(cpuStr, memStr string) corev1.ResourceRequirement
 	return resources
 }
 
-func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1alpha1.Workspace, pvcName string) (string, int32, error) {
-	log := logf.FromContext(ctx)
-	deployName := ws.Name + "-deploy"
-	deploy := &appsv1.Deployment{}
-	// Uncached: the informer copy of a Deployment has its pod template spec
-	// stripped (see stripDeploymentForCache), and this object is mutated and
-	// written back below, so it must be the full object.
-	err := r.uncachedReader().Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: deployName}, deploy)
+type desiredDeploymentParts struct {
+	labels             map[string]string
+	selectorLabels     map[string]string
+	podLabels          map[string]string
+	podSecurityContext *corev1.PodSecurityContext
+	template           corev1.PodTemplateSpec
+	specHash           string
+}
 
-	// Operator always owns Deployment.spec.replicas (Stopped / IdleTimeout / default 1).
-	desiredReplicas := computeDesiredReplicas(ws, log)
+type deploymentSpecHashInput struct {
+	Labels               map[string]string         `json:"labels"`
+	RevisionHistoryLimit int32                     `json:"revisionHistoryLimit"`
+	Strategy             appsv1.DeploymentStrategy `json:"strategy"`
+	Template             corev1.PodTemplateSpec    `json:"template"`
+}
 
-	// Scale-down must remain available even when the egress configuration or
-	// proxy is unavailable. Never mutate a sleeping Pod template in this path.
-	if desiredReplicas == 0 && (err == nil || apierrors.IsNotFound(err)) {
-		if err == nil && (deploy.Spec.Replicas == nil || *deploy.Spec.Replicas != 0) {
-			before := deploy.DeepCopy()
-			zero := int32(0)
-			deploy.Spec.Replicas = &zero
-			if patchErr := r.Patch(ctx, deploy, client.MergeFrom(before)); patchErr != nil {
-				return "", 0, patchErr
-			}
-		}
-		return deployName, 0, nil
+func computeDeploymentSpecHash(
+	labels map[string]string,
+	revLimit int32,
+	strategy appsv1.DeploymentStrategy,
+	template corev1.PodTemplateSpec,
+) (string, error) {
+	payload := deploymentSpecHashInput{
+		Labels:               labels,
+		RevisionHistoryLimit: revLimit,
+		Strategy:             strategy,
+		Template:             template,
 	}
-	migrateEgress := false
-	var modeConfig egress.Config
-	if unifiedEgressEnabled() && (err == nil || apierrors.IsNotFound(err)) {
-		var migrationErr error
-		modeConfig, migrationErr = r.readOrInitializeEgress(ctx)
-		if migrationErr == nil {
-			migrateEgress, migrationErr = r.prepareEgressConfig(ctx, ws, modeConfig)
-		}
-		if migrationErr != nil {
-			return "", 0, migrationErr
-		}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
 	}
-	// Build runtime container environment
-	envVars := []corev1.EnvVar{
-		{Name: "WORKSPACE_OWNER", Value: ws.Spec.Owner},
-		{Name: "WORKSPACE_NAME", Value: ws.Name},
-	}
-	for _, env := range ws.Spec.Runtime.Env {
-		envVars = append(envVars, corev1.EnvVar{Name: env.Name, Value: env.Value})
-	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
 
-	if migrateEgress {
-		envVars = proxyEnvironment(envVars)
+func deploymentMatchesCachedSpec(
+	cached *appsv1.Deployment,
+	desiredReplicas int32,
+	parts *desiredDeploymentParts,
+) bool {
+	if cached == nil || !cached.DeletionTimestamp.IsZero() {
+		return false
 	}
-	// Parse resource requirements: limit = configured/default, request = 50% limit
-	resources := buildResourceRequirements(ws.Spec.Runtime.CPU, ws.Spec.Runtime.Memory)
-
-	// Ports
-	containerPort := getWorkspaceContainerPort(ws)
-
-	// Protocol must be set explicitly: the API server defaults it to "TCP" on write and
-	// persists it, so an unset Protocol here would make the Task 1.2 diff never converge
-	// and trigger a spurious r.Update on every reconcile.
-	ports := []corev1.ContainerPort{
-		{Name: "http", ContainerPort: containerPort, Protocol: corev1.ProtocolTCP},
+	if cached.Annotations[DeploymentSpecHashAnnotation] != parts.specHash {
+		return false
 	}
+	if cached.Spec.Replicas == nil || *cached.Spec.Replicas != desiredReplicas {
+		return false
+	}
+	if cached.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+		return false
+	}
+	if cached.Spec.RevisionHistoryLimit == nil || *cached.Spec.RevisionHistoryLimit != workspaceRevisionHistoryLimit {
+		return false
+	}
+	if !maps.Equal(cached.Labels, parts.labels) {
+		return false
+	}
+	if !maps.Equal(cached.Spec.Template.Labels, parts.podLabels) {
+		return false
+	}
+	if !equality.Semantic.DeepEqual(cached.Spec.Template.Spec.SecurityContext, parts.podSecurityContext) {
+		return false
+	}
+	return true
+}
 
-	// Volumes and Mounts: Detect if running inside K8s (production PVC mode) or locally (developer HostPath mode)
+func buildWorkspaceVolumesAndMounts(ws *aiv1alpha1.Workspace, pvcName string) ([]corev1.Volume, []corev1.VolumeMount, map[string]string, map[string]string) {
 	var volumeSource corev1.VolumeSource
 	useHostPath := os.Getenv("USE_HOSTPATH") == "true" || os.Getenv("WORKSPACE_DATA_DIR") != "" || os.Getenv("KUBERNETES_SERVICE_HOST") == ""
 
@@ -1025,14 +1120,11 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	// Append pre-existing shared volume mounts if specified
 	// Group by PVCName to avoid declaring multiple Volumes for the same PVC in PodSpec
 	sharedVolumeMap := make(map[string]string) // maps PVCName to generated volumeName
-	sharedVolCount := 0
-
 	for _, svm := range ws.Spec.SharedVolumeMounts {
 		volumeName, exists := sharedVolumeMap[svm.PVCName]
 		if !exists {
-			volumeName = fmt.Sprintf("shared-vol-%d", sharedVolCount)
+			volumeName = fmt.Sprintf("shared-vol-%d", len(sharedVolumeMap))
 			sharedVolumeMap[svm.PVCName] = volumeName
-			sharedVolCount++
 
 			volumes = append(volumes, corev1.Volume{
 				Name: volumeName,
@@ -1054,14 +1146,11 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 
 	// Append ConfigMap volume mounts if specified
 	configMapVolumeMap := make(map[string]string) // maps ConfigMapName to generated volumeName
-	cmVolCount := 0
-
 	for _, cm := range ws.Spec.ConfigMapVolumeMounts {
 		volumeName, exists := configMapVolumeMap[cm.ConfigMapName]
 		if !exists {
-			volumeName = fmt.Sprintf("cm-vol-%d", cmVolCount)
+			volumeName = fmt.Sprintf("cm-vol-%d", len(configMapVolumeMap))
 			configMapVolumeMap[cm.ConfigMapName] = volumeName
-			cmVolCount++
 
 			defaultMode := int32(0755)
 			volumes = append(volumes, corev1.Volume{
@@ -1127,7 +1216,15 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		}
 	}
 
-	// Build custom initContainers if specified in ws.Spec.Runtime.InitContainers
+	return volumes, volumeMounts, sharedVolumeMap, configMapVolumeMap
+}
+
+func buildWorkspaceInitContainers(
+	ws *aiv1alpha1.Workspace,
+	volumes []corev1.Volume,
+	sharedVolumeMap map[string]string,
+	configMapVolumeMap map[string]string,
+) ([]corev1.Container, []corev1.Volume) {
 	var initContainers []corev1.Container
 	for _, icSpec := range ws.Spec.Runtime.InitContainers {
 		var icEnvVars []corev1.EnvVar
@@ -1139,9 +1236,8 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		for _, svm := range icSpec.SharedVolumeMounts {
 			volumeName, exists := sharedVolumeMap[svm.PVCName]
 			if !exists {
-				volumeName = fmt.Sprintf("shared-vol-%d", sharedVolCount)
+				volumeName = fmt.Sprintf("shared-vol-%d", len(sharedVolumeMap))
 				sharedVolumeMap[svm.PVCName] = volumeName
-				sharedVolCount++
 
 				volumes = append(volumes, corev1.Volume{
 					Name: volumeName,
@@ -1164,9 +1260,8 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		for _, cm := range icSpec.ConfigMapVolumeMounts {
 			volumeName, exists := configMapVolumeMap[cm.ConfigMapName]
 			if !exists {
-				volumeName = fmt.Sprintf("cm-vol-%d", cmVolCount)
+				volumeName = fmt.Sprintf("cm-vol-%d", len(configMapVolumeMap))
 				configMapVolumeMap[cm.ConfigMapName] = volumeName
-				cmVolCount++
 
 				defaultMode := int32(0755)
 				volumes = append(volumes, corev1.Volume{
@@ -1208,17 +1303,50 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 			VolumeMounts:    icVolumeMounts,
 		})
 	}
+	return initContainers, volumes
+}
+
+func (r *WorkspaceReconciler) buildDesiredDeploymentSpec(
+	ctx context.Context,
+	ws *aiv1alpha1.Workspace,
+	pvcName string,
+	pvc *corev1.PersistentVolumeClaim,
+	migrateEgress bool,
+	modeConfig egress.Config,
+) (*desiredDeploymentParts, error) {
+	log := logf.FromContext(ctx)
+
+	envVars := []corev1.EnvVar{
+		{Name: "WORKSPACE_OWNER", Value: ws.Spec.Owner},
+		{Name: "WORKSPACE_NAME", Value: ws.Name},
+	}
+	for _, env := range ws.Spec.Runtime.Env {
+		envVars = append(envVars, corev1.EnvVar{Name: env.Name, Value: env.Value})
+	}
+	if migrateEgress {
+		envVars = proxyEnvironment(envVars)
+	}
+
+	resources := buildResourceRequirements(ws.Spec.Runtime.CPU, ws.Spec.Runtime.Memory)
+	containerPort := getWorkspaceContainerPort(ws)
+	// Protocol must be set explicitly: the API server defaults it to "TCP" on write and
+	// persists it, so an unset Protocol here would make the Task 1.2 diff never converge
+	// and trigger a spurious r.Update on every reconcile.
+	ports := []corev1.ContainerPort{
+		{Name: "http", ContainerPort: containerPort, Protocol: corev1.ProtocolTCP},
+	}
+
+	volumes, volumeMounts, sharedVolumeMap, configMapVolumeMap := buildWorkspaceVolumesAndMounts(ws, pvcName)
+	initContainers, volumes := buildWorkspaceInitContainers(ws, volumes, sharedVolumeMap, configMapVolumeMap)
 
 	selectorLabels := buildSelectorLabels(ws)
 	labels := buildWorkspaceLabels(ws)
-	// Hardened security context shared with the update path, so a reconcile always
-	// converges on the same values.
 	podSecurityContext, containerSecurityContext := buildWorkspaceSecurityContexts()
-	runAsUID, skipReason, uidErr := r.resolveRunAsUser(ctx, ws, pvcName)
+	runAsUID, skipReason, uidErr := r.resolveRunAsUser(ctx, ws, pvcName, pvc)
 	if uidErr != nil {
 		// Never fall back to root on a transient lookup error: that would flip the
 		// Pod template and restart the workspace. Retry instead.
-		return "", 0, uidErr
+		return nil, uidErr
 	}
 	if skipReason != "" {
 		log.Info("Keeping image user: workspace volume is not ready for non-root", "reason", skipReason)
@@ -1229,16 +1357,15 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 	if runAsUID > 0 {
 		applyNonRoot(podSecurityContext, containerSecurityContext, runAsUID)
 	}
+
 	// Pods are the only resources that carry the managed-by marker (the shared
 	// NetworkPolicy selects on it); PVCs/Services/Ingresses must stay clean.
 	podLabels := buildPodLabels(ws)
 	delete(podLabels, egress.MigrationLabel)
 	if migrateEgress {
 		podLabels[egress.MigrationLabel] = egress.MigrationVersion
-	} else if unifiedEgressEnabled() {
-		if modeConfig.EffectiveMode() == egress.ModeUnrestricted {
-			podLabels[egress.MigrationLabel] = "unrestricted-v1"
-		}
+	} else if unifiedEgressEnabled() && modeConfig.EffectiveMode() == egress.ModeUnrestricted {
+		podLabels[egress.MigrationLabel] = "unrestricted-v1"
 	}
 
 	var command []string
@@ -1262,73 +1389,122 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		}
 	}
 
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			deploy = &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      deployName,
-					Namespace: ws.Namespace,
-					Labels:    labels,
+	template := corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: podLabels,
+		},
+		Spec: corev1.PodSpec{
+			RuntimeClassName:              ws.Spec.Runtime.RuntimeClassName,
+			InitContainers:                initContainers,
+			SecurityContext:               podSecurityContext,
+			TerminationGracePeriodSeconds: int64Ptr(2),
+			AutomountServiceAccountToken:  boolPtr(false),
+			EnableServiceLinks:            boolPtr(false),
+			Containers: []corev1.Container{
+				{
+					Name:            "runtime",
+					Image:           ws.Spec.Runtime.Image,
+					ImagePullPolicy: corev1.PullIfNotPresent,
+					Command:         command,
+					Args:            containerArgs,
+					Ports:           ports,
+					Env:             envVars,
+					Resources:       resources,
+					SecurityContext: containerSecurityContext,
+					VolumeMounts:    volumeMounts,
+					Lifecycle:       lifecycle,
+					StartupProbe:    getStartupProbe(ws),
+					ReadinessProbe:  getReadinessProbe(ws),
 				},
-				Spec: appsv1.DeploymentSpec{
-					Replicas:             &desiredReplicas,
-					RevisionHistoryLimit: int32Ptr(workspaceRevisionHistoryLimit),
-					Strategy: appsv1.DeploymentStrategy{
-						Type: appsv1.RecreateDeploymentStrategyType,
-					},
-					Selector: &metav1.LabelSelector{
-						MatchLabels: selectorLabels,
-					},
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels: podLabels,
-						},
-						Spec: corev1.PodSpec{
-							RuntimeClassName:              ws.Spec.Runtime.RuntimeClassName,
-							InitContainers:                initContainers,
-							SecurityContext:               podSecurityContext,
-							TerminationGracePeriodSeconds: int64Ptr(2),
-							AutomountServiceAccountToken:  boolPtr(false),
-							EnableServiceLinks:            boolPtr(false),
-							Containers: []corev1.Container{
-								{
-									Name:            "runtime",
-									Image:           ws.Spec.Runtime.Image,
-									ImagePullPolicy: corev1.PullIfNotPresent,
-									Command:         command,
-									Args:            containerArgs,
-									Ports:           ports,
-									Env:             envVars,
-									Resources:       resources,
-									SecurityContext: containerSecurityContext,
-									VolumeMounts:    volumeMounts,
-									Lifecycle:       lifecycle,
-									StartupProbe:    getStartupProbe(ws),
-									ReadinessProbe:  getReadinessProbe(ws),
-								},
-							},
-							Volumes: volumes,
-						},
-					},
-				},
-			}
-			if err := ctrl.SetControllerReference(ws, deploy, r.Scheme); err != nil {
-				return "", 0, err
-			}
-			if err := r.Create(ctx, deploy); err != nil {
-				return "", 0, err
-			}
-			return deployName, desiredReplicas, nil
-		}
-		return "", 0, err
+			},
+			Volumes: volumes,
+		},
 	}
 
-	// Update replica count and other spec settings if changed
+	strategy := appsv1.DeploymentStrategy{
+		Type: appsv1.RecreateDeploymentStrategyType,
+	}
+	specHash, err := computeDeploymentSpecHash(labels, workspaceRevisionHistoryLimit, strategy, template)
+	if err != nil {
+		return nil, err
+	}
+
+	return &desiredDeploymentParts{
+		labels:             labels,
+		selectorLabels:     selectorLabels,
+		podLabels:          podLabels,
+		podSecurityContext: podSecurityContext,
+		template:           template,
+		specHash:           specHash,
+	}, nil
+}
+
+func syncDeploymentContainerSpec(targetContainer, desiredContainer *corev1.Container) bool {
+	needsUpdate := false
+	if targetContainer.Image != desiredContainer.Image {
+		targetContainer.Image = desiredContainer.Image
+		needsUpdate = true
+	}
+	if targetContainer.ImagePullPolicy != desiredContainer.ImagePullPolicy {
+		targetContainer.ImagePullPolicy = desiredContainer.ImagePullPolicy
+		needsUpdate = true
+	}
+	if !slices.Equal(targetContainer.Command, desiredContainer.Command) {
+		targetContainer.Command = desiredContainer.Command
+		needsUpdate = true
+	}
+	if !slices.Equal(targetContainer.Args, desiredContainer.Args) {
+		targetContainer.Args = desiredContainer.Args
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(targetContainer.Env, desiredContainer.Env) {
+		targetContainer.Env = desiredContainer.Env
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(targetContainer.Resources, desiredContainer.Resources) {
+		targetContainer.Resources = desiredContainer.Resources
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(targetContainer.Ports, desiredContainer.Ports) {
+		targetContainer.Ports = desiredContainer.Ports
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(targetContainer.VolumeMounts, desiredContainer.VolumeMounts) {
+		targetContainer.VolumeMounts = desiredContainer.VolumeMounts
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(targetContainer.SecurityContext, desiredContainer.SecurityContext) {
+		targetContainer.SecurityContext = desiredContainer.SecurityContext
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(targetContainer.Lifecycle, desiredContainer.Lifecycle) {
+		targetContainer.Lifecycle = desiredContainer.Lifecycle
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(targetContainer.StartupProbe, desiredContainer.StartupProbe) {
+		targetContainer.StartupProbe = desiredContainer.StartupProbe
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(targetContainer.ReadinessProbe, desiredContainer.ReadinessProbe) {
+		targetContainer.ReadinessProbe = desiredContainer.ReadinessProbe
+		needsUpdate = true
+	}
+	return needsUpdate
+}
+
+func syncDeploymentSpec(deploy *appsv1.Deployment, desiredReplicas int32, parts *desiredDeploymentParts) (bool, error) {
 	if len(deploy.Spec.Template.Spec.Containers) == 0 {
-		return "", 0, fmt.Errorf("deployment %s has no containers", deployName)
+		return false, fmt.Errorf("deployment %s has no containers", deploy.Name)
 	}
 
 	needsUpdate := false
+	if deploy.Annotations[DeploymentSpecHashAnnotation] != parts.specHash {
+		if deploy.Annotations == nil {
+			deploy.Annotations = make(map[string]string)
+		}
+		deploy.Annotations[DeploymentSpecHashAnnotation] = parts.specHash
+		needsUpdate = true
+	}
 	if deploy.Spec.Replicas == nil || *deploy.Spec.Replicas != desiredReplicas {
 		deploy.Spec.Replicas = &desiredReplicas
 		needsUpdate = true
@@ -1346,18 +1522,19 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		deploy.Spec.RevisionHistoryLimit = int32Ptr(workspaceRevisionHistoryLimit)
 		needsUpdate = true
 	}
-	if !maps.Equal(deploy.Labels, labels) {
-		deploy.Labels = labels
+	if !maps.Equal(deploy.Labels, parts.labels) {
+		deploy.Labels = parts.labels
 		needsUpdate = true
 	}
-	if !maps.Equal(deploy.Spec.Template.Labels, podLabels) {
-		deploy.Spec.Template.Labels = podLabels
+	if !maps.Equal(deploy.Spec.Template.Labels, parts.podLabels) {
+		deploy.Spec.Template.Labels = parts.podLabels
 		needsUpdate = true
 	}
 
 	podSpec := &deploy.Spec.Template.Spec
-	if !reflect.DeepEqual(podSpec.RuntimeClassName, ws.Spec.Runtime.RuntimeClassName) {
-		podSpec.RuntimeClassName = ws.Spec.Runtime.RuntimeClassName
+	desiredPodSpec := &parts.template.Spec
+	if !reflect.DeepEqual(podSpec.RuntimeClassName, desiredPodSpec.RuntimeClassName) {
+		podSpec.RuntimeClassName = desiredPodSpec.RuntimeClassName
 		needsUpdate = true
 	}
 	if podSpec.TerminationGracePeriodSeconds == nil || *podSpec.TerminationGracePeriodSeconds != 2 {
@@ -1372,71 +1549,131 @@ func (r *WorkspaceReconciler) reconcileDeployment(ctx context.Context, ws *aiv1a
 		podSpec.EnableServiceLinks = boolPtr(false)
 		needsUpdate = true
 	}
-	if !equality.Semantic.DeepEqual(podSpec.SecurityContext, podSecurityContext) {
-		podSpec.SecurityContext = podSecurityContext
+	if !equality.Semantic.DeepEqual(podSpec.SecurityContext, parts.podSecurityContext) {
+		podSpec.SecurityContext = parts.podSecurityContext
 		needsUpdate = true
+	}
+	if syncDeploymentContainerSpec(&podSpec.Containers[0], &desiredPodSpec.Containers[0]) {
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(podSpec.InitContainers, desiredPodSpec.InitContainers) {
+		podSpec.InitContainers = desiredPodSpec.InitContainers
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(podSpec.Volumes, desiredPodSpec.Volumes) {
+		podSpec.Volumes = desiredPodSpec.Volumes
+		needsUpdate = true
+	}
+	return needsUpdate, nil
+}
+
+func (r *WorkspaceReconciler) reconcileDeployment(
+	ctx context.Context,
+	ws *aiv1alpha1.Workspace,
+	pvcName string,
+	pvc *corev1.PersistentVolumeClaim,
+) (string, int32, error) {
+	log := logf.FromContext(ctx)
+	deployName := ws.Name + "-deploy"
+
+	// Read from the stripped informer cache first so steady-state reconciles can
+	// verify convergence via spec-hash with zero uncached API-server Gets.
+	cachedDeploy := &appsv1.Deployment{}
+	cachedErr := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: deployName}, cachedDeploy)
+	if cachedErr != nil && !apierrors.IsNotFound(cachedErr) {
+		return "", 0, cachedErr
 	}
 
-	targetContainer := &podSpec.Containers[0]
-	if targetContainer.Image != ws.Spec.Runtime.Image {
-		targetContainer.Image = ws.Spec.Runtime.Image
-		needsUpdate = true
-	}
-	if targetContainer.ImagePullPolicy != corev1.PullIfNotPresent {
-		targetContainer.ImagePullPolicy = corev1.PullIfNotPresent
-		needsUpdate = true
-	}
-	if !slices.Equal(targetContainer.Command, command) {
-		targetContainer.Command = command
-		needsUpdate = true
-	}
-	if !slices.Equal(targetContainer.Args, containerArgs) {
-		targetContainer.Args = containerArgs
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(targetContainer.Env, envVars) {
-		targetContainer.Env = envVars
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(targetContainer.Resources, resources) {
-		targetContainer.Resources = resources
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(targetContainer.Ports, ports) {
-		targetContainer.Ports = ports
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(targetContainer.VolumeMounts, volumeMounts) {
-		targetContainer.VolumeMounts = volumeMounts
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(targetContainer.SecurityContext, containerSecurityContext) {
-		targetContainer.SecurityContext = containerSecurityContext
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(targetContainer.Lifecycle, lifecycle) {
-		targetContainer.Lifecycle = lifecycle
-		needsUpdate = true
-	}
-	startupProbe := getStartupProbe(ws)
-	if !equality.Semantic.DeepEqual(targetContainer.StartupProbe, startupProbe) {
-		targetContainer.StartupProbe = startupProbe
-		needsUpdate = true
-	}
-	readinessProbe := getReadinessProbe(ws)
-	if !equality.Semantic.DeepEqual(targetContainer.ReadinessProbe, readinessProbe) {
-		targetContainer.ReadinessProbe = readinessProbe
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(podSpec.InitContainers, initContainers) {
-		podSpec.InitContainers = initContainers
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(podSpec.Volumes, volumes) {
-		podSpec.Volumes = volumes
-		needsUpdate = true
+	// Operator always owns Deployment.spec.replicas (Stopped / IdleTimeout / default 1).
+	desiredReplicas := computeDesiredReplicas(ws, log)
+
+	// Scale-down must remain available even when the egress configuration or
+	// proxy is unavailable. Never mutate a sleeping Pod template in this path.
+	if desiredReplicas == 0 {
+		if cachedErr == nil && (cachedDeploy.Spec.Replicas == nil || *cachedDeploy.Spec.Replicas != 0) {
+			before := cachedDeploy.DeepCopy()
+			zero := int32(0)
+			cachedDeploy.Spec.Replicas = &zero
+			if patchErr := r.Patch(ctx, cachedDeploy, client.MergeFrom(before)); patchErr != nil {
+				return "", 0, patchErr
+			}
+		}
+		return deployName, 0, nil
 	}
 
+	migrateEgress := false
+	var modeConfig egress.Config
+	if unifiedEgressEnabled() {
+		var migrationErr error
+		modeConfig, migrationErr = r.readOrInitializeEgress(ctx)
+		if migrationErr != nil {
+			return "", 0, migrationErr
+		}
+		migrateEgress = modeConfig.EffectiveMode() == egress.ModeAllowlist
+	}
+
+	parts, err := r.buildDesiredDeploymentSpec(ctx, ws, pvcName, pvc, migrateEgress, modeConfig)
+	if err != nil {
+		return "", 0, err
+	}
+
+	if cachedErr == nil && deploymentMatchesCachedSpec(cachedDeploy, desiredReplicas, parts) {
+		if unifiedEgressEnabled() {
+			if _, egressErr := r.ensureEgressPolicies(ctx, ws, modeConfig, false); egressErr != nil {
+				return "", 0, egressErr
+			}
+		}
+		return deployName, desiredReplicas, nil
+	}
+
+	if unifiedEgressEnabled() {
+		if _, migrationErr := r.prepareEgressConfig(ctx, ws, modeConfig); migrationErr != nil {
+			return "", 0, migrationErr
+		}
+	}
+
+	// Slow path (create, wake-up, spec change, or missing spec-hash): fetch the
+	// unstripped Deployment from the API server before creating or mutating it.
+	deploy := &appsv1.Deployment{}
+	err = r.uncachedReader().Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: deployName}, deploy)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			deploy = &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deployName,
+					Namespace: ws.Namespace,
+					Labels:    parts.labels,
+					Annotations: map[string]string{
+						DeploymentSpecHashAnnotation: parts.specHash,
+					},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas:             &desiredReplicas,
+					RevisionHistoryLimit: int32Ptr(workspaceRevisionHistoryLimit),
+					Strategy: appsv1.DeploymentStrategy{
+						Type: appsv1.RecreateDeploymentStrategyType,
+					},
+					Selector: &metav1.LabelSelector{
+						MatchLabels: parts.selectorLabels,
+					},
+					Template: parts.template,
+				},
+			}
+			if err := ctrl.SetControllerReference(ws, deploy, r.Scheme); err != nil {
+				return "", 0, err
+			}
+			if err := r.Create(ctx, deploy); err != nil {
+				return "", 0, err
+			}
+			return deployName, desiredReplicas, nil
+		}
+		return "", 0, err
+	}
+
+	needsUpdate, err := syncDeploymentSpec(deploy, desiredReplicas, parts)
+	if err != nil {
+		return "", 0, err
+	}
 	if needsUpdate {
 		log.Info("Updating Deployment spec due to changes", "deployment", deployName)
 		if err := r.Update(ctx, deploy); err != nil {
@@ -1872,16 +2109,37 @@ func buildSharedEgressRules(globalAllowedNamespaces []aiv1alpha1.WorkspaceNetwor
 // short while after the API server deleted it; without this the template would
 // never be considered empty on the reconcile that observes the deletion.
 func (r *WorkspaceReconciler) maybeDeleteSharedNetworkPolicy(ctx context.Context, namespace string, gone types.NamespacedName) error {
-	wsList := &aiv1alpha1.WorkspaceList{}
-	if err := r.List(ctx, wsList, client.InNamespace(namespace)); err != nil {
-		return err
+	if workspacePhases.countInNamespaceExcluding(namespace, gone) > 0 {
+		return nil
 	}
-	for i := range wsList.Items {
-		item := &wsList.Items[i]
-		if item.DeletionTimestamp.IsZero() && item.Name != gone.Name {
-			return nil
+
+	// Fallback for cold-start or out-of-band deletions before workspacePhases
+	// is populated: paginate with Limit(2) so we never DeepCopy the full fleet.
+	continueToken := ""
+	for {
+		wsList := &aiv1alpha1.WorkspaceList{}
+		opts := []client.ListOption{
+			client.InNamespace(namespace),
+			client.Limit(2),
 		}
+		if continueToken != "" {
+			opts = append(opts, client.Continue(continueToken))
+		}
+		if err := r.uncachedReader().List(ctx, wsList, opts...); err != nil {
+			return err
+		}
+		for i := range wsList.Items {
+			item := &wsList.Items[i]
+			if item.DeletionTimestamp.IsZero() && item.Name != gone.Name {
+				return nil
+			}
+		}
+		if wsList.Continue == "" {
+			break
+		}
+		continueToken = wsList.Continue
 	}
+
 	sharedNetpol := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: sharedNetpolName, Namespace: namespace},
 	}
@@ -2345,7 +2603,7 @@ func applyNonRoot(psc *corev1.PodSecurityContext, csc *corev1.SecurityContext, u
 // keep the image user. skipReason is non-empty when a non-root UID was wanted but
 // the workspace volume is not ready for it; err is a transient lookup failure the
 // caller must retry (never treat it as "keep root").
-func (r *WorkspaceReconciler) resolveRunAsUser(ctx context.Context, ws *aiv1alpha1.Workspace, pvcName string) (uid int64, skipReason string, err error) {
+func (r *WorkspaceReconciler) resolveRunAsUser(ctx context.Context, ws *aiv1alpha1.Workspace, pvcName string, pvc *corev1.PersistentVolumeClaim) (uid int64, skipReason string, err error) {
 	want := r.DefaultRunAsUser
 	if v, set, annErr := runAsUserFromAnnotation(ws); annErr != nil {
 		logf.FromContext(ctx).Error(annErr, "Ignoring invalid run-as-user annotation, using the controller default",
@@ -2356,7 +2614,7 @@ func (r *WorkspaceReconciler) resolveRunAsUser(ctx context.Context, ws *aiv1alph
 	if want <= 0 {
 		return 0, "", nil
 	}
-	reason, err := r.volumeBlocksRunAsUser(ctx, ws, pvcName, want)
+	reason, err := r.volumeBlocksRunAsUser(ctx, ws, pvcName, pvc, want)
 	if err != nil || reason != "" {
 		return 0, reason, err
 	}
@@ -2369,16 +2627,21 @@ func (r *WorkspaceReconciler) resolveRunAsUser(ctx context.Context, ws *aiv1alph
 // was created before they were added still presents root-owned files that a
 // non-root process cannot write. PV volumeAttributes are immutable, which is why
 // such a PV has to be recreated (see docs/workspace-nonroot-migration.md).
-func (r *WorkspaceReconciler) volumeBlocksRunAsUser(ctx context.Context, ws *aiv1alpha1.Workspace, pvcName string, uid int64) (string, error) {
+func (r *WorkspaceReconciler) volumeBlocksRunAsUser(ctx context.Context, ws *aiv1alpha1.Workspace, pvcName string, pvc *corev1.PersistentVolumeClaim, uid int64) (string, error) {
+	if pvcName == "" && pvc != nil {
+		pvcName = pvc.Name
+	}
 	if pvcName == "" {
 		return "workspace has no PVC (non-root is only supported on OSS volumes)", nil
 	}
-	pvc := &corev1.PersistentVolumeClaim{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: pvcName}, pvc); err != nil {
-		if apierrors.IsNotFound(err) {
-			return fmt.Sprintf("PVC %s not found", pvcName), nil
+	if pvc == nil {
+		pvc = &corev1.PersistentVolumeClaim{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: pvcName}, pvc); err != nil {
+			if apierrors.IsNotFound(err) {
+				return fmt.Sprintf("PVC %s not found", pvcName), nil
+			}
+			return "", err
 		}
-		return "", err
 	}
 	if pvc.Spec.VolumeName == "" {
 		return fmt.Sprintf("PVC %s is not bound to a PV yet", pvcName), nil
@@ -2475,11 +2738,11 @@ func getReadinessProbe(ws *aiv1alpha1.Workspace) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler:        getProbeHandler(ws),
 		InitialDelaySeconds: 1,
-		// Keep the readiness timeout in line with the startup probe: a /health that
-		// is slow because of network-backed storage must not flap the Pod out of the
-		// Service endpoints.
-		TimeoutSeconds:   3,
-		PeriodSeconds:    2,
+		// StartupProbe (2s period) handles fast startup detection; ReadinessProbe
+		// runs at a relaxed 10s cadence with a 5s timeout to cut kubelet probe
+		// load across thousands of active Pods and tolerate FUSE storage jitter.
+		TimeoutSeconds:   5,
+		PeriodSeconds:    10,
 		SuccessThreshold: 1,
 		FailureThreshold: 3,
 	}

@@ -128,7 +128,7 @@ func TestResolveRunAsUser(t *testing.T) {
 				DefaultRunAsUser: c.def,
 			}
 			ws := &aiv1alpha1.Workspace{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "w", Annotations: c.ann}}
-			uid, skip, err := r.resolveRunAsUser(context.Background(), ws, c.pvcName)
+			uid, skip, err := r.resolveRunAsUser(context.Background(), ws, c.pvcName, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

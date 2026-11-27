@@ -334,6 +334,57 @@ func TestWorkspaceRunningPeakTimestampMovesOnNewPeak(t *testing.T) {
 	})
 }
 
+func TestWorkspacePhaseTrackerCountInNamespaceExcluding(t *testing.T) {
+	resetPhaseTracker(t)
+	resetDerivedGauges(t)
+
+	if defaultActiveInstancesSyncInterval < 10*time.Minute {
+		t.Fatalf("expected defaultActiveInstancesSyncInterval >= 10m, got %v", defaultActiveInstancesSyncInterval)
+	}
+
+	k1 := types.NamespacedName{Namespace: nsOne, Name: wsName1}
+	k2 := types.NamespacedName{Namespace: nsOne, Name: wsName2}
+	k3 := types.NamespacedName{Namespace: nsTwo, Name: wsName3}
+
+	workspacePhases.set(k1, aiv1alpha1.WorkspaceRunning)
+	workspacePhases.set(k2, aiv1alpha1.WorkspaceSleeping)
+	workspacePhases.set(k3, aiv1alpha1.WorkspaceStopped)
+
+	if got := workspacePhases.countInNamespaceExcluding(nsOne, k1); got != 1 {
+		t.Fatalf("expected 1 remaining in %s excluding %s, got %d", nsOne, k1.Name, got)
+	}
+	if got := workspacePhases.countInNamespaceExcluding(nsOne, types.NamespacedName{Namespace: nsOne, Name: "missing"}); got != 2 {
+		t.Fatalf("expected 2 in %s excluding missing key, got %d", nsOne, got)
+	}
+	if got := workspacePhases.countInNamespaceExcluding(nsTwo, k3); got != 0 {
+		t.Fatalf("expected 0 remaining in %s excluding %s, got %d", nsTwo, k3.Name, got)
+	}
+
+	// Updating phase in place must not double-count namespace membership.
+	workspacePhases.set(k1, aiv1alpha1.WorkspaceSleeping)
+	if got := workspacePhases.countInNamespaceExcluding(nsOne, k2); got != 1 {
+		t.Fatalf("expected 1 in %s after phase update, got %d", nsOne, got)
+	}
+
+	// Unsetting k1 leaves only k2 in ns1.
+	workspacePhases.unset(k1)
+	if got := workspacePhases.countInNamespaceExcluding(nsOne, k2); got != 0 {
+		t.Fatalf("expected 0 remaining in %s after unset, got %d", nsOne, got)
+	}
+
+	// resetAll rebuilds per-namespace counts accurately.
+	workspacePhases.resetAll(map[types.NamespacedName]aiv1alpha1.WorkspacePhase{
+		k1: aiv1alpha1.WorkspaceRunning,
+		k3: aiv1alpha1.WorkspaceRunning,
+	})
+	if got := workspacePhases.countInNamespaceExcluding(nsOne, k1); got != 0 {
+		t.Fatalf("expected 0 remaining in %s after resetAll, got %d", nsOne, got)
+	}
+	if got := workspacePhases.countInNamespaceExcluding(nsOne, k3); got != 1 {
+		t.Fatalf("expected 1 in %s after resetAll, got %d", nsOne, got)
+	}
+}
+
 // BenchmarkWorkspacePhaseTrackerSet guards the O(1) property of the per-reconcile// path: with 5000 tracked Workspaces, a full recompute would walk the whole map on
 // every call, while the incremental implementation only touches two gauge series.
 func BenchmarkWorkspacePhaseTrackerSet(b *testing.B) {
